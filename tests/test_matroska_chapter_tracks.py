@@ -137,9 +137,79 @@ def test_streamed_track_uid_never_depends_on_the_producer_uid(tmp_path):
         assembly = MatroskaAssemblyPlan(output=tmp_path / "out.mkv", ordered_tracks=(
             MatroskaAssemblyTrack(artifact=artifact, artifact_track_index=0, source_identity="film.mp4"),))
         assembly = replace(assembly, expected_output_contract=assembly_output_contract(assembly))
-        return compile_assembly_plan(assembly, readers={artifact: MatroskaReader(artifact)}).tracks[0].output_uid
+        return compile_assembly_plan(assembly, readers={artifact: MatroskaReader(artifact)},
+                                     stream_keys={(artifact, 0): "flux:1"}).tracks[0].output_uid
 
     assert output_uid(first) == output_uid(second)
+
+
+def _streamed(tmp_path: Path, name: str, producer_uid: int) -> Path:
+    path = tmp_path / name
+    video = _track(1, producer_uid, "V_MPEG4/ISO/AVC", 1)
+    MatroskaWriter().write(MatroskaMuxPlan(path, (MatroskaMuxTrack(path, video, 1, producer_uid),),
+                                           (MatroskaMuxPacket(1, MatroskaBlock(1, 0, 0x80, b"video")),)))
+    return path
+
+
+def _compiled(tmp_path: Path, artifact: Path, keys: dict, **track_kwargs):
+    assembly = MatroskaAssemblyPlan(output=tmp_path / "out.mkv", ordered_tracks=(
+        MatroskaAssemblyTrack(artifact=artifact, artifact_track_index=0, source_identity="film.mp4",
+                              **track_kwargs),))
+    assembly = replace(assembly, expected_output_contract=assembly_output_contract(assembly))
+    return compile_assembly_plan(assembly, readers={artifact: MatroskaReader(artifact)}, stream_keys=keys)
+
+
+def test_two_streams_of_a_source_each_read_alone_never_share_their_uids(tmp_path):
+    """Relecture Codex 19 : deux flux d'un même MP4, chacun seul (position 0) avec les mêmes métadonnées → UID de
+    piste et SegmentUID distincts (clé = index du flux d'origine, jamais la position dans le producteur)."""
+    first, second = _streamed(tmp_path, "a.mkv", 5), _streamed(tmp_path, "b.mkv", 5)
+    one = _compiled(tmp_path, first, {(first, 0): "flux:1"})
+    two = _compiled(tmp_path, second, {(second, 0): "flux:2"})
+    assert one.tracks[0].output_uid != two.tracks[0].output_uid and one.segment_uid != two.segment_uid
+
+
+def test_rewritten_track_with_a_streamed_origin_has_a_stable_uid(tmp_path):
+    """Piste réécrite dont l'origine est un en-tête de producteur : UID indépendant de l'UID de ce producteur."""
+    rewritten = _source(tmp_path / "rewritten.mkv")
+
+    def output_uid(origin_uid: int, name: str) -> int:
+        origin = _streamed(tmp_path, name, origin_uid)
+        return _compiled(tmp_path, rewritten, {(origin, 0): "flux:3"}, origin=(origin, 0)).tracks[0].output_uid
+
+    assert output_uid(111, "o1.mkv") == output_uid(222, "o2.mkv")
+
+
+def test_segment_uid_follows_every_written_flag(tmp_path):
+    from core.matroska.assembly import MatroskaTrackFlags
+
+    source = _source(tmp_path / "src.mkv")
+
+    def segment_uid(**flags) -> int:
+        return _compiled(tmp_path, source, {}, flags=MatroskaTrackFlags(**flags)).segment_uid
+
+    assert segment_uid() == segment_uid()
+    assert segment_uid() != segment_uid(hearing_impaired=True)
+    assert segment_uid() != segment_uid(commentary=True)
+
+
+def test_stream_artifacts_record_the_origin_stream_of_each_route(tmp_path):
+    from core.workflows.common.native_stream_inputs import StreamArtifacts, StreamTrackSpec
+
+    opened: list[object] = []
+
+    class _Inputs:
+        def open(self, spec, *, duration_ns=None, header_only=False):
+            opened.append(spec)
+            return type("R", (), {"path": tmp_path / f"header{len(opened)}.mkv"})()
+
+    streams = StreamArtifacts(_Inputs())  # type: ignore[arg-type]
+    mp4 = tmp_path / "film.mp4"
+    streams.declare([StreamTrackSpec(mp4, 0, "video", "h264"), StreamTrackSpec(mp4, 2, "audio", "aac")])
+    header, position = streams.route(StreamTrackSpec(mp4, 2, "audio", "aac"))
+    assert streams.stream_keys[(header, position)] == "flux:2"
+    assert streams.stream_keys[streams.route(StreamTrackSpec(mp4, 0, "video", "h264"))] == "flux:0"
+    only = streams.metadata(StreamTrackSpec(mp4, 3, "subtitle", "mov_text"))
+    assert streams.stream_keys[only] == "flux:3"
 
 
 # ── Drapeaux d'édition et de chapitre (N6, décision DD) ───────────────────────
@@ -191,3 +261,37 @@ def test_unprojectable_editions_are_reported(tmp_path):
     targeted = _atom(8, targets=(10,))
     assert unsupported_reason(MatroskaReader(_flagged_source(tmp_path / "t.mkv", extra_chapter=targeted)
                                              ).chapter_editions())
+
+
+def _with_crc(master_id: bytes, body: bytes) -> bytes:
+    """Master précédé d'un CRC-32 valide (EBML : CRC IEEE, petit-boutiste, des enfants qui suivent)."""
+    import zlib
+
+    return ebml.element(master_id, ebml.element(bytes.fromhex("bf"), zlib.crc32(body).to_bytes(4, "little")) + body)
+
+
+def _invalid_crcs(payload: bytes, masters: frozenset[bytes]) -> list[bytes]:
+    import zlib
+
+    bad: list[bytes] = []
+    for element_id, value in payload_children(payload):
+        if element_id not in masters:
+            continue
+        children = list(payload_children(value))
+        if children and children[0][0] == bytes.fromhex("bf"):
+            rest = value[len(ebml.element(bytes.fromhex("bf"), children[0][1])):]
+            if zlib.crc32(rest).to_bytes(4, "little") != children[0][1]:
+                bad.append(element_id)
+        bad += _invalid_crcs(value, masters)
+    return bad
+
+
+def test_remapped_chapters_never_keep_a_stale_crc():
+    """Relecture Codex 19 : un master réassemblé ne garde jamais le CRC-32 de la source (devenu invalide)."""
+    atom_body = (ebml.uint_element(UID, 1) + ebml.uint_element(START, 0)
+                 + ebml.element(TRACK, ebml.uint_element(TRACK_UID, 11)))
+    edition = _with_crc(EDITION, ebml.uint_element(bytes.fromhex("45bc"), 7) + _with_crc(ATOM, atom_body))
+    payload = MatroskaReader._raw_payload(_with_crc(CHAPTERS, edition))
+    remapped, removed = remap_chapter_tracks(payload, {11: [99]})
+    assert removed == 0 and _uids(remapped) == [(1, [99])]
+    assert _invalid_crcs(MatroskaReader._raw_payload(remapped), frozenset({EDITION, ATOM, TRACK})) == []

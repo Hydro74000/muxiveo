@@ -431,7 +431,8 @@ def build_native_plan(
     assembly = replace(assembly, expected_output_contract=output_contract)
     if streams is None:
         return compile_assembly_plan(assembly)
-    return compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen)
+    return compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen,
+                                 stream_keys=streams.stream_keys)
 
 
 def run_native_remux(

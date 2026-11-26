@@ -5,7 +5,8 @@ Un chapitre peut viser des pistes (``ChapterTrack`` → ``ChapterTrackUID``) ; c
 qui n'existent plus dans la sortie. Chaque UID source est remplacé par les UID de sortie de la piste (plusieurs
 pour une piste dupliquée) ; un chapitre dont **toutes** les pistes ciblées sont absentes de la sortie est retiré
 (décision DF : le garder sans ``ChapterTrack`` élargirait sa portée à toutes les pistes), chapitres imbriqués
-compris. Une édition vidée est retirée, ``Chapters`` vidé aussi.
+compris. Une édition vidée est retirée, ``Chapters`` vidé aussi. Les CRC-32 des masters réassemblés (``Chapters``,
+éditions, chapitres) sont écartés comme dans le writer : recopiés, ils deviendraient invalides (élément facultatif).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from .ebml import element, uint_element
+from .ids import CRC32_ID
 from .reader import payload_children
 
 CHAPTERS_ID = bytes.fromhex("1043a770")
@@ -27,6 +29,8 @@ def _remap_atom(payload: bytes, uid_map: Mapping[int, Sequence[int]]) -> tuple[b
     parts: list[bytes] = []
     removed = 0
     for element_id, value in payload_children(payload):
+        if element_id == CRC32_ID:
+            continue  # master réassemblé : CRC recopié invalide
         if element_id == CHAPTER_TRACK_ID:
             targets: list[int] = []
             for child_id, child_value in payload_children(value):
@@ -60,12 +64,16 @@ def remap_chapter_tracks(chapters_payload: bytes, uid_map: Mapping[int, Sequence
     editions: list[bytes] = []
     removed = 0
     for element_id, value in payload_children(chapters_payload):
+        if element_id == CRC32_ID:
+            continue
         if element_id != EDITION_ENTRY_ID:
             editions.append(element(element_id, value))
             continue
         parts: list[bytes] = []
         atoms = 0
         for edition_id, edition_value in payload_children(value):
+            if edition_id == CRC32_ID:
+                continue
             if edition_id == CHAPTER_ATOM_ID:
                 atom, count = _remap_atom(edition_value, uid_map)
                 removed += count

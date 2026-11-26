@@ -8,6 +8,7 @@ baux d'usage (moteur, accélération, sondes) respectés par le nettoyage et par
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -216,3 +217,20 @@ def test_probe_of_a_bare_engine_name_leases_the_resolved_binary(tmp_path, monkey
     monkeypatch.setattr(interpolation, "run_detection", detection)
     interpolation._engine_probe(["muxiveo-rife", "--version"], capture_output=True)
     assert seen[0][0] == str(engine)  # lancé sous le chemin loué, jamais le nom nu
+
+
+def test_probe_through_an_empty_path_segment_runs_an_absolute_path(tmp_path, monkeypatch):
+    """Segment vide de ``PATH`` (dossier courant) : ``which`` rend un nom nu, lancé sous son chemin absolu."""
+    from core.workflows.encode import interpolation
+
+    engine = tmp_path / "muxiveo-rife"
+    engine.write_text("#!/bin/sh\n")
+    engine.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", os.pathsep)  # deux segments vides
+    monkeypatch.setattr(plugins, "leases_for", lambda *_a, **_k: [])
+    seen: list[list[str]] = []
+    monkeypatch.setattr(interpolation, "run_detection",
+                        lambda cmd, **_k: seen.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""))
+    interpolation._engine_probe(["muxiveo-rife", "--version"], capture_output=True)
+    assert seen[0][0] == str(engine)

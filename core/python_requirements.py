@@ -185,6 +185,11 @@ def rejection_reason(version: str | None, requirement: PythonRequirement) -> str
     return f"{version} accepted"
 
 
+def rejection_lines(rejected: list[tuple[PythonRequirement, str | None]]) -> list[str]:
+    """Une ligne par dépendance refusée, motif et raison déclarée compris (journal du packaging)."""
+    return [f"{requirement.distribution} : {rejection_reason(version, requirement)}" for requirement, version in rejected]
+
+
 def is_excluded(version: str, requirement: PythonRequirement) -> bool:
     """Vrai si la version installée est exclue (``!=x.y.z`` : composantes manquantes égales à zéro)."""
     release = parse_version(version)
@@ -209,5 +214,5 @@ def _meets_minimum(version: str, minimum: tuple[int, ...]) -> bool:
 
 __all__ = [
     "BUILD_REQUIREMENTS_FILE", "PythonRequirement", "REQUIREMENTS_FILE", "installed_version", "is_excluded", "is_too_recent", "parse_version",
-    "read_requirements", "rejection_reason", "undeclared_constraints", "unsatisfied_requirements",
+    "read_requirements", "rejection_lines", "rejection_reason", "undeclared_constraints", "unsatisfied_requirements",
 ]

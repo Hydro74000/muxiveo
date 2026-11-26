@@ -74,6 +74,27 @@ def _extract(package: Path, dest: Path) -> None:
         raise ValueError(f"format de paquet non géré : {name}")
 
 
+def _extract_manifest(package: Path, dest: Path) -> Path | None:
+    """Extrait ``tools-manifest.json`` d'un paquet, à la racine (installeur standard, sans outils) ou dans
+    ``tools/`` ; renvoie le moins profond, ``None`` s'il est absent."""
+    name = package.name
+    if name.endswith(".AppImage"):
+        package.chmod(package.stat().st_mode | 0o111)
+        for pattern in ("usr/bin/tools-manifest.json", "usr/bin/tools/tools-manifest.json"):
+            subprocess.run([str(package.resolve()), "--appimage-extract", pattern], cwd=dest, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif name.endswith(".zip"):
+        with zipfile.ZipFile(package) as zf:
+            zf.extractall(dest, [n for n in zf.namelist() if n.rsplit("/", 1)[-1] == "tools-manifest.json"])
+    elif name.endswith(".exe"):
+        subprocess.run(["7z", "x", str(package), f"-o{dest}", "tools-manifest.json", "-r", "-y"],
+                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        raise ValueError(f"format de paquet non géré : {name}")
+    manifests = sorted(dest.rglob("tools-manifest.json"), key=lambda path: (len(path.parts), str(path)))
+    return manifests[0] if manifests else None
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
@@ -82,8 +103,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-#: Distributions d'exécution attendues dans l'inventaire Python d'un build (requirements.txt).
-_REQUIRED_DISTRIBUTIONS = ("pyside6", "numpy", "pymediainfo", "certifi")
+#: Distributions attendues dans l'inventaire Python d'un build : exécution (requirements.txt) et outils de build
+#: (requirements-build.txt).
+_REQUIRED_DISTRIBUTIONS = ("pyside6", "numpy", "pymediainfo", "certifi", "pyinstaller", "pillow")
 
 
 def inventory_errors(python: object) -> list[str]:
@@ -201,9 +223,8 @@ def main() -> int:
     for package in args.packages if args.inventory_only else ():
         print(f"{package.name} :")
         with tempfile.TemporaryDirectory(prefix="inventory-check-") as tmp:
-            _extract(package, Path(tmp))
-            manifests = sorted(Path(tmp).rglob("tools-manifest.json"))
-            errors = manifest_inventory_errors(manifests[0]) if manifests else ["tools-manifest.json absent"]
+            manifest = _extract_manifest(package, Path(tmp))
+            errors = manifest_inventory_errors(manifest) if manifest is not None else ["tools-manifest.json absent"]
         for error in errors:
             print(f"::error::{package.name} : {error}")
         failed |= bool(errors)

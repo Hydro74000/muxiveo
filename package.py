@@ -67,7 +67,12 @@ from core.github_release import (
     release_asset,
     verify_download,
 )
-from core.python_requirements import BUILD_REQUIREMENTS_FILE, read_requirements, unsatisfied_requirements
+from core.python_requirements import (
+    BUILD_REQUIREMENTS_FILE,
+    read_requirements,
+    rejection_lines,
+    unsatisfied_requirements,
+)
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
     MANIFEST_NAME,
@@ -669,12 +674,14 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
 
 def _ensure_pyinstaller() -> None:
     requirements = read_requirements()
-    unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}
+    rejected = unsatisfied_requirements(requirements)
+    unsatisfied = {requirement.distribution for requirement, _ in rejected}
     missing: list[str] = []
     # Outils de build : requirements-build.txt (mêmes règles que requirements.txt, aucune version figée) ;
     # PyInstaller non importable : toujours réinstallé.
     build_requirements = read_requirements(BUILD_REQUIREMENTS_FILE)
-    build_unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(build_requirements)}
+    build_rejected = unsatisfied_requirements(build_requirements)
+    build_unsatisfied = {requirement.distribution for requirement, _ in build_rejected}
     for requirement in build_requirements:
         absent = requirement.distribution.lower() == "pyinstaller" and importlib.util.find_spec("PyInstaller") is None
         if requirement.distribution in build_unsatisfied or absent:
@@ -685,6 +692,8 @@ def _ensure_pyinstaller() -> None:
     if not missing:
         _ok("Dépendances de packaging Python disponibles")
         return
+    for line in rejection_lines([*build_rejected, *rejected]):
+        _info(line)
     _info(f"Installation des dépendances absentes ou incompatibles : {', '.join(missing)}")
     _run([sys.executable, "-m", "pip", "install", *missing])
 

@@ -975,7 +975,8 @@ def assemble_encode_output_native(
             require_block_addition_mapping=dovi_video_indexes,
         )
         assembly = replace(assembly, expected_output_contract=contract)
-        mux_plan = compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen)
+        mux_plan = compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen,
+                                         stream_keys=streams.stream_keys)
         if mux_plan.chapters_removed and signals is not None:
             signals.progress.emit(f"[WARN] {mux_plan.chapters_removed} chapitre(s) retiré(s) : toutes leurs pistes "
                                   "ciblées (ChapterTrack) sont absentes de la sortie.")

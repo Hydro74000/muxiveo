@@ -65,8 +65,11 @@ def _check_module():
 
 def test_artifact_check_requires_a_complete_versioned_inventory(tmp_path):
     check = _check_module()
-    complete = [{"name": name, "version": "1.0"} for name in ("PySide6", "numpy", "pymediainfo", "certifi")]
+    complete = [{"name": name, "version": "1.0"}
+                for name in ("PySide6", "numpy", "pymediainfo", "certifi", "PyInstaller", "Pillow")]
     assert check.inventory_errors(complete) == []
+    without_build_tools = [item for item in complete if item["name"] not in ("PyInstaller", "Pillow")]
+    assert len(check.inventory_errors(without_build_tools)) == 2  # outils de build exigés aussi
     assert check.inventory_errors([{"name": "PySide6"}])  # sans version, dépendances manquantes
     assert check.inventory_errors(None)
     manifest = tmp_path / "tools-manifest.json"
@@ -99,3 +102,40 @@ def test_skip_wine_never_inventories_the_linux_interpreter(tmp_path, monkeypatch
 
     with pytest.raises(SystemExit):
         package_mod._windows_bundle_inventory(tmp_path / "vide")
+
+
+def test_inventory_only_reads_the_root_manifest_of_a_standard_package(tmp_path):
+    """Installeur standard : manifeste à la racine du bundle (aucun dossier ``tools``), jamais ignoré."""
+    import zipfile
+
+    check = _check_module()
+    package = tmp_path / "Muxiveo-Windows-x64-5.2.0.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr("Muxiveo/tools-manifest.json", json.dumps({"python": []}))
+        archive.writestr("Muxiveo/tools/tools-manifest.json", json.dumps({"python": [{"name": "x"}]}))
+    dest = tmp_path / "out"
+    dest.mkdir()
+    manifest = check._extract_manifest(package, dest)
+    assert manifest == dest / "Muxiveo" / "tools-manifest.json"  # le moins profond
+
+
+def test_release_windows_check_never_hides_a_failed_allinc_check():
+    """pwsh : seule la dernière commande native fixe le code de l'étape ; échec AllInc vérifié avant le standard."""
+    text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    step = text.split("Verify embedded muxiveo-rife and NVEncC variant\n        shell: pwsh", 1)[1].split("- name:", 1)[0]
+    assert step.index("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }") < step.index("--inventory-only")
+
+
+def test_packaging_logs_the_declared_reason_of_a_rejected_version(monkeypatch, tmp_path):
+    import package as package_mod
+    import core.python_requirements as reqs
+
+    requirement = reqs.read_requirements()[0]
+    assert requirement.distribution == "PySide6"
+    monkeypatch.setattr(package_mod, "unsatisfied_requirements",
+                        lambda requirements: [(requirement, "6.12.0")] if requirement in requirements else [])
+    logged: list[str] = []
+    monkeypatch.setattr(package_mod, "_info", logged.append)
+    monkeypatch.setattr(package_mod, "_run", lambda *a, **k: None)
+    package_mod._ensure_pyinstaller()
+    assert any("PySide6 : 6.12.0 excluded" in line and "deallocating None" in line for line in logged)

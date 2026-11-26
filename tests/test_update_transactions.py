@@ -196,3 +196,31 @@ def test_journal_is_written_with_lf_line_endings(tmp_path):
     path = tmp_path / "journal.json"
     update_apply._write_journal(path, {"a": [1, 2]})
     assert b"\r\n" not in path.read_bytes()
+
+
+def test_a_concurrent_removal_between_the_two_checks_never_resurrects_a_report(tmp_path, monkeypatch):
+    """Dossier signalé retiré par un autre ménage juste après le premier contrôle (résultat puis témoin effacés) :
+    rien n'est recopié, quel que soit l'ordre des contrôles (relecture Codex 19)."""
+    install = tmp_path / "Muxiveo"
+    work = _work(tmp_path, "signale", install, {"ok": True, "version": "5.1.0"})
+    (work / update_apply.REPORTED_FILE).touch()
+    owner = os.path.realpath(install)
+    watched = {work / update_apply.RESULT_FILE, work / update_apply.REPORTED_FILE}
+    real_exists, real_is_file = Path.exists, Path.is_file
+    fired: list[bool] = []
+
+    def after_first_check(real):
+        def check(self, *args, **kwargs):
+            value = real(self, *args, **kwargs)
+            if self in watched and not fired:
+                fired.append(True)  # ménage concurrent : résultat retiré en premier, puis le témoin
+                (work / update_apply.RESULT_FILE).unlink()
+                (work / update_apply.REPORTED_FILE).unlink()
+            return value
+        return check
+
+    monkeypatch.setattr(Path, "exists", after_first_check(real_exists))
+    monkeypatch.setattr(Path, "is_file", after_first_check(real_is_file))
+    assert update_apply._keep_report(tmp_path, owner, {"id": work.name, "ok": True}, work)
+    monkeypatch.undo()
+    assert fired and update_apply.pending_reports(tmp_path, install) == []

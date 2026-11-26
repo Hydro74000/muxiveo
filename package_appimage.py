@@ -68,7 +68,12 @@ from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
 from core.github_release import github_release_asset, release_asset, verify_download
-from core.python_requirements import BUILD_REQUIREMENTS_FILE, read_requirements, unsatisfied_requirements
+from core.python_requirements import (
+    BUILD_REQUIREMENTS_FILE,
+    read_requirements,
+    rejection_lines,
+    unsatisfied_requirements,
+)
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
     RECORDED_ONLY,
@@ -256,19 +261,23 @@ def ensure_build_deps() -> None:
     # Outils de build : requirements-build.txt (mêmes règles que requirements.txt, aucune version figée) ;
     # PyInstaller non importable : toujours réinstallé.
     build_requirements = read_requirements(BUILD_REQUIREMENTS_FILE)
-    build_unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(build_requirements)}
+    build_rejected = unsatisfied_requirements(build_requirements)
+    build_unsatisfied = {requirement.distribution for requirement, _ in build_rejected}
     for requirement in build_requirements:
         absent = requirement.distribution.lower() == "pyinstaller" and importlib.util.find_spec("PyInstaller") is None
         if requirement.distribution in build_unsatisfied or absent:
             missing_py.append(requirement.spec)
 
     requirements = read_requirements()
-    unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}
+    rejected = unsatisfied_requirements(requirements)
+    unsatisfied = {requirement.distribution for requirement, _ in rejected}
     for requirement in requirements:
         if requirement.distribution in unsatisfied or importlib.util.find_spec(requirement.module) is None:
             missing_py.append(requirement.spec)
 
     if missing_py:
+        for line in rejection_lines([*build_rejected, *rejected]):
+            info(line)
         info(f"Paquets Python absents ou incompatibles : {', '.join(missing_py)}")
         _pip_install(missing_py)
 

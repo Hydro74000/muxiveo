@@ -1414,7 +1414,8 @@ def test_check_allinc_nvencc_variant(tmp_path, novidia):
     entries = [{"tool": "ffmpeg"}] + ([] if novidia else [{"tool": "nvencc"}])
     (tools / "tools-manifest.json").write_text(json.dumps({"version": 1, "tools": entries,
                                                            "python": [{"name": n, "version": "1"} for n in
-                                                                      ("PySide6", "numpy", "pymediainfo", "certifi")]}),
+                                                                      ("PySide6", "numpy", "pymediainfo", "certifi",
+                                                                       "PyInstaller", "Pillow")]}),
                                                encoding="utf-8")
     if novidia:
         (tmp_path / "usr" / "bin" / "_ALLINC_NOVIDIA").touch()

@@ -326,6 +326,8 @@ jobs:
             "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
             "dist\releases\Muxiveo-Setup-AllInc_NoVidia-$env:PACKAGE_VERSION.exe" `
             "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
+          # pwsh : seul le code de la dernière commande native fait échouer l'étape.
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Installeur standard (aucun outil embarqué) : inventaire Python du build seul.
           python scripts/check_allinc_rife.py --inventory-only "dist\releases\Muxiveo-Setup-$env:PACKAGE_VERSION.exe"
 

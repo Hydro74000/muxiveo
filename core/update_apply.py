@@ -794,8 +794,10 @@ def _keep_report(parent: Path, owner: str, entry: dict, work: Path | None = None
     Faux si le journal n'a pas pu être écrit : le dossier, seule copie du compte rendu, doit alors être gardé."""
     def change(entries: list[dict]) -> list[dict]:
         # Sous le verrou : signalé entre-temps, ou dossier déjà retiré par un autre ménage (qui a recopié son compte
-        # rendu s'il n'était pas signalé) : rien à garder, jamais de compte rendu ressuscité.
-        if work is not None and (not (work / RESULT_FILE).is_file() or (work / REPORTED_FILE).exists()):
+        # rendu s'il n'était pas signalé) : rien à garder, jamais de compte rendu ressuscité. Témoin lu **avant** le
+        # résultat : un ménage concurrent (hors verrou) retire le résultat puis le témoin ; témoin absent puis
+        # résultat présent = jamais signalé (le signalement exige ce verrou), sinon le résultat a déjà disparu.
+        if work is not None and ((work / REPORTED_FILE).exists() or not (work / RESULT_FILE).is_file()):
             return entries
         return entries if any(item["id"] == entry["id"] for item in entries) else [*entries, entry]
 

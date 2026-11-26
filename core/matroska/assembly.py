@@ -680,6 +680,7 @@ def compile_assembly_plan(
     *,
     readers: Mapping[Path, MatroskaReader] | None = None,
     reopen: Mapping[Path, Callable[[], MatroskaReader]] | None = None,
+    stream_keys: Mapping[tuple[Path, int], str] | None = None,
 ) -> MatroskaMuxPlan:
     """Compile le plan d'assemblage vers le plan bas niveau du writer natif.
 
@@ -687,6 +688,8 @@ def compile_assembly_plan(
     métadonnées de leur en-tête, blocs à usage unique). ``reopen`` : nouvelle
     lecture d'un tel artefact, pour une route qui quitte la lecture partagée
     (un flux ne se relit pas). Sans eux, chaque artefact est un fichier Matroska.
+    ``stream_keys`` : (en-tête de producteur, position) → clé stable du flux d'origine
+    (:attr:`StreamArtifacts.stream_keys`), utilisée à la place de l'UID du producteur.
     """
     if not plan.ordered_tracks:
         raise ValueError("Plan d'assemblage sans piste.")
@@ -760,11 +763,14 @@ def compile_assembly_plan(
         uid_name = track.name if track.name is not None else source_track.name
         uid_default = track.flags.default if track.flags is not None else source_track.flag_default
         uid_forced = track.flags.forced if track.flags is not None else source_track.flag_forced
-        # Piste lue en flux (MP4/MOV via un producteur FFmpeg) : son UID change à chaque lecture ; l'UID de sortie
-        # dérive alors de l'identité de la source et de l'index du flux, jamais de l'UID du producteur.
-        producer_uid: object = (origin_track or source_track).uid
-        if origin_track is None and Path(track.artifact) in provided:
-            producer_uid = f"flux:{track.artifact_track_index}"
+        # Piste lue en flux (MP4/MOV via un producteur FFmpeg), ou piste réécrite dont l'origine l'est : l'UID du
+        # producteur change à chaque lecture et sa position dépend des flux lus ensemble ; l'UID de sortie dérive
+        # alors de l'identité de la source et de l'index du flux d'origine, jamais du producteur.
+        keys = stream_keys or {}
+        if origin_track is not None and track.origin is not None:
+            producer_uid: object = keys.get((Path(track.origin[0]), int(track.origin[1])), origin_track.uid)
+        else:
+            producer_uid = keys.get((Path(track.artifact), int(track.artifact_track_index)), source_track.uid)
         uid = deterministic_uid(
             identity, producer_uid, output_index,
             uid_language, uid_name, uid_default, uid_forced,
@@ -912,12 +918,15 @@ def compile_assembly_plan(
         else plan.segment_title.strip()
     )
     # SegmentUID déterministe dérivé de tout ce qui change le contenu écrit : pistes (UID/numéros dérivés du
-    # contenu source), décalages, provenance (réécriture de synchro), origine, retrait des sous-titres embarqués,
+    # contenu source, drapeaux écrits), décalages, provenance (réécriture de synchro), origine, retrait des sous-titres embarqués,
     # titre, digest des top-level opaques (chapitres/tags/attachments) et TimestampScale. Deux plans qui écrivent
     # des contenus différents (même d'un seul décalage) ne partagent jamais un UID ; un même plan reste stable.
     segment_uid = deterministic_uid128(
         "segment",
-        tuple((track.output_uid, track.output_number) for track in output_tracks),
+        tuple((track.output_uid, track.output_number, track.patch_flags,
+               (track.flag_enabled, track.flag_default, track.flag_forced, track.flag_hearing_impaired,
+                track.flag_visual_impaired, track.flag_original, track.flag_commentary))
+              for track in output_tracks),
         tuple((int(track.time_shift_ms or 0), str(track.provenance or ""),
                None if track.origin is None else (str(track.origin[0]), int(track.origin[1])),
                bool(track.remove_closed_captions)) for track in plan.ordered_tracks),

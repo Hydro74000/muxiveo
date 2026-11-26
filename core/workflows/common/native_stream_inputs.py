@@ -595,6 +595,9 @@ class StreamArtifacts:
         self._route_headers: dict[Path, list[Path]] = {}
         self.readers: dict[Path, MatroskaReader] = {}
         self.reopen: dict[Path, Callable[[], MatroskaReader]] = {}
+        #: (en-tête, position) → clé stable du flux d'origine (``flux:<index ffprobe>``) : l'UID et la position
+        #: d'une piste dans son producteur varient selon la lecture et les flux lus ensemble.
+        self.stream_keys: dict[tuple[Path, int], str] = {}
 
     def _open(
         self, spec: StreamTrackSpec | Sequence[StreamTrackSpec], *, header_only: bool = False,
@@ -636,6 +639,7 @@ class StreamArtifacts:
         for position, member in enumerate(group):
             member_key = (Path(member.source), int(member.stream_index))
             self._routes[member_key] = (header, position)
+            self.stream_keys[(header, position)] = f"flux:{int(member.stream_index)}"
             self._groups.pop(member_key, None)
         return self._routes[key]
 
@@ -648,6 +652,7 @@ class StreamArtifacts:
         if header is None:
             header = Path(self._open(replace(spec, carry_context=False), header_only=True).path)
             self._metadata[key] = header
+            self.stream_keys[(header, 0)] = f"flux:{int(spec.stream_index)}"
             self._route_headers.setdefault(key[0], []).append(header)
         return header, 0
 

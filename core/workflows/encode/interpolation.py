@@ -825,7 +825,9 @@ def _engine_probe(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         resolved = shutil.which(cmd[0])
         if resolved is None:
             raise FileNotFoundError(f"Moteur vidéo introuvable : {cmd[0]}")
-        cmd = [resolved, *cmd[1:]]
+        # Segment vide de ``PATH`` (dossier courant) : ``which`` rend encore un nom nu, qu'une nouvelle recherche
+        # au lancement pourrait résoudre ailleurs ; chemin absolu.
+        cmd = [os.path.abspath(resolved), *cmd[1:]]
     deadline = time.monotonic() + _PROBE_LEASE_WAIT_S
     while True:
         try:
