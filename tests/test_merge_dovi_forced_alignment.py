@@ -544,3 +544,13 @@ def test_store_package_writes_the_python_inventory() -> None:
     source = (Path(__file__).resolve().parents[1] / "package.py").read_text(encoding="utf-8")
     branch = source.split("elif args.msix or args.msixupload:", 1)[1].split("_build_msix_package(", 1)[0]
     assert "TOOL_MANIFEST.write(bundle_dir)" in branch
+
+
+def test_unreadable_film1_count_is_never_logged_as_none(tmp_path) -> None:
+    wf = MergeDoviWorkflow()
+    cast(Any, wf)._get_framecount = lambda _path: None
+    lines: list[str] = []
+    wf.step_progress.connect(lambda _step, line: lines.append(line))
+    for forced in (True, False):
+        wf._step_framecount(tmp_path / "a.mkv", tmp_path / "b.mkv", aligned=True, metadata_only=forced)
+    assert lines and not any("None" in line for line in lines)

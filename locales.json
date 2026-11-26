@@ -12250,5 +12250,9 @@
   "Film 1 compté par sa lecture complète": {
     "fra": "Film 1 compté par sa lecture complète",
     "eng": "Film 1 counted by its full read"
+  },
+  "non compté": {
+    "fra": "non compté",
+    "eng": "not counted"
   }
 }

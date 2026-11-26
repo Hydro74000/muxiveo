@@ -1556,18 +1556,21 @@ class MergeDoviWorkflow(QObject):
         diff = abs(fc2 - fc1) if fc1 is not None and fc2 is not None else None
         result = FrameCountResult(fc1, fc2, diff, fc2_deferred=fc2_deferred, fc2_forced=metadata_only)
 
+        # Comptage de Film 1 illisible : jamais « None frames » au journal.
+        shown1 = str(fc1) if fc1 is not None else translate_text("non compté")
+        shown2 = str(fc2) if fc2 is not None else translate_text("non compté")
         if metadata_only:
             self.step_progress.emit(step, translate_text(
                 "Film 1 : {fc1} frames  |  Film 2 : non compté (alignement forcé), comptage exact sur ses "
-                "métadonnées extraites.", fc1=fc1))
+                "métadonnées extraites.", fc1=shown1))
         elif fc2_deferred:
             self.step_progress.emit(
                 step,
-                f"Film 1 : {fc1} frames  |  Film 2 : flux brut, comptage exact sur ses "
+                f"Film 1 : {shown1} frames  |  Film 2 : flux brut, comptage exact sur ses "
                 "métadonnées extraites (lecture complète évitée).",
             )
         else:
-            self.step_progress.emit(step, f"Film 1 : {fc1} frames  |  Film 2 : {fc2} frames")
+            self.step_progress.emit(step, f"Film 1 : {shown1} frames  |  Film 2 : {shown2} frames")
 
         verdict = result.metadata_verdict(adjustment) if metadata_requested and not aligned else None
         if aligned and metadata_requested and metadata_only:
