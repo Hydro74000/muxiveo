@@ -47,10 +47,11 @@ def add_hdr_options(parser: argparse.ArgumentParser) -> None:
                        help="Inspection HDR : en-têtes (static), + RPU / HDR10+ (dynamic), + mesure de chaque image "
                             "(measure, extension mvo-fel ≥ 0.4.0). Sortie JSON.")
     group.add_argument("--hdr-track", type=int, default=None,
-                       help="Index ffprobe de la piste vidéo (défaut : première piste vidéo ; index absent → refus).")
+                       help="Index ffprobe de la piste vidéo de A, et de chaque source hors comparaison (défaut : "
+                            "première piste vidéo ; index absent → refus).")
     group.add_argument("--hdr-compare-track", type=int, default=None, metavar="INDEX",
-                       help="Avec --hdr-compare : piste vidéo de B (défaut : index de A s'il existe dans B, sinon "
-                            "première piste vidéo de B).")
+                       help="Avec --hdr-compare : index ffprobe de la piste vidéo de B (défaut : première piste vidéo "
+                            "de B ; index absent → refus).")
     group.add_argument("--hdr-report", default="",
                        help="Rapport écrit dans ce fichier : HTML (.html) ou JSON (autre extension).")
     group.add_argument("--hdr-compare", action="store_true",

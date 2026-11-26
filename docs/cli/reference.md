@@ -65,8 +65,8 @@ muxiveo --cli inspect [-h] [--sync-mode {physical,container}] [--sync-subtitles 
 | `--with-encode` | Avec --config-template : bloc `encode` de départ (copie, HDR de la source). |
 | `--output` | Fichier de sortie. |
 | `--hdr` | Inspection HDR : en-têtes (static), + RPU / HDR10+ (dynamic), + mesure de chaque image (measure, extension mvo-fel ≥ 0.4.0). Sortie JSON. — `static`, `dynamic`, `measure` |
-| `--hdr-track` | Index ffprobe de la piste vidéo (défaut : première piste vidéo ; index absent → refus). |
-| `--hdr-compare-track` | Avec --hdr-compare : piste vidéo de B (défaut : index de A s'il existe dans B, sinon première piste vidéo de B). |
+| `--hdr-track` | Index ffprobe de la piste vidéo de A, et de chaque source hors comparaison (défaut : première piste vidéo ; index absent → refus). |
+| `--hdr-compare-track` | Avec --hdr-compare : index ffprobe de la piste vidéo de B (défaut : première piste vidéo de B ; index absent → refus). |
 | `--hdr-report` | Rapport écrit dans ce fichier : HTML (.html) ou JSON (autre extension). |
 | `--hdr-compare` | Compare la seconde source à la première (deux entrées). |
 | `--hdr-offset` | Décalage imposé de B en images (défaut : alignement automatique). |

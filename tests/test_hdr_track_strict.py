@@ -2,8 +2,8 @@
 tests/test_hdr_track_strict.py — Piste vidéo demandée stricte (D1, C3 ; plan de remédiation 5.2.0, lot 2).
 
 Un index ffprobe absent est refusé (``invalid_request``, CLI code 2) avant toute analyse, jamais remplacé par une
-autre piste ; B d'une comparaison : index de A s'il existe dans B, sinon première piste de B avec avertissement,
-``compare_track`` explicite strict.
+autre piste ; comparaison : chaque côté prend sa première piste vidéo par défaut, ``track`` (A) et ``compare_track``
+(B) explicites stricts.
 """
 
 from __future__ import annotations
@@ -107,21 +107,24 @@ def _compare(tmp_path: Path, sink: ListSink, **request: Any):
                                          **request}, _ctx(tmp_path, sink))
 
 
-def test_compare_b_without_a_index_takes_first_track_with_warning(tmp_path):
-    _Inspector.tracks = {"a.mkv": (0, 1), "b.mkv": (0,)}
+def test_compare_defaults_to_the_first_video_track_of_each_side(tmp_path):
+    """Choix de l'utilisateur : sans option, A et B prennent chacun leur première piste vidéo (jamais l'index de A)."""
+    _Inspector.tracks = {"a.mkv": (0, 1), "b.mkv": (3, 4, 5)}
     sink = ListSink()
-    result: Any = _compare(tmp_path, sink, track=1)
-    assert [side["source"]["stream_index"] for side in result.hdr] == [1, 0]
-    assert any(event.type.value == "warning" and "#1" in str(event.data) for event in sink.events)
-
-
-def test_compare_b_keeps_a_index_when_present(tmp_path):
-    """Non-régression : l'index de A présent dans B reste comparé, sans avertissement."""
-    _Inspector.tracks = {"a.mkv": (0, 1), "b.mkv": (0, 1, 2)}
-    sink = ListSink()
-    result: Any = _compare(tmp_path, sink, track=1)
-    assert [side["source"]["stream_index"] for side in result.hdr] == [1, 1]
+    result: Any = _compare(tmp_path, sink)
+    assert [side["source"]["stream_index"] for side in result.hdr] == [0, 3]
+    result = _compare(tmp_path, sink, track=1)
+    assert [side["source"]["stream_index"] for side in result.hdr] == [1, 3]  # --hdr-track ne vise que A
     assert not any(event.type.value == "warning" for event in sink.events)
+
+
+def test_each_side_of_a_comparison_can_pick_its_video_track(tmp_path):
+    _Inspector.tracks = {"a.mkv": (0, 1), "b.mkv": (0, 1, 2)}
+    result: Any = _compare(tmp_path, ListSink(), track=1, compare_track=2)
+    assert [side["source"]["stream_index"] for side in result.hdr] == [1, 2]
+    with pytest.raises(ApiError) as caught:
+        _compare(tmp_path, ListSink(), track=5)  # piste de A absente : refus, jamais une autre
+    assert caught.value.code is ErrorCode.INVALID_REQUEST
 
 
 def test_explicit_compare_track_missing_refused_before_analysing_a(tmp_path):
@@ -179,12 +182,11 @@ def test_snapshot_index_survives_json_report(tmp_path):
     assert dataclasses.is_dataclass(build_snapshot(info, 3))
 
 
-def test_compare_default_uses_a_first_index_when_b_has_it(tmp_path):
-    """Sans piste demandée : B comparée sur l'index de la première piste vidéo de A s'il existe dans B."""
+def test_compare_default_never_follows_the_index_of_a(tmp_path):
+    """Sans piste demandée : B comparée sur sa première piste vidéo, même si l'index de A existe dans B."""
     _Inspector.tracks = {"a.mkv": (1,), "b.mkv": (0, 1)}
-    sink = ListSink()
-    result: Any = _compare(tmp_path, sink)
-    assert [side["source"]["stream_index"] for side in result.hdr] == [1, 1]
+    result: Any = _compare(tmp_path, ListSink())
+    assert [side["source"]["stream_index"] for side in result.hdr] == [1, 0]
 
 
 def test_cli_compare_track_without_compare_is_refused(tmp_path, monkeypatch):

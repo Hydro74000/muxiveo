@@ -85,13 +85,13 @@ class HdrInspectRequest(Model):
     inputs: tuple[Path, ...] = field(min_items=1, description="Sources (deux avec compare : A puis B).")
     level: Literal["static", "dynamic", "measure"] | None = field(
         default=None, description="static : en-têtes ; dynamic : + RPU / HDR10+ (défaut) ; measure : + image.")
-    track: int | None = field(default=None, description="Index ffprobe de la piste vidéo (défaut : première) ; "
-                                                        "absent du fichier → refus.")
+    track: int | None = field(default=None, description="Index ffprobe de la piste vidéo de A, et de chaque source "
+                                                        "hors comparaison (défaut : première) ; absent → refus.")
     report: Path | None = field(default=None, description="Rapport : HTML (.html) ou JSON (autre extension).")
     compare: bool = field(default=False, description="Comparer B à A.")
     compare_track: int | None = field(
-        default=None, description="Avec compare : piste vidéo de B (index ffprobe ; absent → refus). Défaut : index "
-                                  "de A s'il existe dans B, sinon première piste vidéo de B (avertissement).")
+        default=None, description="Avec compare : index ffprobe de la piste vidéo de B (défaut : première piste vidéo "
+                                  "de B) ; absent → refus.")
     offset: int | None = field(default=None, description="Décalage de B en images (défaut : alignement auto).")
     fail_on: Literal["warn", "error"] | None = field(
         default=None, description="Signaler (fail_on_triggered) un contrôle atteignant ce niveau.")
@@ -497,7 +497,7 @@ def _inspect_sides(request: HdrInspectRequest, ctx: ExecutionContext, inputs: li
         if not info.video_tracks:
             raise JobError(f"Aucune piste vidéo : {path}", EXIT_ARGS)
         infos.append(info)
-    tracks = resolve_tracks(request, infos, logger)
+    tracks = resolve_tracks(request, infos)
     for side_index, (path, info, track) in enumerate(zip(inputs, infos, tracks)):
         report = snapshot_report(info, track)
         snapshot = report.snapshot
@@ -541,26 +541,14 @@ def _inspect_sides(request: HdrInspectRequest, ctx: ExecutionContext, inputs: li
     return moments
 
 
-def resolve_tracks(request: HdrInspectRequest, infos: list[Any], logger: EmitterLogger) -> list[int]:
-    """Piste vidéo de chaque source (index ffprobe). ``track`` : piste de A (et de chaque source hors
-    comparaison), stricte ; B d'une comparaison : ``compare_track`` stricte, sinon l'index de A s'il existe dans B,
-    sinon la première piste vidéo de B (avertissement). Index absent → ``invalid_request``."""
+def resolve_tracks(request: HdrInspectRequest, infos: list[Any]) -> list[int]:
+    """Piste vidéo de chaque source (index ffprobe), stricte. ``track`` : piste de A (et de chaque source hors
+    comparaison) ; B d'une comparaison : ``compare_track``. Sans choix, chaque côté prend sa première piste vidéo.
+    Index absent → ``invalid_request``."""
     try:
-        first = video_track(infos[0], request.track).index
-        tracks = [first]
-        for info in infos[1:]:
-            if not request.compare:
-                tracks.append(video_track(info, request.track).index)
-            elif request.compare_track is not None:
-                tracks.append(video_track(info, request.compare_track).index)
-            elif any(item.index == first for item in info.video_tracks):
-                tracks.append(first)  # index retenu pour A (demandé ou première piste vidéo)
-            else:
-                chosen = video_track(info).index
-                logger.emit("warning", translate_text(
-                    "Piste vidéo #{index} absente de B ({name}) : première piste vidéo de B (#{chosen}) comparée "
-                    "(--hdr-compare-track pour la choisir).", index=first, name=Path(info.path).name, chosen=chosen))
-                tracks.append(chosen)
+        tracks = [video_track(infos[0], request.track).index]
+        wanted = request.compare_track if request.compare else request.track
+        tracks += [video_track(info, wanted).index for info in infos[1:]]
     except TrackNotFoundError as exc:
         raise ApiError(ErrorCode.INVALID_REQUEST, str(exc)) from exc
     return tracks

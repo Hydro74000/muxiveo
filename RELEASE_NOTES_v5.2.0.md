@@ -97,7 +97,7 @@
 * **Redémarrage proposé après un changement d'échelle ou la relance du setup** : la nouvelle instance n'est lancée qu'après l'accord de fermeture (opération en cours comprise), puis l'instance courante se ferme (après le setup, elle restait ouverte).
 * **Paramètres : message d'état** : un second enregistrement ou un changement de langue réaffichait le premier message de la session.
 * **Fichiers annexes** : un rapport HDR, des moments FEL, une calibration, un gabarit `--save`, un résumé `--summary`, un export Hybrid ou un NFO ne sont jamais écrits sur un fichier lu ou produit par la même commande ; le conflit est refusé avant le premier job. NFO écrit de façon atomique.
-* **HDR Studio, `inspect --hdr`, `hdr-patch`** : une piste vidéo absente est refusée avant toute analyse. Comparaison en CLI (`inspect --hdr --hdr-compare`) : la piste B prend l'index de A s'il existe, sinon sa première piste vidéo, avec un avertissement (`--hdr-compare-track` pour la choisir).
+* **HDR Studio, `inspect --hdr`, `hdr-patch`** : une piste vidéo absente est refusée avant toute analyse. Comparaison en CLI (`inspect --hdr --hdr-compare`) : A et B prennent chacun leur première piste vidéo par défaut ; `--hdr-track` (A) et `--hdr-compare-track` (B) en choisissent une autre par son index FFprobe (index absent : refus).
 * **Cache du HDR Studio** : une entrée tronquée ou incohérente est ignorée au lieu de fausser une analyse.
 * **Nombre d'images vérifié** : le HDR10+ recalculé, les corrections image par image et le HDR10+ généré n'utilisent qu'un comptage exact ; un écart de longueur est refusé ; le rapport indique l'état du comptage.
 * **HDR Studio** : une inspection en cours s'annule aussitôt ; la piste B reste figée pendant l'inspection d'un nouveau fichier B.
@@ -206,7 +206,7 @@
 * **Restart offered after a scale change or a setup rerun**: the new instance is only started once closing is accepted (running operation included), then the current instance closes (after setup, it stayed open).
 * **Settings: status message**: a second save or a language change displayed the session's first message again.
 * **Side files**: an HDR report, FEL moments, a calibration, a `--save` template, a `--summary`, a Hybrid export or an NFO is never written over a file read or produced by the same command; the conflict is refused before the first job. NFO written atomically.
-* **HDR Studio, `inspect --hdr`, `hdr-patch`**: a missing video track is refused before any analysis. CLI comparison (`inspect --hdr --hdr-compare`): track B uses the index of A when it exists, otherwise its first video track, with a warning (`--hdr-compare-track` to pick it).
+* **HDR Studio, `inspect --hdr`, `hdr-patch`**: a missing video track is refused before any analysis. CLI comparison (`inspect --hdr --hdr-compare`): A and B each use their first video track by default; `--hdr-track` (A) and `--hdr-compare-track` (B) pick another one by its FFprobe index (missing index: refused).
 * **HDR Studio cache**: a truncated or inconsistent entry is ignored instead of skewing an analysis.
 * **Verified frame count**: recomputed HDR10+, per-frame corrections and generated HDR10+ only use an exact count; a length mismatch is refused; the report states the count status.
 * **HDR Studio**: a running inspection cancels at once; track B stays frozen while a new file B is inspected.

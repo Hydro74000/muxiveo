@@ -10403,14 +10403,6 @@
     "fra": "Importer un preset depuis un fichier JSON.",
     "eng": "Import a preset from a JSON file."
   },
-  "Index ffprobe de la piste vidéo (défaut : première piste vidéo ; index absent → refus).": {
-    "fra": "Index ffprobe de la piste vidéo (défaut : première piste vidéo ; index absent → refus).",
-    "eng": "ffprobe index of the video track (default: first video track; missing index → refused)."
-  },
-  "Avec --hdr-compare : piste vidéo de B (défaut : index de A s'il existe dans B, sinon première piste vidéo de B).": {
-    "fra": "Avec --hdr-compare : piste vidéo de B (défaut : index de A s'il existe dans B, sinon première piste vidéo de B).",
-    "eng": "With --hdr-compare: video track of B (default: A's index if B has it, otherwise B's first video track)."
-  },
   "Index ffprobe de la piste vidéo (défaut : première ; index absent → refus).": {
     "fra": "Index ffprobe de la piste vidéo (défaut : première ; index absent → refus).",
     "eng": "ffprobe index of the video track (default: first; missing index → refused)."
@@ -12103,10 +12095,6 @@
     "fra": "Chargement de la cover TMDB…",
     "eng": "Loading the TMDB cover…"
   },
-  "Piste vidéo #{index} absente de B ({name}) : première piste vidéo de B (#{chosen}) comparée (--hdr-compare-track pour la choisir).": {
-    "fra": "Piste vidéo #{index} absente de B ({name}) : première piste vidéo de B (#{chosen}) comparée (--hdr-compare-track pour la choisir).",
-    "eng": "Video track #{index} not found in B ({name}): B's first video track (#{chosen}) compared (--hdr-compare-track to choose it)."
-  },
   "Test de survie annulé.": {
     "fra": "Test de survie annulé.",
     "eng": "Survival test cancelled."
@@ -12254,5 +12242,13 @@
   "non compté": {
     "fra": "non compté",
     "eng": "not counted"
+  },
+  "Index ffprobe de la piste vidéo de A, et de chaque source hors comparaison (défaut : première piste vidéo ; index absent → refus).": {
+    "fra": "Index ffprobe de la piste vidéo de A, et de chaque source hors comparaison (défaut : première piste vidéo ; index absent → refus).",
+    "eng": "FFprobe index of the video track of A, and of every source outside a comparison (default: first video track; missing index → refused)."
+  },
+  "Avec --hdr-compare : index ffprobe de la piste vidéo de B (défaut : première piste vidéo de B ; index absent → refus).": {
+    "fra": "Avec --hdr-compare : index ffprobe de la piste vidéo de B (défaut : première piste vidéo de B ; index absent → refus).",
+    "eng": "With --hdr-compare: FFprobe index of the video track of B (default: first video track of B; missing index → refused)."
   }
 }

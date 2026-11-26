@@ -1266,7 +1266,8 @@ Mêmes analyses que le HDR Studio de l'interface, sortie JSON (`{"hdr": [...], "
 | `--hdr static` | en-têtes seuls (MDCV, MaxCLL/MaxFALL, enregistrement Dolby Vision), instantané |
 | `--hdr dynamic` | + RPU Dolby Vision et HDR10+ lus en entier (sans décodage), contrôles de cohérence |
 | `--hdr measure` | + mesure de chaque image (extension mvo-fel ≥ 0.4.0) : MaxCLL/MaxFALL réels |
-| `--hdr-track N` | index ffprobe de la piste vidéo (défaut : première) |
+| `--hdr-track N` | index ffprobe de la piste vidéo de A, et de chaque source hors comparaison (défaut : première piste vidéo ; index absent → refus) |
+| `--hdr-compare-track N` | avec `--hdr-compare` : index ffprobe de la piste vidéo de B (défaut : première piste vidéo de B ; index absent → refus) |
 | `--hdr-report fichier` | rapport HTML autonome (`.html`) ou JSON (autre extension) |
 | `--hdr-compare` | compare la seconde source à la première (alignement automatique sur les plans) |
 | `--hdr-offset N` | décalage imposé de B, en images |
