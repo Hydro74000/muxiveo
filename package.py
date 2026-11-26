@@ -3099,22 +3099,36 @@ def _dl_windows_nvencc(tools_dir: Path) -> None:
     _ok("NVEncC64.exe et dépendances installés dans tools/")
 
 
-def bundle_windows_licenses(bundle_dir: Path) -> None:
-    """Copie LICENSE, NOTICE, SOURCES.md et le dossier LICENSES/ dans le bundle Windows."""
+def _bundle_license_files(dest: Path, *, txt_copies: bool) -> None:
+    """Copie LICENSE, NOTICE, SOURCES.md et le dossier LICENSES/ dans ``dest`` (``txt_copies`` : doublons
+    ``.txt`` lisibles sous Windows)."""
     for fname in ("LICENSE", "NOTICE", "SOURCES.md"):
         src = ROOT / fname
         if src.is_file():
-            shutil.copy2(src, bundle_dir / fname)
-            if not fname.endswith(".txt") and not fname.endswith(".md"):
-                shutil.copy2(src, bundle_dir / f"{fname}.txt")
+            shutil.copy2(src, dest / fname)
+            if txt_copies and not fname.endswith(".txt") and not fname.endswith(".md"):
+                shutil.copy2(src, dest / f"{fname}.txt")
 
     licenses_src = ROOT / "LICENSES"
     if licenses_src.is_dir():
-        licenses_dest = bundle_dir / "LICENSES"
+        licenses_dest = dest / "LICENSES"
         if licenses_dest.exists():
             shutil.rmtree(licenses_dest)
         shutil.copytree(licenses_src, licenses_dest)
-    _ok(f"Fichiers de licence embarqués dans {bundle_dir}")
+    _ok(f"Fichiers de licence embarqués dans {dest}")
+
+
+def bundle_windows_licenses(bundle_dir: Path) -> None:
+    """Copie LICENSE, NOTICE, SOURCES.md et le dossier LICENSES/ dans le bundle Windows."""
+    _bundle_license_files(bundle_dir, txt_copies=True)
+
+
+def bundle_macos_licenses(app_path: Path) -> None:
+    """Copie LICENSE, NOTICE, SOURCES.md et LICENSES/ dans ``Contents/Resources`` du bundle macOS (avant la
+    signature : un ajout ensuite invaliderait le sceau)."""
+    resources = app_path / "Contents" / "Resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    _bundle_license_files(resources, txt_copies=False)
 
 
 def bundle_windows_tools(bundle_dir: Path, nvencc: bool = True) -> Path:
@@ -3582,9 +3596,10 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
         shutil.copy2(icns_path, resources / "icon.icns")
 
     _patch_macos_info_plist(app_final, version_tag=version_tag)
-    # Inventaire Python du build (tools-manifest.json) avant la signature : un ajout ensuite l'invaliderait.
+    # Licences et inventaire Python du build (tools-manifest.json) avant la signature : un ajout ensuite
+    # l'invaliderait.
+    bundle_macos_licenses(app_final)
     resources = app_final / "Contents" / "Resources"
-    resources.mkdir(parents=True, exist_ok=True)
     TOOL_MANIFEST.write(resources)
     _sign_macos_bundle(app_final)
     _verify_macos_bundle(app_final)

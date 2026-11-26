@@ -48,9 +48,10 @@ distribution, but their source code is publicly available:
 | MediaInfo CLI | https://github.com/MediaArea/MediaInfo | Media analysis engine (BSD-2-Clause) |
 | curl / libcurl | https://github.com/curl/curl | Network library bundled with MediaInfo Windows CLI (curl/MIT) |
 | NVEncC | https://github.com/rigaya/NVEnc | Hardware encoder (MIT, contains NVIDIA and LGPL libplacebo/FFmpeg components) |
-| muxiveo-rife | `native/muxiveo-rife/` in this repository | RIFE frame interpolation (MIT), derived from https://github.com/nihui/rife-ncnn-vulkan and https://github.com/TNTwise/rife-ncnn-vulkan (MIT) — see `native/muxiveo-rife/UPSTREAM.md` |
+| muxiveo-rife | https://github.com/Hydro74000/muxiveo-plugins (`mvo-rife/`) | RIFE frame interpolation and MVO-R2 denoising engine (MIT), derived from https://github.com/nihui/rife-ncnn-vulkan and https://github.com/TNTwise/rife-ncnn-vulkan (MIT) — see `mvo-rife/UPSTREAM.md` in that repository |
 | ncnn | https://github.com/Tencent/ncnn | Neural network inference library statically linked into muxiveo-rife (BSD-3-Clause) |
-| RIFE models | https://github.com/hzwer/Practical-RIFE | Model weights bundled with muxiveo-rife (MIT), pinned in `native/muxiveo-rife/models.json` |
+| RIFE models | https://github.com/hzwer/Practical-RIFE | Model weights bundled with muxiveo-rife (MIT), pinned in `mvo-rife/models.json` of https://github.com/Hydro74000/muxiveo-plugins ; `rife-v4.15-mvo1` (RIFE v4.15 weights fine-tuned by Muxiveo, MIT) from the `mvo-rife-models/` extension of the same repository |
+| MVO-R2 models | https://github.com/Hydro74000/muxiveo-plugins (`mvo-restore-models/`) | Denoising networks bundled with muxiveo-rife (MIT), pinned in `mvo-rife/restore_models.json` |
 | MoltenVK (macOS) | https://github.com/KhronosGroup/MoltenVK | Vulkan-on-Metal runtime shipped with muxiveo-rife on macOS (Apache-2.0) |
 
 ---

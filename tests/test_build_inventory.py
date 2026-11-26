@@ -139,3 +139,50 @@ def test_packaging_logs_the_declared_reason_of_a_rejected_version(monkeypatch, t
     monkeypatch.setattr(package_mod, "_run", lambda *a, **k: None)
     package_mod._ensure_pyinstaller()
     assert any("PySide6 : 6.12.0 excluded" in line and "deallocating None" in line for line in logged)
+
+
+def test_macos_bundle_ships_the_license_files_before_signing(tmp_path, monkeypatch):
+    """Plan v14, lot 13 : LICENSE, NOTICE, SOURCES.md et LICENSES/ dans ``Contents/Resources``, copiés avant la
+    signature (un ajout ensuite invaliderait le sceau)."""
+    import package as package_mod
+
+    root = tmp_path / "root"
+    (root / "LICENSES").mkdir(parents=True)
+    for name in ("LICENSE", "NOTICE", "SOURCES.md"):
+        (root / name).write_text(name, encoding="utf-8")
+    (root / "LICENSES" / "MIT.txt").write_text("MIT", encoding="utf-8")
+    monkeypatch.setattr(package_mod, "ROOT", root)
+    app = tmp_path / "Muxiveo.app"
+    package_mod.bundle_macos_licenses(app)
+    resources = app / "Contents" / "Resources"
+    assert _check_module().license_errors(resources) == []
+    assert not (resources / "LICENSE.txt").exists()  # doublons .txt réservés à Windows
+    source = Path(package_mod.__file__).read_text(encoding="utf-8")
+    body = source.split("def build_macos(", 1)[1].split("\ndef ", 1)[0]
+    assert body.index("bundle_macos_licenses(app_final)") < body.index("_sign_macos_bundle(app_final)")
+
+
+def test_license_check_reports_every_missing_file(tmp_path):
+    check = _check_module()
+    errors = check.license_errors(tmp_path)
+    assert len(errors) == 4 and any("LICENSES" in error for error in errors)
+
+
+def test_release_workflow_is_read_only_except_the_publishing_jobs():
+    """Plan v14, lot 13 : ``contents: read`` par défaut, ``write`` sur les seuls jobs ``release`` et tap Homebrew ;
+    contrôle des licences du DMG livré."""
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    text = (root / "release.yml").read_text(encoding="utf-8")
+    assert "\npermissions:\n  contents: read\n" in text
+    writers: list[str] = []
+    job = None
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+            job = line.strip()[:-1]
+        if line.strip() == "contents: write":
+            assert lines[index - 1].strip() == "permissions:" and lines[index - 1].startswith("    ")
+            writers.append(job or "")
+    assert writers == ["release", "publish-homebrew-tap"]
+    assert '--licenses "$mount/Muxiveo.app/Contents/Resources"' in text
+    assert "\npermissions:\n  contents: read\n" in (root / "ci-unit-all.yml").read_text(encoding="utf-8")

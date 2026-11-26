@@ -130,6 +130,19 @@ def manifest_inventory_errors(manifest: Path) -> list[str]:
         return [f"{manifest.name} illisible ({exc})"]
 
 
+#: Fichiers de licence livrés avec chaque artefact (bundle macOS : ``Contents/Resources``).
+_LICENSE_FILES = ("LICENSE", "NOTICE", "SOURCES.md")
+
+
+def license_errors(directory: Path) -> list[str]:
+    """LICENSE, NOTICE, SOURCES.md et un dossier LICENSES/ non vide présents dans ``directory``."""
+    errors = [f"{name} absent" for name in _LICENSE_FILES if not (directory / name).is_file()]
+    licenses = directory / "LICENSES"
+    if not licenses.is_dir() or not any(path.is_file() for path in licenses.rglob("*")):
+        errors.append("LICENSES/ absent ou vide")
+    return errors
+
+
 def nvencc_errors(package_name: str, dest: Path) -> list[str]:
     """Anomalies NVEncC de la variante : embarqué dans l'AllInc, absent (marqueur posé) dans l'AllInc NoVidia."""
     novidia = "novidia" in package_name.lower()
@@ -212,8 +225,16 @@ def main() -> int:
                         help="tools-manifest.json d'un artefact déjà monté (DMG macOS) : inventaire Python seul.")
     parser.add_argument("--inventory-only", action="store_true",
                         help="Paquets sans outils embarqués (installeur standard) : inventaire Python seul.")
+    parser.add_argument("--licenses", type=Path, action="append", default=[],
+                        help="Dossier d'un artefact monté (Contents/Resources du DMG) : fichiers de licence.")
     args = parser.parse_args()
     failed = False
+    for directory in args.licenses:
+        print(f"{directory} (licences) :")
+        errors = license_errors(directory)
+        for error in errors:
+            print(f"::error::{directory} : {error}")
+        failed |= bool(errors)
     for manifest in args.manifest:
         print(f"{manifest} :")
         errors = manifest_inventory_errors(manifest)

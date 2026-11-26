@@ -8,6 +8,9 @@ on:
   workflow_call:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Ruff + Mypy

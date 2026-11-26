@@ -17,8 +17,9 @@ on:
       - main
   workflow_dispatch:
 
+# Lecture seule par défaut ; écriture accordée aux seuls jobs qui publient (release, tap Homebrew).
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -414,7 +415,7 @@ jobs:
         run: |
           python package.py --dmg --version "$PACKAGE_VERSION"
 
-      - name: Check the Python inventory of the delivered DMG
+      - name: Check the Python inventory and the licenses of the delivered DMG
         shell: bash
         env:
           VERSION: ${{ needs.release-metadata.outputs.package_version }}
@@ -423,7 +424,8 @@ jobs:
           mount="$(mktemp -d)"
           hdiutil attach "dist/releases/Muxiveo-${VERSION}.dmg" -nobrowse -readonly -mountpoint "$mount"
           trap 'hdiutil detach "$mount" -quiet || true' EXIT
-          python scripts/check_allinc_rife.py --manifest "$mount/Muxiveo.app/Contents/Resources/tools-manifest.json"
+          python scripts/check_allinc_rife.py --manifest "$mount/Muxiveo.app/Contents/Resources/tools-manifest.json" \
+            --licenses "$mount/Muxiveo.app/Contents/Resources"
 
       - name: Collect macOS assets
         shell: bash
@@ -556,6 +558,8 @@ jobs:
   release:
     name: Create or update GitHub Release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # Canal build (branche quelconque, lancement manuel) : aucun tag ni release.
     if: ${{ always() && needs.release-metadata.result == 'success' && needs.release-metadata.outputs.publish == 'true' && needs.plugins-state.result == 'success' && needs.unit-tests.result == 'success' && needs.media-regressions.result == 'success' && needs.update-process.result == 'success' && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success' && (needs.homebrew-formula.result == 'success' || needs.homebrew-formula.result == 'skipped') }}
     needs:
@@ -829,6 +833,8 @@ jobs:
   publish-homebrew-tap:
     name: Publish Homebrew tap
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs:
       - release-metadata
       - release
