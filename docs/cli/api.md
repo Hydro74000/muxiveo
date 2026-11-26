@@ -201,6 +201,13 @@ Vaut pour les médias (remux, encodage, extraction, `hdr.patch`) et les document
 un nom libre (`-1`, `-2`…). Remplacés sans condition, comme annoncé : `sync.scan` (`output_json`),
 `hybrid.plan` (`save_recipe`), `hybrid.run` (`report_json`), rapports et moments FEL d'`hdr.inspect`.
 
+**Comptes rendus de mise à jour.** `app.update_install` rend dans `previous` les comptes rendus non signalés des
+mises à jour **de cette installation** (deux installations dans un même dossier ne se mêlent jamais). Ils ne sont
+marqués signalés qu'une fois le résultat écrit et confirmé : réponse vidée sur stdout (`call`, `--log-format events`),
+journal vidé sur stderr (`version --install` en `text` / `jsonl`), trame `job.event` du résultat vidée (`serve` ;
+trame remplacée par `event_too_large`, client parti ou rupture : non marqués). Sinon ils sont rendus de nouveau au
+prochain appel, même si le dossier de travail a été supprimé entre-temps (journal par installation).
+
 **Nombre d'images d'une mesure.** Une mesure complète de l'image (`hdr.inspect` niveaux `dynamic` /
 `measure`, `hdr.patch`) est comparée au compte de la piste : compte de l'inspection absent ou différent → compte
 exact des paquets (une lecture de la piste, annulable) ; écart confirmé → mesure écartée du cache, ou refusée si

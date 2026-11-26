@@ -47,6 +47,9 @@ class Event:
     ts: str
     data: Mapping[str, Any] = field(default_factory=dict)
     parent: str | None = None
+    #: Résultat : rappel à exécuter par le transport **après** l'écriture confirmée de cet événement (``serve`` :
+    #: trame vidée) ; jamais sérialisé.
+    on_written: Callable[[], None] | None = field(default=None, compare=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {"v": EVENT_VERSION, "job": self.job, "parent": self.parent, "seq": self.seq,
@@ -127,11 +130,11 @@ class Emitter:
         self._queue: collections.deque[Event] = collections.deque()
         self._delivering = False
 
-    def emit(self, event_type: EventType, /, **data: Any) -> None:
+    def emit(self, event_type: EventType, /, *, _on_written: Callable[[], None] | None = None, **data: Any) -> None:
         """Publie un événement ; livré aussitôt, sauf livraison en cours de ce job (dans ce fil ou un autre) :
         l'événement suit alors les précédents, livré par le fil qui livre."""
         with self._lock:
-            self._queue.append(Event(event_type, self.job, next(self._seq), _now(), data, self.parent))
+            self._queue.append(Event(event_type, self.job, next(self._seq), _now(), data, self.parent, _on_written))
             if self._delivering:
                 return
             self._delivering = True
@@ -183,8 +186,9 @@ class Emitter:
     def artifact(self, kind: str, path: str, **fields: Any) -> None:
         self.emit(EventType.ARTIFACT, kind=kind, path=path, **fields)
 
-    def result(self, result: Mapping[str, Any]) -> None:
-        self.emit(EventType.RESULT, result=dict(result))
+    def result(self, result: Mapping[str, Any], *, on_written: Callable[[], None] | None = None) -> None:
+        """Résultat ; ``on_written`` : rappel du transport après son écriture confirmée (``Event.on_written``)."""
+        self.emit(EventType.RESULT, _on_written=on_written, result=dict(result))
 
     def error(self, error: Mapping[str, Any]) -> None:
         self.emit(EventType.ERROR, error=dict(error))

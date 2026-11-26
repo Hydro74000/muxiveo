@@ -65,14 +65,16 @@ class _Output:
         self._stream = stream
         self._on_gone = on_gone
         self._limit = limit
-        self._queue: collections.deque[bytes] = collections.deque()
+        self._queue: collections.deque[tuple[bytes, Callable[[], None] | None]] = collections.deque()
         self._queued = 0
         self._busy = False
         self._gone = False
         self._cond = threading.Condition()
         threading.Thread(target=self._write_loop, name="serve-writer", daemon=True).start()
 
-    def send(self, frame: bytes) -> None:
+    def send(self, frame: bytes, on_written: Callable[[], None] | None = None) -> None:
+        """``on_written`` : exécuté par le fil d'écriture après ``flush`` réussi de cette trame (jamais si elle est
+        abandonnée : client parti, file pleine, rupture)."""
         with self._cond:
             if self._gone:
                 return
@@ -81,7 +83,7 @@ class _Output:
                 self._queue.clear()
                 gone = True
             else:
-                self._queue.append(frame)
+                self._queue.append((frame, on_written))
                 self._queued += len(frame)
                 self._cond.notify()
                 gone = False
@@ -99,7 +101,7 @@ class _Output:
                 self._cond.wait_for(lambda: bool(self._queue) or self._gone)
                 if self._gone:
                     return
-                frame = self._queue.popleft()
+                frame, on_written = self._queue.popleft()
                 self._queued -= len(frame)
                 self._busy = True
             try:
@@ -113,6 +115,11 @@ class _Output:
                     self._cond.notify_all()
                 self._on_gone()
                 return
+            if on_written is not None:
+                try:
+                    on_written()
+                except Exception:  # noqa: BLE001 — trame déjà écrite : jamais d'arrêt de l'écrivain
+                    pass
             with self._cond:
                 self._busy = False
                 self._cond.notify_all()
@@ -143,14 +150,17 @@ class Server:
 
     # -- Sortie -----------------------------------------------------------------------------------------------
 
-    def _send(self, message: dict[str, Any], *, too_large: Callable[[int], dict[str, Any]]) -> None:
-        """Toute trame sortante ≤ :data:`MAX_FRAME` : sinon remplacée (``too_large``), remplacement compris."""
+    def _send(self, message: dict[str, Any], *, too_large: Callable[[int], dict[str, Any]],
+              on_written: Callable[[], None] | None = None) -> None:
+        """Toute trame sortante ≤ :data:`MAX_FRAME` : sinon remplacée (``too_large``), remplacement compris ;
+        ``on_written`` : rappel après écriture de **cette** trame (jamais pour un remplacement)."""
         frame = _encode(message)
         if len(frame) > MAX_FRAME:
             frame = _encode(too_large(len(frame)))
+            on_written = None
         if len(frame) > MAX_FRAME:  # filet : remplacements bornés par construction (id borné, textes coupés)
             frame = _encode(_error_message(None, INTERNAL_ERROR, "Trame trop volumineuse."))
-        self._out.send(frame)
+        self._out.send(frame, on_written)
 
     def respond(self, request_id: Any, result: Any) -> None:
         message = {"jsonrpc": "2.0", "id": request_id, "result": result}
@@ -181,7 +191,8 @@ class Server:
                 **envelope, "type": EventType.WARNING.value, "code": "event_too_large", "event_type": event.type.value,
                 "size": size, "message": f"Événement {event.type.value} trop volumineux ({size} octets) : non transmis."}}
 
-        self._send({"jsonrpc": "2.0", "method": "job.event", "params": payload}, too_large=replacement)
+        self._send({"jsonrpc": "2.0", "method": "job.event", "params": payload}, too_large=replacement,
+                   on_written=event.on_written)
         if event.type is EventType.RESULT and event.parent is None and event.data.get("result", {}).get(
                 "restart_required"):
             self.stop("update")  # mise à jour installée : le client relance le worker

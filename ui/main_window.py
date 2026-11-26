@@ -81,6 +81,7 @@ from core.update_install import (
     apply_update,
     can_self_update,
     collect_update_results,
+    mark_update_results_reported,
     start_update_cleanup,
     detect_install_kind,
     download_update,
@@ -3616,6 +3617,9 @@ class MainWindow(QMainWindow):
                 self.log_warn(translate_text(
                     "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup)."
                 ))
+        if results:
+            # Affichés dans le journal (et en fenêtre pour un échec) : seulement alors marqués signalés.
+            mark_update_results_reported(results)
 
     def _sync_update_settings(self) -> None:
         """Invalide les réponses et le badge dès que les préférences changent."""

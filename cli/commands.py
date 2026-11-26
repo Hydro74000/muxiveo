@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from typing import Any
 from pathlib import Path
 
 from core.config import AppConfig
@@ -119,13 +121,27 @@ def _install_update(args: argparse.Namespace, config: AppConfig, logger: Logger)
                                     cancel=cancel)
     if args.log_format == "events":
         print_json(envelope("app.update_install", ctx.events.job, result=result))
+        _confirm_written(ctx, sys.stdout)
         return EXIT_OK
     for entry in getattr(result, "previous", ()):
         level = "info" if entry.get("ok") else "warning"
         logger.emit(level, f"Mise à jour précédente ({entry.get('version', '?')}) : "
                            + ("réussie." if entry.get("ok") else str(entry.get("error") or "échec.")))
     logger.emit("info", str(getattr(result, "message", "")))
+    _confirm_written(ctx, getattr(logger, "stream", sys.stderr))  # journal text / jsonl : stderr
     return EXIT_OK
+
+
+def _confirm_written(ctx: Any, stream: Any) -> None:
+    """Résultat écrit sur ``stream`` : vidé, puis rappels de l'opération (comptes rendus signalés) ; vidage en
+    échec : rien n'est marqué (compte rendu repris au prochain appel)."""
+    try:
+        stream.flush()
+    except (OSError, ValueError):
+        return
+    confirm = getattr(ctx, "confirm_result_written", None)
+    if callable(confirm):
+        confirm()
 
 
 def _metadata_job_from_args(args: argparse.Namespace) -> dict:

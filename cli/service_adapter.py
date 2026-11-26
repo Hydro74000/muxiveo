@@ -195,6 +195,12 @@ def cmd_call(args: argparse.Namespace, config: Any, logger: Logger) -> int:
         print_json(envelope(name, ctx.events.job, error=error))
         return exit_code_for(error)
     print_json(envelope(name, ctx.events.job, result=result))
+    try:  # réponse écrite et vidée : rappels de l'opération (comptes rendus signalés), sinon rien n'est marqué
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        pass
+    else:
+        ctx.confirm_result_written()
     return exit_code_for_result(result)
 
 

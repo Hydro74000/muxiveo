@@ -172,7 +172,8 @@ def test_download_update_prepares_swap_workdir_and_cleans_on_failure(tmp_path, m
     info = _info("Muxiveo-99.0.0-source.tar.gz", "SHA256SUMS")
     work = download_update(info, InstallKind.SOURCE_ARCHIVE)
     assert work.parent == tmp_path and work.name.startswith(update_apply.WORKDIR_PREFIX)
-    assert (work / update_apply.WORKDIR_TAG).is_file()
+    assert (work / update_apply.WORKDIR_TAG_V2).is_file()  # transaction de cette installation (format courant)
+    assert update_apply.workdir_owner(work) == os.path.realpath(install)
     kind, archive, prepared_work, root, version, probe, relaunch, _bundle = calls[0]
     assert (kind, prepared_work, root, version) == (update_apply.KIND_SOURCE, work, install, "99.0.0")
     assert probe[-1].endswith("main.py") and update_apply.ROOT_TOKEN in probe[-1]
@@ -353,7 +354,7 @@ def test_cleanup_helper_is_isolated_and_detached(tmp_path, monkeypatch):
     try:
         assert command[1:3] == ["-I", str(work / "update_apply.py")]
         assert command[-2] == "cleanup" and cwd == work.parent
-        assert json.loads((work / update_apply.CLEANUP_FILE).read_text()) == [str(old)]
+        assert json.loads((work / update_apply.CLEANUP_FILE).read_text())["paths"] == [str(old)]
     finally:
         shutil.rmtree(work)
 

@@ -120,6 +120,22 @@ class ExecutionContext:
     base_dir: Path | None = None
     allow_privileged: bool = False
     protected_paths: tuple[Path, ...] = ()
+    #: Rappels exécutés une fois le résultat écrit et confirmé par le transport (comptes rendus marqués signalés
+    #: seulement alors) ; erreur, annulation ou écriture en échec : jamais appelés.
+    _result_written: list[Callable[[], None]] = field(default_factory=list, compare=False, repr=False)
+
+    def on_result_written(self, callback: Callable[[], None]) -> None:
+        """Rappel exécuté après l'écriture confirmée du résultat (CLI : sortie vidée ; ``serve`` : trame vidée)."""
+        self._result_written.append(callback)
+
+    def confirm_result_written(self) -> None:
+        """Appelé par l'adaptateur une fois le résultat écrit : rappels exécutés une fois (erreurs ignorées)."""
+        callbacks, self._result_written[:] = list(self._result_written), []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 — un rappel en échec n'invalide jamais le résultat déjà écrit
+                pass
 
     @classmethod
     def create(

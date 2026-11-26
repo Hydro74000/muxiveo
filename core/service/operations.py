@@ -179,7 +179,8 @@ def execute(spec: OperationSpec, request: Model, ctx: ExecutionContext, *,
     if before_terminal is not None:
         before_terminal(result, None)
     try:
-        ctx.events.result(result.to_dict())
+        # ``serve`` : rappels exécutés par le fil d'écriture après le vidage de cette trame.
+        ctx.events.result(result.to_dict(), on_written=ctx.confirm_result_written)
     finally:  # état final toujours publié, même si la destination refuse le résultat
         ctx.events.state(result_state(result), operation=spec.name)
     return result

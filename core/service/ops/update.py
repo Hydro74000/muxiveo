@@ -41,7 +41,9 @@ class UpdateInstallResult(Model):
     current: str
     latest: str | None = None
     kind: str = ""
-    previous: tuple[dict[str, Any], ...] = field(default=(), description="Comptes rendus des mises à jour passées.")
+    previous: tuple[dict[str, Any], ...] = field(
+        default=(), description="Comptes rendus des mises à jour passées de cette installation, marqués signalés "
+                                "seulement une fois ce résultat écrit (sinon repris au prochain appel).")
     message: str = ""
     restart_required: bool = field(
         default=False, description="Vrai si installée ou programmée : l'application doit quitter (puis être relancée) "
@@ -58,6 +60,10 @@ def app_update_install(request: UpdateInstallRequest, ctx: ExecutionContext) -> 
 
     kind = ctx.port("install_kind", up.detect_install_kind)()
     previous = tuple(ctx.port("collect_update_results", up.collect_update_results)(kind))
+    if previous:
+        # Comptes rendus marqués signalés seulement une fois le résultat écrit et confirmé par le transport.
+        mark = ctx.port("mark_update_results_reported", up.mark_update_results_reported)
+        ctx.on_result_written(lambda: mark(list(previous), kind))
     channel = request.channel or str(getattr(ctx.config, "update_channel", "stable") or "stable")
     info = ctx.port("query_latest_release", query_latest_release)(channel)
     if info is None:

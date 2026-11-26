@@ -346,7 +346,7 @@ def download_update(
     # Dossier de travail à côté de l'installation : même système de fichiers, échange par simple renommage.
     work = Path(tempfile.mkdtemp(prefix=update_apply.WORKDIR_PREFIX, dir=root.parent))
     try:
-        (work / update_apply.WORKDIR_TAG).touch()
+        update_apply.write_workdir_tag(work, root)  # transaction de cette installation (format courant)
         archive = download_asset(asset, work / asset.name, expected, progress, cancelled)
         if cancelled is not None and cancelled():
             raise UpdateInstallError("Téléchargement annulé.")
@@ -423,7 +423,9 @@ def start_update_cleanup(paths: list[Path], kind: InstallKind | None = None) -> 
     kind = detect_install_kind() if kind is None else kind
     work = Path(tempfile.mkdtemp(prefix=update_apply.CLEANUP_PREFIX))
     try:
-        (work / update_apply.CLEANUP_FILE).write_text(json.dumps([str(path.absolute()) for path in paths]), encoding="utf-8")
+        install = str(installation_root(kind)) if kind in _SWAP_KINDS else None
+        manifest = {"install": install, "paths": [str(path.absolute()) for path in paths]}
+        (work / update_apply.CLEANUP_FILE).write_text(json.dumps(manifest), encoding="utf-8")
         command = _helper_command(kind, work) + ["cleanup", str(work)]
         update_apply.spawn_detached(command, work.parent)
     except OSError:
@@ -432,15 +434,29 @@ def start_update_cleanup(paths: list[Path], kind: InstallKind | None = None) -> 
 
 
 def collect_update_results(kind: InstallKind | None = None, *, discard: list[Path] | None = None) -> list[dict]:
-    """Résultats des mises à jour par échange de dossiers (signalés une fois), ménage des dossiers de travail
-    (`discard` : dossiers à supprimer confiés à l'appelant, voir `update_apply.collect_results`)."""
+    """Comptes rendus non signalés des mises à jour par échange de dossiers **de cette installation**, ménage de
+    ses dossiers de travail (`discard` : dossiers à supprimer confiés à l'appelant, voir
+    `update_apply.collect_results`). À marquer signalés par :func:`mark_update_results_reported` une fois écrits."""
     kind = detect_install_kind() if kind is None else kind
     if kind not in _SWAP_KINDS:
         return []
     try:
-        return update_apply.collect_results(installation_root(kind).parent, discard=discard)
+        root = installation_root(kind)
+        return update_apply.collect_results(root.parent, discard=discard, install=root)
     except OSError:
         return []
+
+
+def mark_update_results_reported(results: list[dict], kind: InstallKind | None = None) -> None:
+    """Comptes rendus signalés (affichés, écrits et vidés) : jamais avant, sinon ils seraient perdus."""
+    kind = detect_install_kind() if kind is None else kind
+    if kind not in _SWAP_KINDS or not results:
+        return
+    try:
+        root = installation_root(kind)
+        update_apply.mark_reported(root.parent, root, [str(entry["id"]) for entry in results if entry.get("id")])
+    except OSError:
+        pass
 
 
 #: `apply_update` : AppImage remplacée tout de suite ; installeur ou échange de dossiers après la sortie.
