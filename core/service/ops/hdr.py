@@ -31,7 +31,9 @@ from core.hdr_inspection.compare import Side, compare
 from core.hdr_inspection.fel_analyzer import FelReport, verdict
 from core.hdr_inspection.measure import (
     FrameCheck,
+    FrameCountCheck,
     ImageMeasurement,
+    MeasurementError,
     frame_count_check,
     measure_track,
     packet_counter,
@@ -158,24 +160,42 @@ def dynamic_report(config: AppConfig, info, stream: int | None, cache: Inspectio
         owned.remove()
 
 
-def refuse_frame_mismatch(frame_check: FrameCheck, measurement: ImageMeasurement) -> None:
+def refuse_frame_mismatch(frame_check: FrameCheck, measurement: ImageMeasurement) -> ImageMeasurement:
     """Mesure neuve d'un autre nombre d'images que la piste (confirmé par le comptage exact) : refusée, jamais
-    mise en cache ni utilisée (statistiques décalées)."""
+    mise en cache ni utilisée (statistiques décalées). Renvoie la mesure annotée du compte exact obtenu."""
     try:
         problem = frame_check(measurement)
     except FelCancelled as exc:
         raise ApiError(ErrorCode.CANCELLED, "Opération annulée.") from exc
     if problem is not None:
         raise JobError(problem, EXIT_TOOL)
+    return frame_check.verified(measurement) if isinstance(frame_check, FrameCountCheck) else measurement
 
 
 def load_checked_measurement(cache: InspectionCache, snapshot: Any, frame_check: FrameCheck) -> ImageMeasurement | None:
     """Mesure en cache de la piste, écartée si son nombre d'images n'est pas celui de la piste ; comptage
-    exact annulé : ``ApiError(CANCELLED)``."""
+    exact annulé : ``ApiError(CANCELLED)``. Compte exact obtenu et égal : mémorisé dans l'entrée."""
     try:
-        return cache.load_measurement(Path(snapshot.path), snapshot.stream_index, check=frame_check)
+        measurement = cache.load_measurement(Path(snapshot.path), snapshot.stream_index, check=frame_check)
     except FelCancelled as exc:
         raise ApiError(ErrorCode.CANCELLED, "Opération annulée.") from exc
+    if measurement is not None and isinstance(frame_check, FrameCountCheck):
+        verified = frame_check.verified(measurement)
+        if verified is not measurement:
+            cache.store_measurement(Path(snapshot.path), snapshot.stream_index, verified)
+        measurement = verified
+    return measurement
+
+
+def require_verified_frames(frame_check: FrameCountCheck, measurement: ImageMeasurement) -> int:
+    """Écriture image par image (HDR10+ recalculé) : compte exact égal exigé ; écart ou compte illisible →
+    ``JobError`` (code outil), comptage annulé → ``ApiError(CANCELLED)``."""
+    try:
+        return frame_check.require_verified(measurement)
+    except FelCancelled as exc:
+        raise ApiError(ErrorCode.CANCELLED, "Opération annulée.") from exc
+    except MeasurementError as exc:
+        raise JobError(str(exc), EXIT_TOOL) from exc
 
 
 def measure_image(config: AppConfig, report: InspectionReport, threads: int, work_root: Path,
@@ -476,7 +496,9 @@ def _inspect_sides(request: HdrInspectRequest, ctx: ExecutionContext, inputs: li
     for side_index, (path, info, track) in enumerate(zip(inputs, infos, tracks)):
         report = snapshot_report(info, track)
         snapshot = report.snapshot
-        frame_check = frame_count_check(snapshot.frames if snapshot.frames_exact else None, packet_counter(
+        quick = snapshot.frames if snapshot.frames_exact else None
+        # Niveau static : aucun comptage (affichage, statut « non vérifié » au besoin).
+        frame_check = frame_count_check(quick, None if level == "static" else packet_counter(
             ctx.tool("ffprobe"), Path(snapshot.path), snapshot.stream_index, ctx.cancel.event))
         measurement = None if request.no_cache else load_checked_measurement(cache, snapshot, frame_check)
         if level in ("dynamic", "measure") and (snapshot.dovi is not None or snapshot.hdr10plus):
@@ -490,7 +512,7 @@ def _inspect_sides(request: HdrInspectRequest, ctx: ExecutionContext, inputs: li
             measurement = measure_image(config, report, threads, work_root, logger, fast=request.fast,
                                         cancel=ctx.cancel.event)
             ctx.cancel.raise_if_cancelled()
-            refuse_frame_mismatch(frame_check, measurement)
+            measurement = refuse_frame_mismatch(frame_check, measurement)
             cache.store_measurement(Path(snapshot.path), snapshot.stream_index, measurement)
         if measurement is not None:
             report = dataclasses.replace(report, findings=audit(report.snapshot, report.dovi, report.hdr10plus,

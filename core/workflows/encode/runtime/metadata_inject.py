@@ -777,6 +777,9 @@ class MetadataInjectRunner:
                         hdr10p_json=hdr10p_json if (outputs_hdr10plus(video) and hdr10p_json.exists()) else None,
                         known_encoded_frames=skeleton_result.blocks_written,
                         frame_ratio=frame_ratio,
+                        # HDR10+ généré (mesure ou L1) : compte source exact (paquets), jamais le raccourci
+                        # « métadonnées égales au flux encodé », qui suppose une extraction de la source.
+                        exact_source=generates_hdr10plus(video) and outputs_hdr10plus(video),
                     )
                     try:
                         # TRIM_TAIL : RPU / HDR10+ extraits du même fichier que

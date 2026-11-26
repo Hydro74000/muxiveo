@@ -162,14 +162,16 @@ def test_measurement_frame_count_mismatch_needs_exact_confirmation(tmp_path, fre
     assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(3))) is None
     assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(2))) is not None  # MediaInfo faux
     assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(None))) is not None  # illisible
-    assert cache.load_measurement(media, 0, check=frame_count_check(None, exact(3))) is not None  # inconnu
-    assert counts == ["exact"] * 3
+    # Compte de l'inspection inconnu : compte exact demandé (D2, lot 4), écart refusé.
+    assert cache.load_measurement(media, 0, check=frame_count_check(None, exact(3))) is None
+    assert cache.load_measurement(media, 0, check=frame_count_check(None, exact(2))) is not None
+    assert counts == ["exact"] * 5
     # Compte de l'inspection démenti (100 contre 101 exactes) : une mesure de 100 images reste refusée.
     check = frame_count_check(100, exact(101))
     assert check(read_measurement(write_statistics(tmp_path / "s99.jsonl", [100.0] * 99))) is not None
     assert check(read_measurement(write_statistics(tmp_path / "s100.jsonl", [100.0] * 100))) is not None
     assert check(read_measurement(write_statistics(tmp_path / "s101.jsonl", [100.0] * 101))) is None
-    assert counts == ["exact"] * 4  # compte exact fait une fois
+    assert counts == ["exact"] * 6  # compte exact fait une fois
 
     class Engine:
         def measure(self, path, stream, statistics_path, **_):

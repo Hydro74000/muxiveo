@@ -12,6 +12,7 @@ import threading
 from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,9 @@ class ImageMeasurement:
     #: Mesure rapide (images clés) : nombre d'images réellement mesurées, valeurs tenues jusqu'à l'image
     #: clé suivante ; 0 : mesure complète.
     sampled: int = 0
+    #: Compte exact des paquets de la piste, égal au nombre d'images mesurées, relevé quand il a été obtenu
+    #: (mémorisé par le cache : la clé lie taille et date du fichier) ; ``None`` : jamais vérifié.
+    verified_frames: int | None = None
 
     @property
     def is_estimate(self) -> bool:
@@ -160,26 +164,103 @@ def measured_frames_mismatch(measurement: ImageMeasurement, expected_frames: int
 FrameCheck = Callable[[ImageMeasurement], str | None]
 
 
-def frame_count_check(quick: int | None, exact: Callable[[], int | None] | None) -> FrameCheck:
-    """Contrôle du nombre d'images d'une mesure complète : motif d'un écart, sinon ``None``.
+class FrameStatus(str, Enum):
+    """Vérification du nombre d'images d'une mesure complète face à la piste."""
 
-    ``quick`` : compte de l'inspection (MediaInfo, plausible mais pas exact) ; un écart n'est retenu qu'après
-    confirmation par ``exact()`` (comptage des paquets, fait une fois). Compte inconnu ou illisible : accepté.
+    #: Compte exact (paquets de la piste) égal au nombre d'images mesurées.
+    VERIFIED = "verified"
+    #: Compte de l'inspection égal, non démenti (aucun comptage exact).
+    QUICK_MATCH = "quick_match"
+    #: Aucun compte, compte exact illisible, ou mesure par images clés (estimation).
+    UNVERIFIED = "unverified"
+
+
+def frames_status(measurement: ImageMeasurement, quick: int | None = None,
+                  exact: int | None = None) -> FrameStatus:
+    """Statut affiché d'une mesure, sans aucun comptage (``quick`` : compte de l'inspection, ``exact`` : compte
+    exact déjà connu)."""
+    if measurement.is_estimate:
+        return FrameStatus.UNVERIFIED
+    known = exact if exact is not None else measurement.verified_frames
+    if known is not None:
+        return FrameStatus.VERIFIED if known == measurement.frames else FrameStatus.UNVERIFIED
+    if quick is not None and quick == measurement.frames:
+        return FrameStatus.QUICK_MATCH
+    return FrameStatus.UNVERIFIED
+
+
+class FrameCountCheck:
+    """Règle unique du nombre d'images d'une mesure complète (HDR Studio, ``hdr.inspect``, ``hdr.patch``,
+    génération HDR10+).
+
+    ``quick`` : compte de l'inspection (MediaInfo validé, plausible mais pas exact) ; ``exact()`` : comptage des
+    paquets de la piste, fait une fois au plus (``None`` : illisible). Appelé sur une mesure : motif d'un écart
+    confirmé, sinon ``None`` — compte rapide absent ou différent → compte exact demandé ; compte exact illisible →
+    accepté (statut ``unverified``). Écriture par image : :meth:`require_verified`.
     """
-    counted: list[int | None] = []
 
-    def check(measurement: ImageMeasurement) -> str | None:
-        if measurement.is_estimate or exact is None:
+    def __init__(self, quick: int | None, exact: Callable[[], int | None] | None) -> None:
+        self.quick = quick
+        self._exact = exact
+        self._counted: list[int | None] = []
+
+    @property
+    def exact_known(self) -> int | None:
+        """Compte exact déjà obtenu (``None`` : jamais compté ou illisible)."""
+        return self._counted[0] if self._counted else None
+
+    def exact_frames(self) -> int | None:
+        """Compte exact de la piste (compté une fois au plus ; annulation propagée par le compteur)."""
+        if not self._counted:
+            self._counted.append(self._exact() if self._exact is not None else None)
+        return self._counted[0]
+
+    def __call__(self, measurement: ImageMeasurement) -> str | None:
+        if measurement.is_estimate:
             return None
+        if measurement.verified_frames is not None and not self._counted:
+            # Vérifiée lors d'un enregistrement précédent (même fichier : taille et date liées à la clé).
+            return measured_frames_mismatch(measurement, measurement.verified_frames)
         # Compte exact déjà obtenu : seule référence (une mesure égale au compte de l'inspection n'en est pas
         # plus juste quand ce compte a été démenti).
-        if not counted and (quick is None or measurement.frames == quick):
+        if not self._counted and self.quick is not None and measurement.frames == self.quick:
             return None
-        if not counted:
-            counted.append(exact())
-        return measured_frames_mismatch(measurement, counted[0])
+        return measured_frames_mismatch(measurement, self.exact_frames())
 
-    return check
+    def status(self, measurement: ImageMeasurement) -> FrameStatus:
+        """Statut sans comptage supplémentaire."""
+        return frames_status(measurement, self.quick, self.exact_known)
+
+    def require_verified(self, measurement: ImageMeasurement) -> int:
+        """Compte exact égal au nombre d'images de la mesure, exigé avant toute écriture image par image (HDR10+
+        recalculé) : compte obtenu au besoin ; écart, compte illisible ou estimation → :class:`MeasurementError`."""
+        if measurement.is_estimate:
+            raise MeasurementError(translate_text(
+                "Mesure par images clés : nombre d'images non vérifiable, mesure complète requise."))
+        if measurement.verified_frames is not None and measurement.verified_frames == measurement.frames \
+                and not self._counted:
+            return measurement.verified_frames
+        exact = self.exact_frames()
+        if exact is None:
+            raise MeasurementError(translate_text(
+                "Nombre d'images de la piste illisible (comptage des paquets) : écriture image par image refusée."))
+        problem = measured_frames_mismatch(measurement, exact)
+        if problem is not None:
+            raise MeasurementError(problem)
+        return exact
+
+    def verified(self, measurement: ImageMeasurement) -> ImageMeasurement:
+        """Mesure annotée du compte exact s'il a été obtenu et lui est égal (mémorisé par le cache)."""
+        exact = self.exact_known
+        if measurement.is_estimate or exact is None or exact != measurement.frames \
+                or measurement.verified_frames == exact:
+            return measurement
+        return dataclasses.replace(measurement, verified_frames=exact)
+
+
+def frame_count_check(quick: int | None, exact: Callable[[], int | None] | None) -> FrameCountCheck:
+    """:class:`FrameCountCheck` de la piste (``quick`` : compte de l'inspection, ``exact`` : compteur de paquets)."""
+    return FrameCountCheck(quick, exact)
 
 
 def packet_counter(ffprobe: str, path: Path, stream_index: int,

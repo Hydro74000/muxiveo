@@ -817,11 +817,9 @@ class NvenccDirectOutputRunner:
                         expected_hdr10plus = hdr10plus_json_frames(hdr10plus_json_path)
                         if expected_hdr10plus is None:
                             raise EncodeError("HDR10+ généré : JSON illisible, alignement des trames invérifiable.")
-                    generated_source_frames = generated_source_count()
-                    if (generated_source_frames is not None and expected_hdr10plus is not None
-                            and generated_source_frames != expected_hdr10plus):
-                        # Compte rapide contredit : recomptage exact avant de conclure (comme le RPU externe).
-                        generated_source_frames = generated_source_count(exact=True) or generated_source_frames
+                    # Compte exact (paquets de la piste, piste principale comprise), jamais le compte rapide : aucune
+                    # lecture de la source n'a compté le HDR10+ généré.
+                    generated_source_frames = generated_source_count(exact=True)
                     message = ""
                     if generated_source_frames is None:
                         message = translate_text(
@@ -999,10 +997,6 @@ class NvenccDirectOutputRunner:
                             ):
                                 cb.check_cancelled(signals)
                                 raise EncodeError(message)
-                        if (generated_source_frames is not None and encoded_frames is not None
-                                and generated_source_frames != encoded_frames):
-                            # Compte rapide de la source contredit par l'encodage : recomptage exact avant l'audit.
-                            generated_source_frames = generated_source_count(exact=True) or generated_source_frames
                     _apply_fel_hdr10plus(
                         video=runtime_video, intermediate=intermediate,
                         statistics_path=statistics_path if hdr10plus_recomputed(runtime_video) else None,

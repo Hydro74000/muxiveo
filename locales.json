@@ -12046,5 +12046,49 @@
   "Piste vidéo #{index} absente de {name} (pistes vidéo : {tracks}).": {
     "fra": "Piste vidéo #{index} absente de {name} (pistes vidéo : {tracks}).",
     "eng": "Video track #{index} not found in {name} (video tracks: {tracks})."
+  },
+  "Nombre d'images de la mesure vérifié au lancement de l'écriture (lecture de la piste).": {
+    "fra": "Nombre d'images de la mesure vérifié au lancement de l'écriture (lecture de la piste).",
+    "eng": "Frame count of the measurement verified when writing starts (track read)."
+  },
+  "Vérification du nombre d'images…": {
+    "fra": "Vérification du nombre d'images…",
+    "eng": "Checking the frame count…"
+  },
+  "Mesure par images clés : nombre d'images non vérifiable, mesure complète requise.": {
+    "fra": "Mesure par images clés : nombre d'images non vérifiable, mesure complète requise.",
+    "eng": "Keyframe measurement: frame count cannot be verified, full measurement required."
+  },
+  "Nombre d'images de la piste illisible (comptage des paquets) : écriture image par image refusée.": {
+    "fra": "Nombre d'images de la piste illisible (comptage des paquets) : écriture image par image refusée.",
+    "eng": "Track frame count unreadable (packet count): per-frame write refused."
+  },
+  "{tool} : {detail} — HDR10+ recalculé d'un autre nombre d'images que la vidéo, correction refusée.": {
+    "fra": "{tool} : {detail} — HDR10+ recalculé d'un autre nombre d'images que la vidéo, correction refusée.",
+    "eng": "{tool}: {detail} — recomputed HDR10+ has a different frame count than the video, correction refused."
+  },
+  "HDR10+ recalculé : {written} images pour {expected} dans la piste, correction refusée.": {
+    "fra": "HDR10+ recalculé : {written} images pour {expected} dans la piste, correction refusée.",
+    "eng": "Recomputed HDR10+: {written} frames for {expected} in the track, correction refused."
+  },
+  "nombre d'images non vérifié": {
+    "fra": "nombre d'images non vérifié",
+    "eng": "frame count not verified"
+  },
+  "vérifié (comptage des paquets de la piste)": {
+    "fra": "vérifié (comptage des paquets de la piste)",
+    "eng": "verified (track packet count)"
+  },
+  "concordant avec l'inspection (non compté)": {
+    "fra": "concordant avec l'inspection (non compté)",
+    "eng": "matches the inspection (not counted)"
+  },
+  "non vérifié": {
+    "fra": "non vérifié",
+    "eng": "not verified"
+  },
+  "Nombre d'images": {
+    "fra": "Nombre d'images",
+    "eng": "Frame count"
   }
 }

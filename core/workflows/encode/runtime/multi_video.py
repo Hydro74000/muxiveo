@@ -444,6 +444,8 @@ class MultiVideoPipelineRunner:
                     hdr10p_json=hdr10p_json if outputs_hdr10plus(video) else None,
                     known_encoded_frames=skeleton_result.blocks_written,
                     frame_ratio=frame_ratio,
+                    # HDR10+ généré : compte source exact (paquets), jamais le raccourci des métadonnées.
+                    exact_source=generates_hdr10plus(video) and outputs_hdr10plus(video),
                 )
                 try:
                     guard.enforce(

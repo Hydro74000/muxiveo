@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.hdr_inspection import InspectionReport
-from core.hdr_inspection.measure import ImageMeasurement
+from core.hdr_inspection.measure import FrameStatus, ImageMeasurement, frames_status
 from core.hdr_inspection.patch import Hdr10PlusEdit, MasteringEdit, PatchPlan, RpuEdit, StaticEdit, suggested_mastering
 from core.hdr_inspection.realign import Realignment, chosen_edits, recompute_scenes
 from core.hdr_inspection.snapshot import PRIMARY_SETS
@@ -579,6 +579,13 @@ class EditionTab(QWidget):
             summary = translate_text("La sortie doit être un autre fichier que la source.")
         else:
             summary = translate_text("Modifications : {changes}.", changes=", ".join(changes))
+            if (self.h10_recompute.isChecked() and self.h10_recompute.isEnabled() and self._measurement is not None
+                    and self._report is not None):
+                snapshot = self._report.snapshot
+                status = frames_status(self._measurement, snapshot.frames if snapshot.frames_exact else None)
+                if status is not FrameStatus.VERIFIED:  # aucun comptage ici (fil Qt, chaque saisie)
+                    summary += " " + translate_text(
+                        "Nombre d'images de la mesure vérifié au lancement de l'écriture (lecture de la piste).")
         self._summary.setText(summary)
         ready = bool(changes and not invalid and output and Path(output) != Path(source)) and self._report is not None
         self._ready_plan = None

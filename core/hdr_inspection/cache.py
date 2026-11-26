@@ -89,7 +89,13 @@ def _checked_measurement(layer: str, meta: dict, arrays: dict[str, np.ndarray]) 
     _require(bool(np.all(starts >= 0)) and bool(np.all(starts < frames)) and bool(np.all(np.diff(starts) > 0)))
     for name in ("max_rgb", "average", "y9999", "y100", "percentiles", "histogram"):
         _require(np.issubdtype(arrays[name].dtype, np.number))
+    verified = meta.get("verified_frames")
+    # Compte exact relevé à l'enregistrement : retenu seulement s'il décrit bien cette mesure (anciennes entrées :
+    # absent, statut recalculé).
+    verified = verified if isinstance(verified, int) and not isinstance(verified, bool) and verified == frames \
+        and not sampled else None
     return ImageMeasurement(layer=layer, window=cast(tuple[int, int, int, int], tuple(window)), sampled=sampled,
+                            verified_frames=verified,
                             **{name: arrays[name] for name in ("max_rgb", "average", "y9999", "y100", "percentiles",
                                                                "scene_starts", "histogram")})
 
@@ -207,7 +213,7 @@ class InspectionCache:
         if key is None:
             return
         meta = {"version": CACHE_VERSION, "layer": measurement.layer, "window": list(measurement.window),
-                "sampled": measurement.sampled}
+                "sampled": measurement.sampled, "verified_frames": measurement.verified_frames}
         buffer = io.BytesIO()
         np.savez_compressed(buffer, meta=np.frombuffer(json.dumps(meta).encode("utf-8"), dtype=np.uint8),
                             max_rgb=measurement.max_rgb, average=measurement.average, y9999=measurement.y9999,

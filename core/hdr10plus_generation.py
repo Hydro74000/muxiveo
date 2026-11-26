@@ -28,7 +28,7 @@ from core.dovi_profile_detector import DoviSubProfile
 from core.fel.hdr10plus import FrameRecord, FrameStatistics, SceneRecord, describe, write_hdr10plus_json
 from core.hdr_inspection.cache import InspectionCache
 from core.hdr_inspection.dovi import DoviAnalysis, parse_dovi_export
-from core.hdr_inspection.measure import ImageMeasurement, measure_track, measured_frames_mismatch
+from core.hdr_inspection.measure import ImageMeasurement, frame_count_check, measure_track
 from core.hdr_inspection.pq import pq_to_nits
 from core.i18n import translate_text
 
@@ -230,15 +230,12 @@ def measured_statistics(engine: object, path: Path, stream_index: int, work_dir:
     invalide) est écartée du cache et remesurée, refusée si la mesure neuve l'est aussi (``GenerationError``).
     """
     cancelled = cancel.is_set if cancel is not None else None
+    # Règle unique du nombre d'images (HDR Studio, hdr.inspect, hdr.patch) : compte rapide absent ou différent →
+    # compte exact ; illisible aussi : invérifiable ici (contrôle des trames de l'encodage, en mode exact).
+    check = frame_count_check(source_frames(False), lambda: source_frames(True)) if source_frames is not None else None
 
     def mismatch(measurement: ImageMeasurement) -> str | None:
-        if source_frames is None:
-            return None
-        quick = source_frames(False)
-        if quick is not None and measured_frames_mismatch(measurement, quick) is None:
-            return None
-        # Compte rapide différent ou illisible : compte exact ; illisible aussi : invérifiable ici (audit des trames).
-        return measured_frames_mismatch(measurement, source_frames(True))
+        return check(measurement) if check is not None else None
 
     measurement = cache.load_measurement(path, stream_index, layer, complete_only=True) if cache is not None else None
     origin = translate_text("cache du HDR Studio")
@@ -256,7 +253,8 @@ def measured_statistics(engine: object, path: Path, stream_index: int, work_dir:
             origin = translate_text("{origin} (mesure en cache écartée : nombre d'images différent de la source)",
                                     origin=origin)
         if cache is not None and cache_write:
-            cache.store_measurement(path, stream_index, measurement)
+            cache.store_measurement(path, stream_index, check.verified(measurement) if check is not None
+                                    else measurement)
     return statistics_from_measurement_scenes(measurement, cancelled=cancelled), origin
 
 

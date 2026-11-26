@@ -286,6 +286,8 @@ def test_reencode_generation_only_injects_without_source_hdr10plus(tmp_path):
     assert any(cmd[:2] == ["hdr10plus_tool", "inject"] for cmd in run.commands)
     assert not any(cmd[:2] in (["hdr10plus_tool", "remove"], ["hdr10plus_tool", "extract"]) for cmd in run.commands)
     assert _PermissiveGuard.seen and _PermissiveGuard.seen[0]["hdr10p_json"] is not None
+    # HDR10+ généré : compte source exact (paquets), jamais le raccourci des métadonnées (lot 4, route FFmpeg).
+    assert _PermissiveGuard.seen[0]["exact_source"] is True
 
 
 def test_missing_prepared_json_fails(tmp_path):
@@ -371,6 +373,7 @@ def test_multi_copy_track_is_patched_with_the_generated_json(tmp_path):
                                                      for label in labels)
     assert Path(prepared.path).name == "video_1.wrapped.mkv" and prepared.map_arg == "0:v:0"
     assert _PermissiveGuard.seen[0]["source_stream_index"] == 0  # source lue directement : flux sélectionné
+    assert _PermissiveGuard.seen[0]["exact_source"] is True  # HDR10+ généré : compte exact (lot 4, multi-pistes)
 
 
 def test_multi_fel_fallback_regenerates_the_hdr10plus(tmp_path):
@@ -479,6 +482,7 @@ def test_nvencc_generated_json_shorter_than_the_source_is_refused(tmp_path):
 
 
 def test_nvencc_stale_quick_count_is_recounted_exactly_before_refusing(tmp_path):
+    """HDR10+ généré : compte exact des paquets demandé d'emblée, compte rapide (périmé) jamais lu (lot 4)."""
     from tests.test_encode_runtime_failures import _Nvencc
 
     run = _Nvencc(tmp_path, generate_hdr10plus=True, generated_hdr10plus_json=_generated(tmp_path, frames=3))
@@ -491,7 +495,7 @@ def test_nvencc_stale_quick_count_is_recounted_exactly_before_refusing(tmp_path)
     guard = SimpleNamespace(source_frame_count=count)
     run.nvencc_output = ["encoded 3 frames"]
     outcome = run.run(patch.object(run.workflow, "_frame_count_guard", return_value=guard))
-    assert calls[:2] == [False, True]
+    assert calls == [True]
     assert "nvencc" in run.labels
     assert not any("3 entrées pour 4" in message for message, _ in outcome.failed)
 
@@ -548,13 +552,13 @@ def _nvencc_fel_statistics(tmp_path, counts):
 def test_nvencc_fel_statistics_generation_keeps_the_source_audit(tmp_path):
     _run, _outcome, calls, inject = _nvencc_fel_statistics(tmp_path, (100, 100))
     assert inject.call_args.kwargs["expected_frames"] == 100  # injection refusera 2 entrées face à 100 images
-    assert calls == [False, True]  # compte rapide contredit par l'encodage : recompté
+    assert calls == [True]  # HDR10+ généré : compte exact d'emblée (lot 4)
     assert "nvencc-pipe" in _run.labels
 
 
 def test_nvencc_fel_statistics_stale_quick_count_is_recounted(tmp_path):
     _run, _outcome, calls, inject = _nvencc_fel_statistics(tmp_path, (4, 2))
-    assert inject.call_args.kwargs["expected_frames"] == 2 and calls == [False, True]
+    assert inject.call_args.kwargs["expected_frames"] == 2 and calls == [True]  # compte rapide jamais lu
 
 
 def test_nvencc_fel_statistics_unreadable_source_count_is_refused_before_encoding(tmp_path):

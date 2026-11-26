@@ -201,6 +201,18 @@ Vaut pour les médias (remux, encodage, extraction, `hdr.patch`) et les document
 un nom libre (`-1`, `-2`…). Remplacés sans condition, comme annoncé : `sync.scan` (`output_json`),
 `hybrid.plan` (`save_recipe`), `hybrid.run` (`report_json`), rapports et moments FEL d'`hdr.inspect`.
 
+**Nombre d'images d'une mesure.** Une mesure complète de l'image (`hdr.inspect` niveaux `dynamic` /
+`measure`, `hdr.patch`) est comparée au compte de la piste : compte de l'inspection absent ou différent → compte
+exact des paquets (une lecture de la piste, annulable) ; écart confirmé → mesure écartée du cache, ou refusée si
+elle est neuve. `hdr.inspect` niveau `static` ne compte jamais. Le rapport porte
+`measurement.frames_status` : `verified` (compte exact égal, mémorisé dans le cache), `quick_match` (compte de
+l'inspection égal, non compté) ou `unverified` (aucun compte, compte illisible, mesure par images clés) ; les
+valeurs mesurées d'une mesure `unverified` sont marquées « nombre d'images non vérifié ». HDR10+ recalculé
+(`hdr10plus.recompute`, `realign` `hdr10plus`) : compte exact égal **exigé** à la préparation du plan (dry-run
+compris), écart ou compte illisible → refus, rien n'est écrit ; à l'exécution, un JSON recalculé d'un autre nombre
+d'images ou un `mismatched lengths` de `hdr10plus_tool inject` → `workflow_failed` (avertissement
+`tool_length_mismatch` pour un HDR10+ extrait, inchangé).
+
 **Sorties annexes.** Une annexe (rapport, calibration, template, résumé de lot, exact-job, recette, NFO, PNG des
 moments FEL) n'est jamais écrite sur un fichier que la requête lit ou produit : source, B d'une comparaison,
 document de la requête (`call --request`, `--config`, `--template`, `--batch`, recette, profil), sortie

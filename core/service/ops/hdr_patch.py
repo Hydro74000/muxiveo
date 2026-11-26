@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from core.hdr_inspection import InspectionCache, InspectionReport, TrackNotFoundError, snapshot_report
-from core.hdr_inspection.measure import ImageMeasurement, frame_count_check, packet_counter
+from core.hdr_inspection.measure import FrameCountCheck, ImageMeasurement, frame_count_check, packet_counter
 from core.hdr_inspection.patch import (
     L11_CONTENT_TYPES,
     Hdr10PlusEdit,
@@ -41,7 +41,13 @@ from core.service.context import ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
-from core.service.ops.hdr import dynamic_report, load_checked_measurement, measure_image, refuse_frame_mismatch
+from core.service.ops.hdr import (
+    dynamic_report,
+    load_checked_measurement,
+    measure_image,
+    refuse_frame_mismatch,
+    require_verified_frames,
+)
 from core.workdir import create_process_work_dir
 
 _PATCHABLE = {".mkv", ".hevc", ".h265", ".265"}
@@ -377,7 +383,7 @@ def describe_plan(plan: PatchPlan) -> dict[str, Any]:
 
 
 def _load(request: HdrPatchRequest, ctx: ExecutionContext,
-          logger: EmitterLogger) -> tuple[InspectionReport, ImageMeasurement | None]:
+          logger: EmitterLogger) -> tuple[InspectionReport, ImageMeasurement | None, FrameCountCheck]:
     config = ctx.config
     info = ctx.port("file_inspector", FileInspector)(ffprobe_bin=ctx.tool("ffprobe"), mediainfo_bin=ctx.tool("mediainfo"),
                                                     cancel_event=ctx.cancel.event).inspect(request.source)
@@ -407,9 +413,9 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
         measurement = ctx.port("measure_image", measure_image)(config, report, threads, work_root, logger,
                                                               fast=wanted == "fast", cancel=ctx.cancel.event)
         ctx.cancel.raise_if_cancelled()
-        refuse_frame_mismatch(frame_check, measurement)
+        measurement = refuse_frame_mismatch(frame_check, measurement)
         cache.store_measurement(Path(snapshot.path), snapshot.stream_index, measurement)
-    return report, measurement
+    return report, measurement, frame_check
 
 
 def _execute(plan: PatchPlan, ctx: ExecutionContext, logger: EmitterLogger,
@@ -484,10 +490,19 @@ def hdr_patch(request: HdrPatchRequest, ctx: ExecutionContext) -> HdrPatchResult
     output = Path(request.output).expanduser()
     if output.exists() and not request.force and not request.dry_run:
         raise JobError(f"Sortie déjà existante : {output} (utiliser --force)", EXIT_EXISTS)
-    report, measurement = _load(request, ctx, logger)
+    report, measurement, frame_check = _load(request, ctx, logger)
     peak = float(request.display_peak or getattr(ctx.config, "display_peak_nits", 1000) or 1000)
     plan, warnings = resolve_plan(request, report, measurement, display_peak=peak)
     plan = dataclasses.replace(plan, existing=ExistingPolicy.from_force(request.force))
+    if plan.writes_per_frame and measurement is not None:
+        # HDR10+ recalculé image par image : compte exact de la piste vérifié avant le plan (lecture des paquets,
+        # annulable) ; écart ou compte illisible → refus, rien n'est écrit.
+        expected = require_verified_frames(frame_check, measurement)
+        plan = dataclasses.replace(plan, expected_frames=expected)
+        verified = frame_check.verified(measurement)
+        if verified is not measurement:
+            InspectionCache(Path(ctx.config.app_data_dir) / "hdr_inspection").store_measurement(
+                Path(report.snapshot.path), report.snapshot.stream_index, verified)
     for message in warnings:
         ctx.events.warning(message, code="hdr_patch_plan")
     try:  # images sans RPU : relevées une fois, annoncées par le dry-run, complétées par l'exécution

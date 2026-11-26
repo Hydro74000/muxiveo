@@ -46,7 +46,14 @@ from core.hdr_inspection import summary
 from core.hdr_inspection.compare import Side
 from core.hdr_inspection.realign import Realignment, realign
 from core.hdr_inspection.fel_analyzer import CaptureLayer
-from core.hdr_inspection.measure import FrameCheck, ImageMeasurement, frame_count_check, measure_track, packet_counter
+from core.hdr_inspection.measure import (
+    FrameCountCheck,
+    FrameStatus,
+    ImageMeasurement,
+    frame_count_check,
+    measure_track,
+    packet_counter,
+)
 from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan, analyze_rpu_gaps
 from core.hdr_inspection.report import write_report
 from core.hdr_inspection.snapshot import HdrSnapshot
@@ -514,7 +521,7 @@ class HdrStudio(QWidget):
             self._show_snapshot(cached)
 
     def _frame_check(self, path: Path, stream_index: int, frames: int | None,
-                     cancel: threading.Event | None = None, *, announce: bool = False) -> FrameCheck:
+                     cancel: threading.Event | None = None, *, announce: bool = False) -> FrameCountCheck:
         """Contrôle du nombre d'images d'une mesure : compte de l'inspection, écart confirmé par ffprobe.
 
         Le compte exact d'une piste, une fois obtenu, remplace celui de l'inspection pour tout contrôle suivant
@@ -1259,10 +1266,14 @@ class HdrStudio(QWidget):
         def task() -> None:
             owned = None
             try:
+                checked_plan = self._verified_plan(plan, report, token, cancel)
+                if checked_plan is None:  # comptage annulé : ni candidat ni sortie
+                    self._patched.emit(token, None, "")
+                    return
                 owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-correction")
                 # Images de la source sans RPU : complétées à leur rang, annoncées (WARN), jamais en silence.
-                checked = dataclasses.replace(plan, rpu_gaps=analyze_rpu_gaps(plan, report, cancelled=cancel.is_set),
-                                              rpu_gaps_checked=True)
+                checked = dataclasses.replace(checked_plan, rpu_gaps=analyze_rpu_gaps(
+                    checked_plan, report, cancelled=cancel.is_set), rpu_gaps_checked=True)
                 patcher = MetadataPatcher(
                     ffmpeg_bin=str(config.tool_ffmpeg), dovi_tool_bin=str(config.tool_dovi_tool),
                     hdr10plus_bin=str(config.tool_hdr10plus), run_cmd=run, work_dir=owned.path,
@@ -1289,6 +1300,33 @@ class HdrStudio(QWidget):
                                                      source=plan.source.name, output=plan.output.name))
         self.op_state_changed.emit("started", translate_text("Correction de {name}…", name=plan.source.name))
         self._submit(task)
+
+    def _verified_plan(self, plan: PatchPlan, report: InspectionReport | None, token: int,
+                       cancel: threading.Event) -> PatchPlan | None:
+        """Thread de travail : HDR10+ recalculé (écriture image par image) → compte exact de la piste exigé, obtenu
+        ici au besoin (jamais pendant la saisie du formulaire) puis mémorisé ; ``None`` si annulé. Écart ou compte
+        illisible : ``MeasurementError`` (correction refusée, rien n'est écrit)."""
+        from core.fel.engine import FelCancelled
+
+        if not plan.writes_per_frame or plan.hdr10plus is None or plan.hdr10plus.recompute is None:
+            return plan
+        measurement = plan.hdr10plus.recompute[0]
+        assert isinstance(measurement, ImageMeasurement)
+        snapshot = report.snapshot if report is not None else None
+        quick = snapshot.frames if snapshot is not None and snapshot.frames_exact else None
+        check = self._frame_check(Path(plan.source), plan.stream_index, quick, cancel)
+        if check.status(measurement) is not FrameStatus.VERIFIED:
+            self._progress.emit(token, translate_text("Vérification du nombre d'images…"), 0)
+        try:
+            expected = check.require_verified(measurement)
+        except FelCancelled:
+            return None
+        if cancel.is_set():
+            return None
+        verified = check.verified(measurement)
+        if verified is not measurement:
+            self._cache.store_measurement(Path(plan.source), plan.stream_index, verified)
+        return dataclasses.replace(plan, expected_frames=expected)
 
     def _on_patched(self, token: int, output: Path | None, error: str) -> None:
         if token != self._token:

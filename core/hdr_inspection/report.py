@@ -23,7 +23,7 @@ from core.hdr_inspection.advice import LEVEL_SOURCES, TV_MODELS, Advice, advice_
 from core.hdr_inspection.compare import SOURCE_LABELS, Comparison
 from core.hdr_inspection.fel_analyzer import CATEGORIES, JND_NOTE, LEVEL_KEYS, FelReport, verdict
 from core.hdr_inspection.inspector import InspectionReport
-from core.hdr_inspection.measure import ImageMeasurement
+from core.hdr_inspection.measure import ImageMeasurement, frames_status
 from core.hdr_inspection.pq import pq12_to_nits
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import current_language, translate_text
@@ -171,7 +171,11 @@ def report_data(report: InspectionReport, *, measurement: ImageMeasurement | Non
         "measurement": None if measurement is None else {
             "layer": measurement.layer, "frames": measurement.frames, "max_cll": measurement.max_cll(),
             "max_fall": measurement.max_fall(), "window": list(measurement.window),
-            "sampled_frames": measurement.sampled or None},
+            "sampled_frames": measurement.sampled or None,
+            # Nombre d'images face à la piste : verified (compte exact égal), quick_match (compte de l'inspection
+            # égal, non compté), unverified (aucun compte, compte illisible, estimation).
+            "frames_status": frames_status(measurement, report.snapshot.frames if report.snapshot.frames_exact
+                                           else None).value},
         "findings": [{"severity": f.severity.value, "category": f.category, "title": f.title, "detail": f.detail}
                      for f in report.findings],
         "errors": list(report.errors),
@@ -438,7 +442,8 @@ def render_html(report: InspectionReport, *, measurement: ImageMeasurement | Non
             [(label, _SERIES_COLORS.get(key, "#888"), _column_values(values, columns, mode), mode)
              for key, label, mode, values in curves], frames=frames, fps=fps)))
     if measurement is not None:
-        body.append(_section(translate_text("Mesure de l'image"), _kv(summary.measurement_rows(measurement, fps))))
+        body.append(_section(translate_text("Mesure de l'image"), _kv(summary.measurement_rows(
+            measurement, fps, snapshot.frames if snapshot.frames_exact else None))))
     if report.dovi is not None:
         dovi_body = _kv(summary.dovi_rows(report.dovi, fps))
         headers, rows = summary.l6_table(report.dovi)

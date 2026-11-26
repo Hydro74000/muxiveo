@@ -227,6 +227,14 @@ class PatchPlan:
     #: ``rpu_gaps_checked`` faux : relevé fait par le patcher lui-même avant la réinjection du RPU.
     rpu_gaps: "RpuGaps | None" = field(default=None, compare=False)
     rpu_gaps_checked: bool = field(default=False, compare=False)
+    #: Compte exact des images de la piste (vérifié avant le plan) : HDR10+ recalculé d'un autre nombre d'images
+    #: refusé avant l'injection.
+    expected_frames: int | None = field(default=None, compare=False)
+
+    @property
+    def writes_per_frame(self) -> bool:
+        """HDR10+ recalculé depuis la mesure (écriture image par image) : compte exact vérifié exigé."""
+        return self.hdr10plus is not None and self.hdr10plus.recompute is not None and not self.hdr10plus.remove
 
     def is_empty(self) -> bool:
         return ((self.static is None or self.static.is_empty()) and (self.rpu is None or self.rpu.is_empty())
@@ -375,11 +383,17 @@ class MetadataPatcher:
         if self._warn is not None:
             self._warn(code, message, dict(fields))
 
-    def _tool(self, cmd: list[str]) -> object:
-        """Lance un outil ; ses avertissements de longueur (RPU / HDR10+ ≠ images) sont restitués, jamais tus."""
+    def _tool(self, cmd: list[str], *, strict: bool = False) -> object:
+        """Lance un outil ; ses avertissements de longueur (RPU / HDR10+ ≠ images) sont restitués, jamais tus.
+
+        ``strict`` (HDR10+ recalculé, une entrée par image) : écart de longueur → :class:`PatchError`, rien publié."""
         output = self._run(cmd)
         if isinstance(output, str):
             for match in _LENGTH_MISMATCH_RE.finditer(output):
+                if strict:
+                    raise PatchError(translate_text(
+                        "{tool} : {detail} — HDR10+ recalculé d'un autre nombre d'images que la vidéo, correction "
+                        "refusée.", tool=Path(cmd[0]).name, detail=match.group(0).strip()))
                 self._emit_warning("tool_length_mismatch", translate_text(
                     "{tool} : {detail} (métadonnées complétées ou tronquées par l'outil).",
                     tool=Path(cmd[0]).name, detail=match.group(0).strip()))
@@ -496,8 +510,12 @@ class MetadataPatcher:
                         from core.fel.hdr10plus import statistics_from_measurement, write_hdr10plus_json
 
                         write_hdr10plus_json(statistics_from_measurement(*plan.hdr10plus.recompute), extracted)
-                        transform_hdr10plus(extracted, edited_json, plan.hdr10plus)
+                        written = transform_hdr10plus(extracted, edited_json, plan.hdr10plus)
                         extracted.unlink(missing_ok=True)
+                        if plan.expected_frames is not None and written != plan.expected_frames:
+                            raise PatchError(translate_text(
+                                "HDR10+ recalculé : {written} images pour {expected} dans la piste, correction "
+                                "refusée.", written=written, expected=plan.expected_frames))
                     elif not plan.hdr10plus.remove:
                         self._run([self._hdr10plus, "extract", str(current), "-o", str(extracted)])
                         transform_hdr10plus(extracted, edited_json, plan.hdr10plus)
@@ -510,7 +528,7 @@ class MetadataPatcher:
                         target = self._work / "video_hdr10plus.hevc"
                         self._step(label, sub + window, window, "edit_hdr10plus")
                         self._tool([self._hdr10plus, "inject", "-i", str(current), "-j", str(edited_json),
-                                    "-o", str(target)])
+                                    "-o", str(target)], strict=plan.writes_per_frame)
                         advance(target)
                     position += span
                 if "static" in steps:

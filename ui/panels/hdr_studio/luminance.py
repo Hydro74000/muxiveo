@@ -5,7 +5,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
-from core.hdr_inspection import InspectionReport
+from core.hdr_inspection import InspectionReport, summary
 from core.hdr_inspection.advice import LEVEL_SOURCES, TV_MODELS, describe_risk
 from core.hdr_inspection.audit import Severity
 from core.hdr_inspection.measure import ImageMeasurement
@@ -210,9 +210,11 @@ class LuminanceTab(QWidget):
         self.suggest_btn.setEnabled(self._suggested is not None)
         if self._suggested is not None:
             cll, fall, source = self._suggested
+            note = summary.unverified_note(measurement, snapshot) if source == "measure" and measurement is not None \
+                and snapshot is not None else ""
             self.suggest_btn.setToolTip(translate_text("{cll} / {fall} d'après : {source}", cll=cll,
                                                        fall=fall if fall is not None else "—",
-                                                       source=translate_text(_SOURCE_LABELS[source])))
+                                                       source=translate_text(_SOURCE_LABELS[source])) + note)
         enabled = report is not None and snapshot is not None and snapshot.is_pq
         for widget in (self.max_cll, self.max_fall, self.reset_btn, self.encode_btn, self.patch_btn):
             widget.setEnabled(bool(enabled))
