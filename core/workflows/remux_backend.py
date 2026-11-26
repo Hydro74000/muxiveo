@@ -35,6 +35,7 @@ from core.matroska.mux_plan import (
     MatroskaMuxTrack,
     deterministic_source_identity,
 )
+from core.matroska.ids import CHAPTERS_ID
 from core.matroska.reader import MatroskaReader
 from core.matroska.assembly import canonical_attachment_output_name
 from core.matroska.contract import without_expected_attachment
@@ -775,6 +776,14 @@ def run_native_remux(
                            for source in config.sources)
                 ),
             )
+            # Contrat des chapitres fixé sur les chapitres réellement écrits (ChapterTrack remappés, chapitres sans
+            # piste ciblée retirés, chapitres d'un MP4 lu en flux) : jamais sur le seul précalcul du plan.
+            if output_contract is not None:
+                output_contract = replace(output_contract, expects_chapters=any(
+                    item.startswith(CHAPTERS_ID) for item in plan_matroska.opaque_top_level))
+            if plan_matroska.chapters_removed:
+                log("WARN", f"{plan_matroska.chapters_removed} chapitre(s) retiré(s) : toutes leurs pistes ciblées "
+                            "(ChapterTrack) sont absentes de la sortie.")
             log_step(4, "Écriture Matroska native multi-pistes")
             if any(track.remove_closed_captions for track in plan_matroska.tracks):
                 log("INFO", "Retrait ciblé des sous-titres embarqués EIA-608/708 (sans réencodage)")

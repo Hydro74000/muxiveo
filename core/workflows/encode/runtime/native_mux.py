@@ -976,6 +976,9 @@ def assemble_encode_output_native(
         )
         assembly = replace(assembly, expected_output_contract=contract)
         mux_plan = compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen)
+        if mux_plan.chapters_removed and signals is not None:
+            signals.progress.emit(f"[WARN] {mux_plan.chapters_removed} chapitre(s) retiré(s) : toutes leurs pistes "
+                                  "ciblées (ChapterTrack) sont absentes de la sortie.")
 
         def _validate(path: Path, packet_validation: MatroskaPacketValidation) -> None:
             errors = validate_matroska_output(

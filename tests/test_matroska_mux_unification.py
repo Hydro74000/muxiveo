@@ -790,7 +790,9 @@ class TestNativeEncodeAssembly:
             tmp_path / "src.mkv",
             [_entry_bytes(1, 2, "A_EAC3"), _entry_bytes(2, 17, "S_TEXT/UTF8")],
             clusters=_simple_cluster(1) + _simple_cluster(2, payload=b"Bonjour"),
-            extra_top_level=element(CHAPTERS_ID, b""),
+            # Un chapitre réel (Chapters exige une édition) : copié tel quel, sans ChapterTrack.
+            extra_top_level=element(CHAPTERS_ID, element(bytes.fromhex("45b9"), element(bytes.fromhex("b6"), (
+                bytes.fromhex("73c4") + b"\x81\x01" + bytes.fromhex("91") + b"\x81\x00")))),
         )
         artifact = _write_mkv(
             tmp_path / "video_artifact.mkv",

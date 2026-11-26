@@ -2559,6 +2559,9 @@ class MergeDoviWorkflow(QObject):
         )
         plan_with_contract = replace(plan, expected_output_contract=contract)
         mux_plan = compile_assembly_plan(plan_with_contract)
+        if mux_plan.chapters_removed:
+            self.step_progress.emit(WorkflowStep.REMUX, f"[WARN] {mux_plan.chapters_removed} chapitre(s) retiré(s) : "
+                                    "toutes leurs pistes ciblées (ChapterTrack) sont absentes de la sortie.")
 
         def validate(path, packet_validation):
             validate_final_output(

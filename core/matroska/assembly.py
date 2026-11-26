@@ -30,6 +30,7 @@ from .contract import (
     ExpectedTrackFlags,
     MatroskaOutputContract,
 )
+from .chapter_tracks import remap_chapter_tracks
 from .ids import CHAPTERS_ID, DEFAULT_TIMESTAMP_SCALE_NS, INFO_ID, TAGS_ID
 from .language import bcp47_for_language, matroska_legacy_language
 from .mux_plan import (
@@ -533,15 +534,59 @@ class MatroskaAssemblyPlan:
     segment_info_passthrough: bool = False
 
 
+def copied_chapters(plan: MatroskaAssemblyPlan, reader: MatroskaReader | None,
+                    uid_map: Mapping[int, Sequence[int]]) -> tuple[bytes, int]:
+    """Chapitres écrits pour le plan, fonction unique du contrat et de l'écriture : chapitres fournis
+    (``chapter_entries``), sinon ceux de ``chapter_source`` dont les ``ChapterTrack`` sont remappés par ``uid_map``
+    (UID source → UID de sortie) et les chapitres sans cible retirés. Renvoie (élément ``Chapters`` ou ``b""``,
+    nombre de chapitres retirés)."""
+    if plan.chapter_entries is not None:
+        return build_chapters_element(list(plan.chapter_entries)), 0
+    if plan.chapter_source is None or reader is None:
+        return b"", 0
+    parts: list[bytes] = []
+    removed = 0
+    for raw in reader.raw_top_level(CHAPTERS_ID):
+        rewritten, count = remap_chapter_tracks(MatroskaReader._raw_payload(raw), uid_map)
+        removed += count
+        if rewritten:
+            parts.append(rewritten)
+    return b"".join(parts), removed
+
+
+def _chapter_source_uids(plan: MatroskaAssemblyPlan, readers: dict[Path, MatroskaReader]) -> dict[int, list[int]]:
+    """Pistes de la source des chapitres présentes dans la sortie (UID source → lui-même) : chapitres qui seront
+    écrits, sans les UID de sortie (contrat calculé avant la compilation)."""
+    present: dict[int, list[int]] = {}
+    source = plan.chapter_source
+    if source is None:
+        return present
+    for track in plan.ordered_tracks:
+        candidates = [(Path(track.artifact), track.artifact_track_index)]
+        if track.origin is not None:
+            candidates.append((Path(track.origin[0]), int(track.origin[1])))
+        for path, index in candidates:
+            if path == Path(source):
+                tracks = readers.setdefault(path, MatroskaReader(path)).tracks()
+                if 0 <= index < len(tracks):
+                    present[tracks[index].uid] = [tracks[index].uid]
+    return present
+
+
 def assembly_output_contract(
     plan: MatroskaAssemblyPlan,
     *,
     require_block_addition_mapping: bool | set[int] = False,
 ) -> MatroskaOutputContract:
-    """Contrat de sortie dérivé du plan (types dans l'ordre d'assemblage)."""
-    if plan.expected_output_contract is not None:
-        return plan.expected_output_contract
+    """Contrat de sortie dérivé du plan (types dans l'ordre d'assemblage) ; chapitres attendus d'après les chapitres
+    réellement écrits (``ChapterTrack`` remappés, chapitres sans cible retirés : un retrait, jusqu'au dernier, ne
+    fait jamais rejeter la sortie), même pour un contrat précalculé."""
     readers: dict[Path, MatroskaReader] = {}
+    chapter_reader = (readers.setdefault(Path(plan.chapter_source), MatroskaReader(Path(plan.chapter_source)))
+                      if plan.chapter_entries is None and plan.chapter_source is not None else None)
+    written_chapters, _removed = copied_chapters(plan, chapter_reader, _chapter_source_uids(plan, readers))
+    if plan.expected_output_contract is not None:
+        return replace(plan.expected_output_contract, expects_chapters=bool(written_chapters))
     types: list[str] = []
     expected_tracks: list[ExpectedMatroskaTrack] = []
     required_mapping_indexes = (
@@ -586,18 +631,9 @@ def assembly_output_contract(
                 or output_index in required_mapping_indexes
             ),
         ))
-    # Les chapitres ne sont attendus que si la source de chapitres en
-    # contient réellement — keep_chapters sur une source sans chapitres ne
-    # doit pas rendre le contrat inatteignable.
-    expects_chapters = bool(plan.chapter_entries) or (
-        plan.chapter_entries is None
-        and plan.chapter_source is not None
-        and bool(
-            readers.setdefault(
-                plan.chapter_source, MatroskaReader(plan.chapter_source),
-            ).raw_top_level(CHAPTERS_ID)
-        )
-    )
+    # Chapitres attendus seulement s'ils sont réellement écrits (source sans chapitres, ou chapitres tous retirés
+    # faute de piste ciblée : contrat atteignable).
+    expects_chapters = bool(written_chapters)
     expected_attachments: list[ExpectedMatroskaAttachment] = []
     for extra in plan.extra_attachment_files:
         path = Path(extra)
@@ -721,8 +757,13 @@ def compile_assembly_plan(
         uid_name = track.name if track.name is not None else source_track.name
         uid_default = track.flags.default if track.flags is not None else source_track.flag_default
         uid_forced = track.flags.forced if track.flags is not None else source_track.flag_forced
+        # Piste lue en flux (MP4/MOV via un producteur FFmpeg) : son UID change à chaque lecture ; l'UID de sortie
+        # dérive alors de l'identité de la source et de l'index du flux, jamais de l'UID du producteur.
+        producer_uid: object = (origin_track or source_track).uid
+        if origin_track is None and Path(track.artifact) in provided:
+            producer_uid = f"flux:{track.artifact_track_index}"
         uid = deterministic_uid(
-            identity, (origin_track or source_track).uid, output_index,
+            identity, producer_uid, output_index,
             uid_language, uid_name, uid_default, uid_forced,
         )
         _append_uid(track_uid_maps.setdefault(track.artifact, {}), source_track.uid, uid)
@@ -815,12 +856,11 @@ def compile_assembly_plan(
     if attachment_element:
         opaque.append(attachment_element)
 
-    if plan.chapter_entries is not None:
-        chapter_element = build_chapters_element(list(plan.chapter_entries))
-        if chapter_element:
-            opaque.append(chapter_element)
-    elif plan.chapter_source is not None:
-        opaque.extend(readers[plan.chapter_source].raw_top_level(CHAPTERS_ID))
+    chapter_element, chapters_removed = copied_chapters(
+        plan, readers[plan.chapter_source] if plan.chapter_entries is None and plan.chapter_source is not None
+        else None, track_uid_maps.get(Path(plan.chapter_source), {}) if plan.chapter_source is not None else {})
+    if chapter_element:
+        opaque.append(chapter_element)
 
     if plan.tag_overrides is not None:
         tag_element = build_tags_element(dict(plan.tag_overrides))
@@ -868,13 +908,16 @@ def compile_assembly_plan(
         if plan.segment_title is None
         else plan.segment_title.strip()
     )
-    # SegmentUID déterministe dérivé du contenu sémantique complet du plan :
-    # pistes (UID/numéros déjà dérivés du contenu source), titre, digest des
-    # top-level opaques (chapitres/tags/attachments) et TimestampScale. Deux
-    # plans distincts ne partagent jamais un UID ; un même plan reste stable.
+    # SegmentUID déterministe dérivé de tout ce qui change le contenu écrit : pistes (UID/numéros dérivés du
+    # contenu source), décalages, provenance (réécriture de synchro), origine, retrait des sous-titres embarqués,
+    # titre, digest des top-level opaques (chapitres/tags/attachments) et TimestampScale. Deux plans qui écrivent
+    # des contenus différents (même d'un seul décalage) ne partagent jamais un UID ; un même plan reste stable.
     segment_uid = deterministic_uid128(
         "segment",
         tuple((track.output_uid, track.output_number) for track in output_tracks),
+        tuple((int(track.time_shift_ms or 0), str(track.provenance or ""),
+               None if track.origin is None else (str(track.origin[0]), int(track.origin[1])),
+               bool(track.remove_closed_captions)) for track in plan.ordered_tracks),
         segment_title,
         opaque_digest,
         timestamp_scale_ns,
@@ -902,6 +945,7 @@ def compile_assembly_plan(
         opaque_top_level=tuple(opaque),
         regenerate_statistics=True,
         info_passthrough=info_passthrough,
+        chapters_removed=chapters_removed,
     )
 
 
