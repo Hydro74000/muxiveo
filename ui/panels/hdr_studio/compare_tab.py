@@ -7,7 +7,6 @@ import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -25,7 +24,8 @@ from core.hdr_inspection.summary import format_time
 from core.i18n import translate_text
 from ui.design_system import colors as C, font_px, scale
 from ui.panels.hdr_studio.chart import ChartSeries, LuminanceChart, chart_controls
-from ui.styles import _card, _checkbox_style, _combo_style, _input_style, _secondary_button, _section_label
+from ui.panels.hdr_studio.track_selector import VideoTrackSelector
+from ui.styles import _card, _checkbox_style, _input_style, _secondary_button, _section_label
 
 _ALIGNMENT = {"dovi": "plans du RPU", "hdr10plus": "plans HDR10+", "measure": "plans mesurés",
               "curve": "courbes de luminance", "manual": "décalage saisi", "none": "aucun repère commun"}
@@ -133,9 +133,8 @@ class CompareTab(QWidget):
         browse = _secondary_button("…", fixed_width=32)
         browse.setToolTip(translate_text("Choisir un fichier"))
         browse.clicked.connect(self._browse)
-        self.track = QComboBox()
-        self.track.setStyleSheet(_combo_style())
-        self.track.setMinimumWidth(scale(220))
+        # Piste vidéo de B : bouton à menu, affiché seulement pour un fichier à plusieurs pistes vidéo.
+        self.track = VideoTrackSelector()
         self.track.currentIndexChanged.connect(self._track_changed)
         row.addWidget(self.path, 1)
         row.addWidget(browse)

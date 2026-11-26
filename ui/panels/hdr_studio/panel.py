@@ -14,7 +14,6 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -69,8 +68,9 @@ from ui.panels.hdr_studio.compare_tab import CompareTab, DropLineEdit
 from ui.panels.hdr_studio.editor import EditionTab
 from ui.panels.hdr_studio.fel_tab import FelTab
 from ui.panels.hdr_studio.luminance import LuminanceTab
+from ui.panels.hdr_studio.track_selector import VideoTrackSelector
 from ui.shutdown import Shutdown, defer_close
-from ui.styles import _card, _combo_style, _input_style, _primary_button, _secondary_button, _section_label
+from ui.styles import _card, _input_style, _primary_button, _secondary_button, _section_label
 
 _SEVERITY_COLORS = {Severity.OK: "OK", Severity.INFO: "INFO", Severity.WARN: "WARN", Severity.ERROR: "ERROR"}
 _SEVERITY_ICONS = {Severity.OK: "✓", Severity.INFO: "i", Severity.WARN: "!", Severity.ERROR: "✕"}
@@ -293,9 +293,8 @@ class HdrStudio(QWidget):
         browse.setToolTip(translate_text("Choisir un fichier"))
         browse.clicked.connect(self._browse)
         row.addWidget(browse)
-        self._track_combo = QComboBox()
-        self._track_combo.setStyleSheet(_combo_style())
-        self._track_combo.setMinimumWidth(scale(220))
+        # Piste vidéo de A : bouton à menu, affiché seulement pour un fichier à plusieurs pistes vidéo.
+        self._track_combo = VideoTrackSelector()
         self._track_combo.currentIndexChanged.connect(self._on_track_changed)
         row.addWidget(self._track_combo)
         source_layout.addLayout(row)

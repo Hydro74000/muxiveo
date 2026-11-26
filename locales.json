@@ -12250,5 +12250,9 @@
   "Avec --hdr-compare : index ffprobe de la piste vidéo de B (défaut : première piste vidéo de B ; index absent → refus).": {
     "fra": "Avec --hdr-compare : index ffprobe de la piste vidéo de B (défaut : première piste vidéo de B ; index absent → refus).",
     "eng": "With --hdr-compare: FFprobe index of the video track of B (default: first video track of B; missing index → refused)."
+  },
+  "Piste vidéo #{index}": {
+    "fra": "Piste vidéo #{index}",
+    "eng": "Video track #{index}"
   }
 }
