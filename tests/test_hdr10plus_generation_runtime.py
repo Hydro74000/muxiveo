@@ -38,6 +38,7 @@ class _PermissiveGuard:
     """Audit des trames accepté (comptes cohérents) ; mémorise les métadonnées contrôlées."""
 
     seen: list[dict] = []
+    enforced: list[dict] = []
 
     def __init__(self, **_kwargs) -> None:
         pass
@@ -46,13 +47,15 @@ class _PermissiveGuard:
         _PermissiveGuard.seen.append(kwargs)
         return SimpleNamespace()
 
-    def enforce(self, *_args, **_kwargs) -> None:
+    def enforce(self, *_args, **kwargs) -> None:
+        _PermissiveGuard.enforced.append(kwargs)
         return None
 
 
 @pytest.fixture(autouse=True)
 def _guard(monkeypatch):
     _PermissiveGuard.seen = []
+    _PermissiveGuard.enforced = []
     monkeypatch.setattr(metadata_inject, "FrameCountGuard", _PermissiveGuard)
     monkeypatch.setattr(multi_video, "FrameCountGuard", _PermissiveGuard)
 
@@ -288,6 +291,7 @@ def test_reencode_generation_only_injects_without_source_hdr10plus(tmp_path):
     assert _PermissiveGuard.seen and _PermissiveGuard.seen[0]["hdr10p_json"] is not None
     # HDR10+ généré : compte source exact (paquets), jamais le raccourci des métadonnées (lot 4, route FFmpeg).
     assert _PermissiveGuard.seen[0]["exact_source"] is True
+    assert _PermissiveGuard.enforced[0]["strict"] is True  # compte illisible : refus, pas de WARN
 
 
 def test_missing_prepared_json_fails(tmp_path):
@@ -374,6 +378,7 @@ def test_multi_copy_track_is_patched_with_the_generated_json(tmp_path):
     assert Path(prepared.path).name == "video_1.wrapped.mkv" and prepared.map_arg == "0:v:0"
     assert _PermissiveGuard.seen[0]["source_stream_index"] == 0  # source lue directement : flux sélectionné
     assert _PermissiveGuard.seen[0]["exact_source"] is True  # HDR10+ généré : compte exact (lot 4, multi-pistes)
+    assert _PermissiveGuard.enforced[0]["strict"] is True
 
 
 def test_multi_fel_fallback_regenerates_the_hdr10plus(tmp_path):

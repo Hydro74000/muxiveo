@@ -454,6 +454,7 @@ class MultiVideoPipelineRunner:
                         hdr10p_json=hdr10p_json if outputs_hdr10plus(video) else None,
                         on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
                         on_info=cb.log_info,
+                        strict=generates_hdr10plus(video) and outputs_hdr10plus(video),  # compte illisible : refus
                     )
                 except FrameCountAuditError as exc:
                     cb.check_cancelled(signals)

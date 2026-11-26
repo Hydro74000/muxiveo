@@ -792,6 +792,9 @@ class MetadataInjectRunner:
                             hdr10p_json=hdr10p_json if (outputs_hdr10plus(video) and hdr10p_json.exists()) else None,
                             on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
                             on_info=lambda msg: signals.progress.emit(msg),
+                            # HDR10+ généré : compte illisible = alignement invérifiable → refus (dérogation
+                            # d'audit possible), comme la route NVEncC.
+                            strict=generates_hdr10plus(video) and outputs_hdr10plus(video),
                         )
                     except FrameCountAuditError as exc:
                         _check()

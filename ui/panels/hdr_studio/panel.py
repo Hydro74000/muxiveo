@@ -766,14 +766,15 @@ class HdrStudio(QWidget):
             owned = None
             try:
                 owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-mesure")
+                check = self._frame_check(Path(info.path), snapshot.stream_index,
+                                          snapshot.frames if snapshot.frames_exact else None, cancel)
                 # Mesure rapide : la progression reçoit la position dans le flux (images).
                 measurement, backend = measure_track(
                     engine, Path(info.path), snapshot.stream_index, owned.path,
                     threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)), total_frames=frames, fps=fps,
                     fast=fast, progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
-                    cancel=cancel, frame_check=self._frame_check(
-                        Path(info.path), snapshot.stream_index,
-                        snapshot.frames if snapshot.frames_exact else None, cancel))
+                    cancel=cancel, frame_check=check)
+                measurement = check.verified(measurement)  # compte exact obtenu pendant la mesure : mémorisé
                 self._cache.store_measurement(Path(info.path), snapshot.stream_index, measurement)
                 self.log_message.emit("INFO", translate_text("Mesure de l'image : {backend}", backend=backend))
                 self._measured.emit(token, measurement, "")

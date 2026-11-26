@@ -382,6 +382,12 @@ def describe_plan(plan: PatchPlan) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _may_write_per_frame(request: HdrPatchRequest) -> bool:
+    """La requête peut produire un HDR10+ recalculé (recalcul demandé, réalignement du HDR10+)."""
+    realign = set(request.realign or ())
+    return bool(request.hdr10plus is not None and request.hdr10plus.recompute) or bool(realign & {"all", "hdr10plus"})
+
+
 def _load(request: HdrPatchRequest, ctx: ExecutionContext,
           logger: EmitterLogger) -> tuple[InspectionReport, ImageMeasurement | None, FrameCountCheck]:
     config = ctx.config
@@ -404,8 +410,11 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
         for message in report.errors:
             logger.emit("warning", message)
         ctx.cancel.raise_if_cancelled()
-    frame_check = frame_count_check(snapshot.frames if snapshot.frames_exact else None, packet_counter(
-        ctx.tool("ffprobe"), Path(snapshot.path), snapshot.stream_index, ctx.cancel.event))
+    # Comptage exact seulement si la correction peut écrire image par image (HDR10+ recalculé, réalignement du
+    # HDR10+) ; corrections statiques et RPU : aucun comptage supplémentaire (statut affiché « non vérifié »).
+    counter = packet_counter(ctx.tool("ffprobe"), Path(snapshot.path), snapshot.stream_index, ctx.cancel.event) \
+        if _may_write_per_frame(request) else None
+    frame_check = frame_count_check(snapshot.frames if snapshot.frames_exact else None, counter)
     measurement = load_checked_measurement(cache, snapshot, frame_check)
     wanted = request.measurement
     if wanted != "cached" and (measurement is None or (measurement.is_estimate and wanted == "full")):

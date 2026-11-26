@@ -299,3 +299,84 @@ def test_generated_hdr10plus_audit_on_a_secondary_track_counts_its_packets(tmp_p
     audit = double.guard.audit(source=tmp_path / "s.mkv", encoded=tmp_path / "e.hevc", hdr10p_json=json_path,
                                known_encoded_frames=38, source_stream_index=2, exact_source=True)
     assert audit.source == 50
+
+
+# ── Corrections de la relecture (lot 4) ───────────────────────────────────────
+
+
+def test_static_only_correction_never_counts_even_without_quick_count(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from core.service import ExecutionContext, ListSink
+    from tests.test_hdr_inspection import _info
+
+    _cached_measurement(tmp_path)
+    counted: list[int] = []
+    monkeypatch.setattr(hdr_patch_ops, "packet_counter", lambda *a, **k: (lambda: counted.append(1) or 10))
+    config = SimpleNamespace(app_data_dir=tmp_path / "data", display_peak_nits=1000, tool_ffmpeg="ffmpeg",
+                             tool_dovi_tool="dovi_tool", tool_hdr10plus="hdr10plus_tool",
+                             ensure_work_dir=lambda: tmp_path / "work")
+    report = _report(tmp_path)
+    ports = {"file_inspector": lambda **_k: SimpleNamespace(inspect=lambda path: _info(Path(path), frames=None)),
+             "dynamic_report": lambda *a, **k: report}
+    ctx = ExecutionContext.create(config, ListSink(), ports=ports)
+    call(CATALOG, "hdr.patch", {"source": str(tmp_path / "film.mkv"), "output": str(tmp_path / "fix.mkv"),
+                                "light_levels": {"max_cll": 1000, "max_fall": 400}, "dry_run": True}, ctx)
+    assert counted == []  # compte rapide absent, correction statique : aucun comptage
+
+
+def test_unreadable_exact_source_count_is_refused_in_strict_mode(tmp_path):
+    from core.workflows.encode.runtime.frame_count_guard import (
+        FrameCountAuditError,
+        FrameCountGuard,
+        MetadataAdjustment,
+    )
+
+    guard = FrameCountGuard()
+    guard._recount_video_frames = lambda path: None  # type: ignore[method-assign]
+    guard._hdr10p_json_frame_count = lambda path: 38  # type: ignore[method-assign]
+    json_path = tmp_path / "hdr10plus.json"
+    json_path.write_text("{}", encoding="utf-8")
+    audit = guard.audit(source=tmp_path / "s.mkv", encoded=tmp_path / "e.hevc", hdr10p_json=json_path,
+                        known_encoded_frames=38, exact_source=True)
+    assert audit.source is None
+    with pytest.raises(FrameCountAuditError):
+        guard.enforce(audit, adjustment=MetadataAdjustment.TRIM_TAIL, hdr10p_json=json_path, strict=True)
+
+
+def test_studio_cancel_button_during_the_write_count_publishes_cancelled(qt_app, tmp_path, monkeypatch):
+    from core.fel.engine import FelCancelled
+    from core.output_commit import ExistingPolicy
+
+    started = threading.Event()
+
+    def blocking(_ffprobe, _path, _stream, cancel=None):
+        def count() -> int:
+            started.set()
+            assert cancel is not None and cancel.wait(5)
+            raise FelCancelled("Comptage des images annulé")
+        return count
+
+    monkeypatch.setattr(panel_module, "packet_counter", blocking)
+    monkeypatch.setattr(panel_module, "confirm_output", lambda *_a, **_k: ExistingPolicy.allow())
+    studio = _studio(qt_app, tmp_path)
+    states: list[str] = []
+    studio.op_state_changed.connect(lambda state, _message: states.append(state))
+    try:
+        report = _report(tmp_path)
+        studio._report = report
+        studio._editor.set_report(report, _measurement(tmp_path))
+        studio._editor.h10_recompute.setChecked(True)
+        studio._editor.output.setText(str(tmp_path / "fix.mkv"))
+        studio._editor._sync()
+        plan = studio._editor.plan()
+        assert plan is not None
+        monkeypatch.setattr(studio, "_extensions_admitted", lambda: True)
+        studio.write_patch(plan)
+        assert started.wait(5) and studio._busy and studio._cancel_btn.isVisibleTo(studio)
+        studio._cancel_btn.click()
+        assert _wait(qt_app, lambda: "cancelled" in states, 5.0)
+        assert not (tmp_path / "fix.mkv").exists()
+        assert not [p for p in tmp_path.iterdir() if p.name.endswith(".partial")]
+    finally:
+        _close(qt_app, studio)
