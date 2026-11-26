@@ -144,3 +144,47 @@ def test_hdr10plus_generation_remeasures_over_a_corrupted_cache(tmp_path):
     assert engine.calls == [("base", "all")] and len(statistics.frames) == 4 and origin == "cpu"
     reread = cache.load_measurement(source, 0)
     assert reread is not None and reread.frames == 4  # entrée remplacée par la mesure neuve
+
+
+# ── Corrections de la relecture (lot 3) ───────────────────────────────────────
+
+
+def test_dynamic_entry_without_its_analyses_reads_as_absent(tmp_path):
+    source, cache, key = _setup(tmp_path)
+    entry = _entries(cache._root, key)["dynamique"]
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    _write_npz(entry, {"version": 1})
+    assert cache.load(source, 0) is None
+
+
+def test_dolby_vision_analysis_with_empty_l1_reads_as_absent(tmp_path):
+    from core.hdr_inspection.dovi import parse_dovi_export
+    from tests.test_hdr_inspection import _rpu, _write_export
+
+    source, cache, key = _setup(tmp_path)
+    dovi = parse_dovi_export(_write_export(tmp_path / "rpu.json", [_rpu(i) for i in range(5)]))
+    cache.store(source, 0, dovi, None)
+    assert cache.load(source, 0) is not None  # entrée cohérente relue
+    entry = _entries(cache._root, key)["dynamique"]
+    with np.load(entry, allow_pickle=False) as data:
+        arrays = {name: data[name] for name in data.files}
+    arrays["dovi.l1_max"] = np.zeros(0, np.uint16)  # 5 images annoncées, aucun L1
+    meta = arrays.pop("meta")
+    buffer = io.BytesIO()
+    np.savez_compressed(buffer, meta=meta, **arrays)
+    entry.write_bytes(buffer.getvalue())
+    assert cache.load(source, 0) is None
+
+
+def test_fel_moment_thumbnails_of_another_shape_read_as_absent(tmp_path):
+    from core.hdr_inspection.fel_analyzer import Moment
+
+    source, cache, _key = _setup(tmp_path)
+    good = np.zeros((4, 6, 3), np.uint8)
+    samples = (FelSample(10.0, {"ton": 1.0}),)
+    moment = Moment(10.0, 1.0, good, good, np.zeros((4, 5, 3), np.uint8))  # carte d'écart d'une autre taille
+    cache.store_fel(source, 0, FelReport(None, samples, summarise(list(samples)), (moment,)))
+    assert cache.load_fel(source, 0) is None
+    cache.store_fel(source, 0, FelReport(None, samples, summarise(list(samples)),
+                                         (Moment(10.0, 1.0, good, good, good),)))
+    assert cache.load_fel(source, 0) is not None

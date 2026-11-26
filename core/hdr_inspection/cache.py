@@ -71,6 +71,32 @@ def _int_list(value: object, length: int) -> list[int]:
     return cast(list[int], value)
 
 
+def _frames_of(values: dict) -> int:
+    frames = values.get("frames")
+    _require(isinstance(frames, int) and not isinstance(frames, bool) and frames >= 0)
+    return cast(int, frames)
+
+
+def _per_frame(arrays: dict[str, np.ndarray], prefix: str, names: tuple[str, ...], frames: int) -> None:
+    """Tableaux d'une analyse dynamique : une valeur numérique par image ; débuts de plans croissants dans
+    [0, frames)."""
+    for name in names:
+        array = arrays[f"{prefix}.{name}"]
+        _require(array.shape == (frames,) and np.issubdtype(array.dtype, np.number))
+    starts = arrays[f"{prefix}.scene_starts"]
+    _require(starts.ndim == 1 and np.issubdtype(starts.dtype, np.integer))
+    _require(bool(np.all(starts >= 0)) and bool(np.all(starts < max(frames, 1))) and bool(np.all(np.diff(starts) > 0)))
+
+
+def _checked_moment(data: dict[str, np.ndarray], index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vignettes d'un moment FEL : trois images RGB 8 bits (H × W × 3) de même taille."""
+    images = tuple(data[f"moment{index}.{name}"] for name in ("mapped", "reconstructed", "difference"))
+    shape = images[0].shape
+    _require(len(shape) == 3 and shape[2] == 3 and shape[0] > 0 and shape[1] > 0)
+    _require(all(image.shape == shape and image.dtype == np.uint8 for image in images))
+    return images[0], images[1], images[2]
+
+
 def _checked_measurement(layer: str, meta: dict, arrays: dict[str, np.ndarray]) -> ImageMeasurement:
     """Mesure relue, tableaux cohérents entre eux (sinon :class:`_InvalidEntry`)."""
     _require(meta.get("layer") == layer)
@@ -140,10 +166,13 @@ class InspectionCache:
         meta, arrays = opened
         try:
             dovi = hdr10plus = None
-            _require(isinstance(meta.get("dovi"), (dict, type(None))))
-            _require(isinstance(meta.get("hdr10plus"), (dict, type(None))))
+            # Les deux clés sont toujours écrites par ``store`` : une entrée qui en manque est invalide.
+            _require("dovi" in meta and "hdr10plus" in meta)
+            _require(isinstance(meta["dovi"], (dict, type(None))) and isinstance(meta["hdr10plus"], (dict, type(None))))
+            _require(meta["dovi"] is not None or meta["hdr10plus"] is not None)
             if meta.get("dovi") is not None:
                 values = dict(meta["dovi"])
+                _per_frame(arrays, "dovi", ("l1_min", "l1_max", "l1_avg"), _frames_of(values))
                 values["active_areas"] = tuple(ActiveArea(**a) for a in values["active_areas"])
                 values["l6"] = tuple(L6Set(**s) for s in values["l6"])
                 for name in ("l2_targets", "l8_targets", "l10_targets", "l9_primaries", "l11_content", "source_display"):
@@ -151,6 +180,7 @@ class InspectionCache:
                 dovi = DoviAnalysis(**values, **{k[5:]: v for k, v in arrays.items() if k.startswith("dovi.")})
             if meta.get("hdr10plus") is not None:
                 values = dict(meta["hdr10plus"])
+                _per_frame(arrays, "hdr10plus", ("max_scl", "average_rgb", "p99"), _frames_of(values))
                 for name in ("windows", "targeted_display"):
                     values[name] = _tuple(values[name])
                 hdr10plus = Hdr10PlusAnalysis(**values, **{k[10:]: v for k, v in arrays.items()
@@ -245,8 +275,7 @@ class InspectionCache:
             _require(isinstance(meta.get("facts"), (dict, type(None))))
             samples = [FelSample(float(time_s), {name: float(value) for name, value in zip(names, row)})
                        for time_s, row in zip(times, values)]
-            moments = tuple(Moment(float(item["time_s"]), float(item["score"]), data[f"moment{i}.mapped"],
-                                   data[f"moment{i}.reconstructed"], data[f"moment{i}.difference"])
+            moments = tuple(Moment(float(item["time_s"]), float(item["score"]), *_checked_moment(data, i))
                             for i, item in enumerate(meta["moments"]))
             facts = LayerFacts(**{**meta["facts"], "el_size": _tuple(meta["facts"]["el_size"]) or None}) \
                 if meta.get("facts") else None
