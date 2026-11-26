@@ -87,6 +87,18 @@ class AlignmentError(RuntimeError):
         self.ranges = ranges
 
 
+class Film2UndecodableError(AlignmentError):
+    """Film 2 indécodable (table d'images illisible ou décodage en échec) : refus par défaut (décision DC), cause
+    d'origine dans le message. ``metadata_alignment_possible`` : coupes des métadonnées exploitables, l'alignement
+    forcé sur elles seules (non vérifié sur l'image) peut être proposé."""
+
+    code = "film2_undecodable"
+
+    def __init__(self, message: str, *, metadata_alignment_possible: bool) -> None:
+        super().__init__(message)
+        self.metadata_alignment_possible = metadata_alignment_possible
+
+
 @dataclass(frozen=True)
 class Segment:
     """Images ``[film1_start, film1_start + length)`` de Film 1 ↔ ``[film2_start, …)`` de Film 2."""
@@ -136,6 +148,11 @@ class AlignmentMap:
     def identity(self) -> bool:
         return (self.film1_frames == self.film2_frames and len(self.segments) == 1
                 and self.segments[0] == Segment(0, self.film1_frames, 0) and not self.uncovered)
+
+    @property
+    def metadata_only(self) -> bool:
+        """Carte établie sur les seules coupes des métadonnées (alignement forcé) : jamais vérifiée sur l'image."""
+        return bool(self.stats.get("metadata_only"))
 
 
 # --- Film 2 : fenêtres décodées ou passe complète ----------------------------------------------------
@@ -899,9 +916,13 @@ def _framed_lead(ctx: _Context, run: np.ndarray, offset: int, other: int) -> boo
 
 
 def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, frame_rate: float,
-          force_full_film2: bool = False, hooks: ProcessHooks | None = None,
+          force_full_film2: bool = False, metadata_only: bool = False, hooks: ProcessHooks | None = None,
           log: Callable[[str], None] | None = None) -> AlignmentMap:
-    """Carte Film 1 → Film 2 vérifiée, ou :class:`AlignmentError`."""
+    """Carte Film 1 → Film 2 vérifiée, ou :class:`AlignmentError`.
+
+    ``metadata_only`` (alignement forcé, décision DC) : aucune lecture de Film 2 ; référence = coupes des
+    métadonnées, programmation dynamique inchangée, jonctions aux coupes, géométrie nulle, aucune validation sur
+    l'image ; sans coupe exploitable : refus."""
     hooks = hooks or ProcessHooks()
     hooks.check()
     say = log or (lambda _message: None)
@@ -915,13 +936,19 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     hooks.check()
     film1_cut = np.zeros(n1 + 1, dtype=bool)
     film1_cut[cuts1] = True
-    if force_full_film2:
-        film2.load_full("vérification image par image demandée")
-    if not film2.windowed and film2.full is None:
-        film2.load_full("entrée non indexable")
-    if film2.full is None and not metadata.has_reference_cuts:
-        film2.load_full("aucune coupe exploitable dans les métadonnées")
-    reference = detect_cuts(film2.full) if film2.full is not None else metadata.reference_cuts
+    if metadata_only:
+        if not metadata.has_reference_cuts:
+            raise AlignmentError(translate_text(
+                "Alignement forcé impossible : aucune coupe exploitable dans les métadonnées de Film 2."))
+        reference = metadata.reference_cuts
+    else:
+        if force_full_film2:
+            film2.load_full("vérification image par image demandée")
+        if not film2.windowed and film2.full is None:
+            film2.load_full("entrée non indexable")
+        if film2.full is None and not metadata.has_reference_cuts:
+            film2.load_full("aucune coupe exploitable dans les métadonnées")
+        reference = detect_cuts(film2.full) if film2.full is not None else metadata.reference_cuts
 
     # Alignement grossier puis programmation dynamique monotone sur les plans de Film 1.
     block = max(1000, int(BLOCK_SECONDS * fps))
@@ -935,6 +962,8 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     runs = _segments_from_shots(bounds, model.offsets(path))
     if all(value is None for _a, _b, value, _k0, _k1 in runs):
         raise AlignmentError(translate_text("Aucun plan de Film 1 ne correspond à Film 2."))
+    if metadata_only:
+        return _metadata_only_map(film1, metadata, runs, cuts1, band1, reference, best_score, say)
 
     ctx = _geometry(film1, film2, runs, cuts1, reference, n1, n2, band1, hooks, say)
 
@@ -955,7 +984,7 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
     covered = np.zeros(n1, dtype=bool)
     for seg in built:
         covered[seg.film1_start:seg.film1_end] = True
-    uncovered = _uncovered(ctx, covered, built)
+    uncovered = _uncovered(film1, covered, built, lambda frame: bool(ctx.film2.get(frame, 1).top[0] < 0))
     report = _validate_shots(ctx, built, max(1, int(SAMPLE_SECONDS * fps)))
     if report.better and film2.full is None:
         film2.load_full("décalage voisin plus net sur {count} plan(s) : vérification image par image",
@@ -1013,6 +1042,36 @@ def align(film1: Signatures, metadata: Film2Metadata, film2: Film2Frames, *, fra
         "band": ctx.band, "dx": ctx.dx, "dy": ctx.dy, "dp_score": best_score,
         "reframed_shots": len({shot for shot, _d in ctx.reframed}),
         "excursions": len(ctx.excursions),
+    }
+    return AlignmentMap(n1, n2, tuple(built), _runs(~used), uncovered,
+                        _expected_cuts(metadata, reference, built, uncovered, n1), stats)
+
+
+def _metadata_only_map(film1: Signatures, metadata: Film2Metadata, runs: list, cuts1: np.ndarray, band1: Band,
+                       reference: np.ndarray, best_score: float, say: Callable[[str], None]) -> AlignmentMap:
+    """Alignement forcé : segments de la programmation dynamique bornés aux coupes de Film 1 (aucune jonction
+    affinée par l'image), géométrie nulle, plages sans correspondance comblées selon D1 (image de Film 2 jamais
+    lue : jamais réputée noire). Aucune lecture de Film 2."""
+    n1, n2 = len(film1), metadata.frames
+    _features, contrast = band_features_contrast(film1, band1)
+    raw = _absorb_blank([(a, b, d) for a, b, d, _k0, _k1 in runs], contrast >= MIN_STD)
+    built = _bounded(raw, n2)
+    _check_order(built)
+    covered = np.zeros(n1, dtype=bool)
+    for seg in built:
+        covered[seg.film1_start:seg.film1_end] = True
+    uncovered = _uncovered(film1, covered, built, lambda _frame: False)
+    say("[WARN] " + translate_text(
+        "Alignement établi sur les seules coupes des métadonnées, non vérifié sur l'image (forcé)."))
+    used = np.zeros(n2, dtype=bool)
+    for seg in built:
+        used[seg.film2_start:seg.film2_end] = True
+    stats = {
+        "film1_cuts": int(cuts1.size), "reference_cuts": int(reference.size), "segments": len(built),
+        "change_points": int(metadata.change_points.size), "shots_checked": 0, "shot_concordance": None,
+        "discordant_shots": 0, "better_offset_shots": 0, "film2_decoded": 0, "film2_full": False,
+        "film2_full_reason": "", "exhaustive": False, "band": None, "dx": 0.0, "dy": 0.0, "dp_score": best_score,
+        "reframed_shots": 0, "excursions": 0, "metadata_only": True,
     }
     return AlignmentMap(n1, n2, tuple(built), _runs(~used), uncovered,
                         _expected_cuts(metadata, reference, built, uncovered, n1), stats)
@@ -1200,15 +1259,16 @@ def _runs(mask: np.ndarray) -> tuple[tuple[int, int], ...]:
     return tuple((int(a), int(b - a)) for a, b in zip(edges[::2], edges[1::2]))
 
 
-def _uncovered(ctx: _Context, covered: np.ndarray, built: list[Segment]) -> tuple[Uncovered, ...]:
+def _uncovered(film1: Signatures, covered: np.ndarray, built: list[Segment],
+               film2_black: Callable[[int], bool]) -> tuple[Uncovered, ...]:
+    """Plages de Film 1 sans correspondance ; ``film2_black`` : image de Film 2 recopiée noire (lecture)."""
     out = []
     for start, length in _runs(~covered):
-        black = bool(np.all(ctx.film1.top[start:start + length] < 0))
+        black = bool(np.all(film1.top[start:start + length] < 0))
         before = next((s for s in reversed(built) if s.film1_end <= start), None)
         after = next((s for s in built if s.film1_start >= start + length), None)
         source = (before.film2_end - 1) if before is not None else (after.film2_start if after is not None else 0)
-        window = ctx.film2.get(source, 1)
-        out.append(Uncovered(start, length, black, source, bool(window.top[0] < 0)))
+        out.append(Uncovered(start, length, black, source, film2_black(source)))
     return tuple(out)
 
 

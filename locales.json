@@ -12174,5 +12174,61 @@
   "chapitres ciblant des pistes (ChapterTrack)": {
     "fra": "chapitres ciblant des pistes (ChapterTrack)",
     "eng": "chapters targeting tracks (ChapterTrack)"
+  },
+  "Alignement forcé impossible : aucune coupe exploitable dans les métadonnées de Film 2.": {
+    "fra": "Alignement forcé impossible : aucune coupe exploitable dans les métadonnées de Film 2.",
+    "eng": "Forced alignment impossible: no usable cut in the metadata of Film 2."
+  },
+  "Alignement établi sur les seules coupes des métadonnées, non vérifié sur l'image (forcé).": {
+    "fra": "Alignement établi sur les seules coupes des métadonnées, non vérifié sur l'image (forcé).",
+    "eng": "Alignment established on the metadata cuts only, not verified on the picture (forced)."
+  },
+  "Vérification de Film 2 image par image sans objet : alignement forcé sur les métadonnées.": {
+    "fra": "Vérification de Film 2 image par image sans objet : alignement forcé sur les métadonnées.",
+    "eng": "Frame-by-frame verification of Film 2 not applicable: alignment forced on the metadata."
+  },
+  "Alignement par les coupes des métadonnées, image de Film 2 non vérifiée : {segments} segment(s), {uncovered} image(s) de Film 1 sans correspondance.": {
+    "fra": "Alignement par les coupes des métadonnées, image de Film 2 non vérifiée : {segments} segment(s), {uncovered} image(s) de Film 1 sans correspondance.",
+    "eng": "Alignment by the metadata cuts, Film 2 picture not verified: {segments} segment(s), {uncovered} frame(s) of Film 1 without a match."
+  },
+  "L5 de Film 1 seul : image de Film 2 non lue (alignement forcé)": {
+    "fra": "L5 de Film 1 seul : image de Film 2 non lue (alignement forcé)",
+    "eng": "L5 of Film 1 only: Film 2 picture not read (forced alignment)"
+  },
+  "Alignement forcé : correspondance établie par les coupes des métadonnées à l'étape d'alignement, image de Film 2 non vérifiée{counted}.": {
+    "fra": "Alignement forcé : correspondance établie par les coupes des métadonnées à l'étape d'alignement, image de Film 2 non vérifiée{counted}.",
+    "eng": "Forced alignment: match established by the metadata cuts at the alignment step, Film 2 picture not verified{counted}."
+  },
+  "{what} : alignement par les coupes des métadonnées, image de Film 2 non vérifiée": {
+    "fra": "{what} : alignement par les coupes des métadonnées, image de Film 2 non vérifiée",
+    "eng": "{what}: alignment by the metadata cuts, Film 2 picture not verified"
+  },
+  "Métadonnées injectées telles quelles": {
+    "fra": "Métadonnées injectées telles quelles",
+    "eng": "Metadata injected as is"
+  },
+  "Chapitres de {name} non importés : alignement forcé sur les métadonnées, image de Film 2 non lue, projection impossible.": {
+    "fra": "Chapitres de {name} non importés : alignement forcé sur les métadonnées, image de Film 2 non lue, projection impossible.",
+    "eng": "Chapters of {name} not imported: alignment forced on the metadata, Film 2 picture not read, projection impossible."
+  },
+  "Alignement forcé sur les coupes des métadonnées de Film 2 : décalage non vérifié sur l'image.": {
+    "fra": "Alignement forcé sur les coupes des métadonnées de Film 2 : décalage non vérifié sur l'image.",
+    "eng": "Alignment forced on the metadata cuts of Film 2: offset not verified on the picture."
+  },
+  "Film 2 non décodable": {
+    "fra": "Film 2 non décodable",
+    "eng": "Film 2 cannot be decoded"
+  },
+  "L'image de Film 2 ne peut pas être lue : l'alignement n'a pas pu être vérifié.": {
+    "fra": "L'image de Film 2 ne peut pas être lue : l'alignement n'a pas pu être vérifié.",
+    "eng": "The picture of Film 2 cannot be read: the alignment could not be verified."
+  },
+  "Cause : {cause}\n\nL'alignement peut être forcé sur les seules coupes des métadonnées de Film 2. Risque : un décalage éventuel entre les deux films ne sera pas vérifié sur l'image.": {
+    "fra": "Cause : {cause}\n\nL'alignement peut être forcé sur les seules coupes des métadonnées de Film 2. Risque : un décalage éventuel entre les deux films ne sera pas vérifié sur l'image.",
+    "eng": "Cause: {cause}\n\nThe alignment can be forced on the metadata cuts of Film 2 only. Risk: any offset between the two films will not be verified on the picture."
+  },
+  "Forcer l'alignement sur les métadonnées": {
+    "fra": "Forcer l'alignement sur les métadonnées",
+    "eng": "Force alignment on the metadata"
   }
 }

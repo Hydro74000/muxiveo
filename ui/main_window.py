@@ -2078,6 +2078,7 @@ class MainWindow(QMainWindow):
         self._hybrid_panel.set_operation_start_guard(self._can_start_operation)
         self._hybrid_panel.use_global_controls()
         self._dovi_panel.use_global_controls()
+        self._dovi_panel.forced_rerun_requested.connect(lambda: self._launch_operation("merge_dovi"))
         self._hybrid_panel.ready_changed.connect(self._on_ready_changed)
         self._dovi_panel.ready_changed.connect(self._on_ready_changed)
         self._hybrid_panel.op_state_changed.connect(self._on_hybrid_op_state)

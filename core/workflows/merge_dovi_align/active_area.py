@@ -101,7 +101,8 @@ def _snap(value: int, dominants: list[int]) -> int:
 
 
 def plan_active_area(film1: Signatures, cuts1: np.ndarray, alignment: AlignmentMap, *,
-                     film2_l5: np.ndarray | None, film2_size: tuple[int, int]) -> ActiveAreaPlan:
+                     film2_l5: np.ndarray | None, film2_size: tuple[int, int],
+                     film2_read: bool = True) -> ActiveAreaPlan:
     """L5 de la sortie : conservé si Film 1 a les dimensions de Film 2 et que le L5 de Film 2 concorde avec les
     barres mesurées de Film 1 sur toutes les images (jamais une ligne visible couverte, bords francs à
     ± ``TOLERANCE`` px) ; sinon réécrit d'après Film 1."""
@@ -137,6 +138,9 @@ def plan_active_area(film1: Signatures, cuts1: np.ndarray, alignment: AlignmentM
         else:
             ranges.append((a, b, area))
 
+    if not film2_read:
+        # Alignement forcé (décision DC) : Film 2 jamais lu, son L5 n'est pas comparé.
+        return ActiveAreaPlan(False, tuple(ranges), "L5 de Film 1 seul : image de Film 2 non lue (alignement forcé)")
     if film2_l5 is not None and (width, height) == tuple(film2_size):
         reason, args = _concordance(shots, filled, alignment, film2_l5)
         if not reason:

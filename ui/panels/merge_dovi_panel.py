@@ -17,13 +17,14 @@ Signaux exposés :
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
-    QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton,
+    QHBoxLayout, QLabel, QLayout, QLineEdit, QMessageBox, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -36,7 +37,7 @@ from core.workflows.encode.runtime.frame_count_guard import MetadataAdjustment
 from core.workflows.merge_dovi_align.session import AlignmentMode, AlignmentOptions
 from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult, HdrState,
-    MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
+    MergeDoviFailure, MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
 )
 from ui.confirm import confirm_output, ValidationOverridePrompt
 from ui.shutdown import defer_close
@@ -862,12 +863,17 @@ class MergeDoviPanel(QWidget):
     op_progress_pct = Signal(int)
     op_progress = Signal(str)
     tool_output = Signal(str, str)
+    #: Alignement forcé accepté (décision DC) : relance par la barre d'exécution, même chemin que « Lancer ».
+    forced_rerun_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config    = config
         self._workflow: MergeDoviWorkflow | None = None
         self._running   = False
+        #: Lancement suivant en alignement forcé (une fois, jamais mémorisé).
+        self._force_metadata_only = False
+        self._global_controls = False
         self._build_ui()
         apply_translations(self)
         self._init_workflow()
@@ -1060,6 +1066,13 @@ class MergeDoviPanel(QWidget):
             ffprobe=self._config.tool_ffprobe, dovi_tool=self._config.tool_dovi_tool,
             hdr10plus_tool=self._config.tool_hdr10plus,
         )
+        alignment = self._config_section.alignment_options
+        if self._force_metadata_only and alignment.auto:
+            # Décision DC : demandé par la fenêtre d'échec, pour ce lancement seulement.
+            alignment = replace(alignment, metadata_only=True)
+            self.log_message.emit("WARN", translate_text(
+                "Alignement forcé sur les coupes des métadonnées de Film 2 : décalage non vérifié sur l'image."))
+        self._force_metadata_only = False
         try:
             self._workflow.start(
                 film1        = film1,
@@ -1069,7 +1082,7 @@ class MergeDoviPanel(QWidget):
                 dovi_profile = self._config_section.dovi_profile,
                 metadata_adjustment = self._config_section.metadata_adjustment,
                 existing     = existing,
-                alignment    = self._config_section.alignment_options,
+                alignment    = alignment,
             )
         except OSError as exc:
             # Dossier de travail non créable (droits, disque) : rien n'a démarré.
@@ -1168,7 +1181,7 @@ class MergeDoviPanel(QWidget):
         self._set_idle_state()
         self.op_state_changed.emit("cancelled", translate_text("Annulé."))
 
-    def _on_workflow_failed(self, step: WorkflowStep, message: str) -> None:
+    def _on_workflow_failed(self, step: WorkflowStep, message: str, detail: object = None) -> None:
         step_label = translate_text(_STEP_LABELS[step])
         local_message = translate_text(message)
         self._step_progress.set_error(step, local_message)
@@ -1183,6 +1196,38 @@ class MergeDoviPanel(QWidget):
         )
         self._set_idle_state()
         self.op_state_changed.emit("failed", translate_text("Échec."))
+        if (isinstance(detail, MergeDoviFailure) and detail.code == "film2_undecodable"
+                and detail.metadata_alignment_possible):
+            # Après le passage au repos de la barre d'exécution : la relance suit le chemin de « Lancer ».
+            QTimer.singleShot(0, lambda: self._offer_forced_alignment(local_message))
+
+    def _offer_forced_alignment(self, cause: str) -> None:
+        """Film 2 indécodable (décision DC) : proposer l'alignement forcé sur les coupes des métadonnées."""
+        if self._running or not self._ask_forced_alignment(cause):
+            return
+        self._force_metadata_only = True
+        try:
+            if self._global_controls:
+                self.forced_rerun_requested.emit()
+            else:
+                self._on_run()
+        finally:
+            self._force_metadata_only = False   # lancement refusé : jamais reporté sur un « Lancer » suivant
+
+    def _ask_forced_alignment(self, cause: str) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(translate_text("Film 2 non décodable"))
+        box.setText(translate_text(
+            "L'image de Film 2 ne peut pas être lue : l'alignement n'a pas pu être vérifié."))
+        box.setInformativeText(translate_text(
+            "Cause : {cause}\n\nL'alignement peut être forcé sur les seules coupes des métadonnées de Film 2. "
+            "Risque : un décalage éventuel entre les deux films ne sera pas vérifié sur l'image.", cause=cause))
+        force = box.addButton(translate_text("Forcer l'alignement sur les métadonnées"),
+                              QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(translate_text("Annuler"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is force
 
     # ------------------------------------------------------------------
     # Utilitaires
@@ -1193,6 +1238,7 @@ class MergeDoviPanel(QWidget):
 
     def use_global_controls(self) -> None:
         self._local_actions.hide()
+        self._global_controls = True
 
     def operation_state(self) -> OperationState:
         film1, film2 = self._file_section.film1, self._file_section.film2

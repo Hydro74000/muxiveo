@@ -15,7 +15,7 @@ Signaux :
     MergeDoviWorkflow.step_progress(step: WorkflowStep, message: str)
     MergeDoviWorkflow.step_finished(step: WorkflowStep, result: StepResult)
     MergeDoviWorkflow.workflow_finished(output_path: str)
-    MergeDoviWorkflow.workflow_failed(step: WorkflowStep, error: str)
+    MergeDoviWorkflow.workflow_failed(step: WorkflowStep, error: str, detail: MergeDoviFailure | None)
 
 Conventions :
     - Jamais shell=True
@@ -109,7 +109,7 @@ from core.matroska.ids import (
 from core.matroska.mux_plan import deterministic_source_identity
 from core.i18n import translate_text
 from core.matroska.native_muxer import MatroskaNativeMuxer
-from core.workflows.merge_dovi_align.align import AlignmentError
+from core.workflows.merge_dovi_align.align import AlignmentError, Film2UndecodableError
 from core.workflows.merge_dovi_align.chapters import edition_flags, project_chapters, unsupported_reason
 from core.workflows.merge_dovi_align.probe import DecoderPreference, ProbeError
 from core.workflows.merge_dovi_align.process import ProcessHooks
@@ -761,11 +761,22 @@ class _WorkflowPaths:
 # Exceptions
 # =============================================================================
 
+@dataclass(frozen=True)
+class MergeDoviFailure:
+    """Échec structuré transmis par ``workflow_failed`` en plus du texte : ``code`` stable (ex.
+    ``film2_undecodable``), ``metadata_alignment_possible`` : l'alignement forcé sur les coupes des métadonnées
+    peut être proposé (décision DC)."""
+
+    code: str
+    metadata_alignment_possible: bool = False
+
+
 class WorkflowError(RuntimeError):
-    """Erreur bloquante pendant le workflow."""
-    def __init__(self, step: WorkflowStep, message: str) -> None:
+    """Erreur bloquante pendant le workflow ; ``detail`` : échec structuré éventuel."""
+    def __init__(self, step: WorkflowStep, message: str, detail: MergeDoviFailure | None = None) -> None:
         self.step    = step
         self.message = message
+        self.detail  = detail
         super().__init__(f"[{step.name}] {message}")
 
 
@@ -799,7 +810,7 @@ class MergeDoviWorkflow(QObject):
     tool_output = Signal(str, str)           # outil, sortie complète pour le journal détaillé
     step_finished   = Signal(object, object)  # WorkflowStep, StepResult
     workflow_finished = Signal(str)           # chemin du fichier de sortie
-    workflow_failed   = Signal(object, str)   # WorkflowStep, message d'erreur
+    workflow_failed   = Signal(object, str, object)   # WorkflowStep, message d'erreur, MergeDoviFailure | None
     workflow_cancelled = Signal()             # annulation demandée par l'utilisateur
 
     def __init__(
@@ -881,7 +892,7 @@ class MergeDoviWorkflow(QObject):
         try:
             reservation = OutputReservation.acquire(output_path, existing=existing)
         except (OutputBusyError, OutputRefusedError) as exc:
-            self.workflow_failed.emit(WorkflowStep.VALIDATION, str(exc))
+            self.workflow_failed.emit(WorkflowStep.VALIDATION, str(exc), None)
             return
         try:
             # Dossier process neuf, propriété exclusive de cette exécution.
@@ -971,6 +982,7 @@ class MergeDoviWorkflow(QObject):
         with self._procs_lock:
             self._run_procs = []
         outcome: tuple[str, WorkflowStep, str] = ("finished", WorkflowStep.CLEANUP, "")
+        failure: MergeDoviFailure | None = None
         auto = alignment is not None and alignment.auto
         film1_pass: Film1Pass | None = None
         aligned: AlignmentResult | None = None
@@ -1021,6 +1033,7 @@ class MergeDoviWorkflow(QObject):
                 metadata_requested=metadata_requested,
                 allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
                 aligned=auto,
+                metadata_only=auto and alignment is not None and alignment.metadata_only,
             )
             if (not auto and metadata_requested
                     and frame_counts.metadata_verdict(metadata_adjustment) is not None):
@@ -1177,6 +1190,7 @@ class MergeDoviWorkflow(QObject):
             # Un échec provoqué par le kill des sous-processus à l'annulation
             # reste une annulation.
             outcome = ("cancelled", exc.step, "") if self._cancelled else ("failed", exc.step, exc.message)
+            failure = None if self._cancelled else exc.detail
         except (_CancelledError, TaskCancelledError):
             outcome = ("cancelled", WorkflowStep.CLEANUP, "")
         except Exception as exc:
@@ -1209,7 +1223,7 @@ class MergeDoviWorkflow(QObject):
         elif kind == "cancelled":
             self.workflow_cancelled.emit()
         else:
-            self.workflow_failed.emit(step, message)
+            self.workflow_failed.emit(step, message, failure)
 
     def _discard_consumed(self, step: WorkflowStep, paths: _WorkflowPaths, *candidates: Path) -> None:
         """Supprime les intermédiaires devenus inutiles (libère l'espace des phases suivantes)."""
@@ -1497,6 +1511,7 @@ class MergeDoviWorkflow(QObject):
         metadata_requested: bool = True,
         allow_hdr10_fallback: bool = False,
         aligned: bool = False,
+        metadata_only: bool = False,
     ) -> FrameCountResult:
         """Compare les comptages de trames et applique la politique d'injection.
 
@@ -1528,7 +1543,13 @@ class MergeDoviWorkflow(QObject):
             self.step_progress.emit(step, f"Film 1 : {fc1} frames  |  Film 2 : {fc2} frames")
 
         verdict = result.metadata_verdict(adjustment) if metadata_requested and not aligned else None
-        if aligned and metadata_requested:
+        if aligned and metadata_requested and metadata_only:
+            # Alignement forcé (décision DC) : jamais annoncé « image par image ».
+            self.step_progress.emit(step, translate_text(
+                "Alignement forcé : correspondance établie par les coupes des métadonnées à l'étape d'alignement, "
+                "image de Film 2 non vérifiée{counted}.",
+                counted=translate_text(" (Film 1 compté par sa lecture complète)") if result.fc1 is None else ""))
+        elif aligned and metadata_requested:
             self.step_progress.emit(step, translate_text(
                 "Mode Automatique : correspondance image par image établie à l'étape d'alignement{counted}.",
                 counted=translate_text(" (Film 1 compté par sa lecture complète)") if result.fc1 is None else ""))
@@ -1950,9 +1971,15 @@ class MergeDoviWorkflow(QObject):
             )
         except InterruptedError as exc:
             raise _CancelledError() from exc
+        except Film2UndecodableError as exc:
+            # Refus DC prioritaire sur le repli HDR10 seul : le panneau peut proposer l'alignement forcé.
+            self._check_cancel()
+            raise WorkflowError(step, translate_text("Alignement des métadonnées impossible : {error}",
+                                                     error=str(exc)),
+                                MergeDoviFailure(exc.code, exc.metadata_alignment_possible)) from exc
         except (AlignmentError, ProbeError, OSError, ValueError, RuntimeError) as exc:
             self._check_cancel()
-            if allow_hdr10_fallback:
+            if allow_hdr10_fallback and not options.metadata_only:  # échec du mode forcé : jamais HDR10 seul
                 self.step_progress.emit(step, "[WARN] " + translate_text(
                     "Alignement impossible ({error}) : conversion HDR10 seule.", error=str(exc)))
                 self.step_finished.emit(step, StepResult(step, True, translate_text(
@@ -1970,6 +1997,13 @@ class MergeDoviWorkflow(QObject):
         if result.hdr10plus is not None and result.hdr10plus != paths.film2_hdr10plus:
             os.replace(result.hdr10plus, paths.film2_hdr10plus)
         stats = result.map.stats
+        if result.map.metadata_only:
+            summary = translate_text(
+                "{what} : alignement par les coupes des métadonnées, image de Film 2 non vérifiée",
+                what=translate_text("Éditions appliquées et relues") if result.edited else translate_text(
+                    "Métadonnées injectées telles quelles"))
+            self.step_finished.emit(step, StepResult(step, True, summary, time.monotonic() - t0))
+            return result
         summary = translate_text(
             "{what} (concordance {percent} %{full})",
             what=translate_text("Éditions appliquées et relues") if result.edited else translate_text(
@@ -2787,6 +2821,10 @@ class MergeDoviWorkflow(QObject):
                 if aligned is None:
                     chapter_source = film2
                     self.step_progress.emit(step, f"Chapitres importés depuis {film2.name}.")
+                elif aligned.map.metadata_only:
+                    self.step_progress.emit(step, "[WARN] " + translate_text(
+                        "Chapitres de {name} non importés : alignement forcé sur les métadonnées, image de Film 2 "
+                        "non lue, projection impossible.", name=film2.name))
                 elif aligned.film2_table is None:
                     self.step_progress.emit(step, f"[WARN] Chapitres de {film2.name} non importés : "
                                                   "Film 2 non indexable, projection impossible.")
@@ -2801,8 +2839,9 @@ class MergeDoviWorkflow(QObject):
                                                           shift_s=video_shift_ms / 1000.0)
                     chapter_flags = edition_flags(editions)
                     if projected is None:
+                        # Édition unique (vérifiée plus haut) : l'un des deux films n'est pas indexable.
                         self.step_progress.emit(step, f"[WARN] Chapitres de {film2.name} non importés : "
-                                                      "projection impossible (plusieurs éditions).")
+                                                      "projection impossible (film non indexable).")
                     else:
                         chapter_entries = projected
                         self.step_progress.emit(step, f"Chapitres de {film2.name} projetés sur Film 1 "

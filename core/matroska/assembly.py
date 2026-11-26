@@ -459,6 +459,13 @@ class MatroskaAssemblyTrack:
     remove_closed_captions: bool = False
 
 
+def _origin_identity(origin: tuple[Path, int], stream_keys: Mapping[tuple[Path, int], str] | None) -> tuple:
+    """Origine d'une piste remplacée pour le ``SegmentUID`` : clé stable du flux d'origine pour un en-tête de
+    producteur (chemin temporaire propre à chaque lecture), sinon chemin et index."""
+    key = (stream_keys or {}).get((Path(origin[0]), int(origin[1])))
+    return (key,) if key is not None else (str(origin[0]), int(origin[1]))
+
+
 def _origin_track(track: MatroskaAssemblyTrack, tracks_of) -> MatroskaTrack | None:
     """TrackEntry d'origine d'une piste remplacée (``None`` si aucune)."""
     if track.origin is None:
@@ -928,7 +935,7 @@ def compile_assembly_plan(
                 track.flag_visual_impaired, track.flag_original, track.flag_commentary))
               for track in output_tracks),
         tuple((int(track.time_shift_ms or 0), str(track.provenance or ""),
-               None if track.origin is None else (str(track.origin[0]), int(track.origin[1])),
+               None if track.origin is None else _origin_identity(track.origin, stream_keys),
                bool(track.remove_closed_captions)) for track in plan.ordered_tracks),
         segment_title,
         opaque_digest,

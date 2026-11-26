@@ -22,12 +22,12 @@ from core.hdr_inspection.dovi import parse_dovi_export
 from core.i18n import translate_text
 
 from .active_area import ActiveAreaPlan, plan_active_area
-from .align import AlignmentError, AlignmentMap, Film2Frames, align, detect_cuts
+from .align import AlignmentError, AlignmentMap, Film2Frames, Film2UndecodableError, align, detect_cuts
 from .edits import EditPlan, apply_hdr10plus, apply_rpu, build_edit_plan
 from .features import active_band
 from .frames import FrameTable, read_frame_table
 from .presence import NalPredicate, PresenceGaps, has_hdr10plus, has_rpu, scan_annexb_presences, scan_matroska_presences
-from .probe import DecoderPreference, Signatures, decode_all, decode_window
+from .probe import DecoderPreference, ProbeError, Signatures, decode_all, decode_window
 from .process import ProcessHooks
 from .signals import Film2Metadata, combine, hdr10plus_track, rpu_render_digests, rpu_track
 from .static_hdr import ResolvedStatic, level6_plan, resolve_static_hdr
@@ -48,6 +48,9 @@ class AlignmentOptions:
     #: D6 : vérifier Film 2 image par image (passe complète de Film 2). Les images de Film 1 sans correspondance
     #: sont toujours comblées par les métadonnées voisines (aucun trou), avec avertissement.
     verify_film2: bool = False
+    #: Décision DC : alignement forcé sur les seules coupes des métadonnées (Film 2 indécodable), jamais lu ;
+    #: demandé par la fenêtre du panneau après un refus, jamais mémorisé ni par défaut.
+    metadata_only: bool = False
 
     @property
     def auto(self) -> bool:
@@ -244,24 +247,39 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
             "Film 1 : {count} images décodées pour {film1_frames} comptées.",
             count=len(film1), film1_frames=film1_frames))
     film2_table: FrameTable | None = None
-    try:
-        film2_table = read_frame_table(film2, ffprobe=tools.ffprobe, hooks=hooks)
-    except Exception as exc:  # noqa: BLE001 — Film 2 indécodable : seules les métadonnées restent utilisables
-        log("[WARN] " + translate_text("Film 2 non décodable ({error}).", error=str(exc)))
-    if film2_table is not None and film2_table.indexable and film2_table.frames != metadata.frames:
-        raise AlignmentError(translate_text(
-            "Film 2 : {frames} images vidéo pour {frames2} images de métadonnées.",
-            frames=film2_table.frames, frames2=metadata.frames))
-    source = Film2Frames(
-        metadata.frames,
-        window=(lambda start, count: decode_window(film2_table, start, count, ffmpeg=tools.ffmpeg, hooks=hooks,
-                                                   hwaccel=decoder))
-        if film2_table is not None and film2_table.indexable else None,
-        full_loader=(lambda: decode_all(film2_table, ffmpeg=tools.ffmpeg, hooks=hooks, hwaccel=decoder))
-        if film2_table is not None else None,
-    )
+    possible = bool(metadata.has_reference_cuts)
+    if options.metadata_only:
+        # Alignement forcé (décision DC) : Film 2 jamais lu, ni table ni image.
+        if options.verify_film2:
+            log("[WARN] " + translate_text(
+                "Vérification de Film 2 image par image sans objet : alignement forcé sur les métadonnées."))
+        source = Film2Frames(metadata.frames)
+    else:
+        try:
+            film2_table = read_frame_table(film2, ffprobe=tools.ffprobe, hooks=hooks)
+        except InterruptedError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — refus immédiat avec la cause d'origine (décision DC)
+            hooks.check()
+            raise Film2UndecodableError(translate_text("Film 2 non décodable ({error}).", error=str(exc)),
+                                        metadata_alignment_possible=possible) from exc
+        if film2_table.indexable and film2_table.frames != metadata.frames:
+            raise AlignmentError(translate_text(
+                "Film 2 : {frames} images vidéo pour {frames2} images de métadonnées.",
+                frames=film2_table.frames, frames2=metadata.frames))
+        table = film2_table
+        source = Film2Frames(
+            metadata.frames,
+            window=_undecodable_on_failure(
+                lambda start, count: decode_window(table, start, count, ffmpeg=tools.ffmpeg, hooks=hooks,
+                                                   hwaccel=decoder), hooks, possible)
+            if table.indexable else None,
+            full_loader=_undecodable_on_failure(
+                lambda: decode_all(table, ffmpeg=tools.ffmpeg, hooks=hooks, hwaccel=decoder), hooks, possible),
+        )
     alignment = align(film1, metadata, source, frame_rate=frame_rate(film1_table),
-                      force_full_film2=options.verify_film2, hooks=hooks, log=log)
+                      force_full_film2=options.verify_film2 and not options.metadata_only,
+                      metadata_only=options.metadata_only, hooks=hooks, log=log)
     notes = [_describe_map(alignment)]
 
     # 4. Zone active, HDR10 statique unique, éditions.
@@ -271,7 +289,7 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
     if rpu is not None:
         film2_size = (film2_table.props.width, film2_table.props.height) if film2_table is not None else (0, 0)
         area_plan = plan_active_area(film1, detect_cuts(film1, active_band(film1)), alignment, film2_l5=film2_l5,
-                                     film2_size=film2_size)
+                                     film2_size=film2_size, film2_read=not options.metadata_only)
         level6, refusal = level6_plan(resolved, current_l6)
         if refusal:
             log("[WARN] " + translate_text(refusal))
@@ -293,7 +311,25 @@ def run_alignment(*, film1_pass: Film1Pass, film1_frames: int | None, film2: Pat
                            notes)
 
 
+def _undecodable_on_failure(loader: Callable, hooks: ProcessHooks, possible: bool) -> Callable:
+    """Chargeur de Film 2 dont l'échec de décodage (``ProbeError``) devient :class:`Film2UndecodableError` ;
+    annulation jamais convertie."""
+    def call(*args: int) -> Signatures:
+        try:
+            return loader(*args)
+        except ProbeError as exc:
+            hooks.check()
+            raise Film2UndecodableError(translate_text("Film 2 non décodable ({error}).", error=str(exc)),
+                                        metadata_alignment_possible=possible) from exc
+    return call
+
+
 def _describe_map(alignment: AlignmentMap) -> str:
+    if alignment.metadata_only:
+        return translate_text(
+            "Alignement par les coupes des métadonnées, image de Film 2 non vérifiée : {segments} segment(s), "
+            "{uncovered} image(s) de Film 1 sans correspondance.", segments=len(alignment.segments),
+            uncovered=sum(gap.length for gap in alignment.uncovered))
     if alignment.identity:
         return translate_text("Alignement vérifié : les {frames} images correspondent une à une.",
                               frames=alignment.film1_frames)
