@@ -709,7 +709,7 @@ def run_native_remux(
                     if rewrite.origin_path.suffix.lower() in MATROSKA_EXTENSIONS:
                         return 0.0
                     if is_streamable_source(rewrite.origin_path):
-                        return probe_start_time(rewrite.origin_path, ffprobe_bin)
+                        return probe_start_time(rewrite.origin_path, ffprobe_bin, signals._cancel_event.is_set)
                     return _measured_canonical_origin(
                         rewrite.origin_path, source, execution_plan.canonical_index_map(source.file_index),
                         ffprobe_bin, cancel_cb=signals._cancel_event.is_set,

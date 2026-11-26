@@ -38,7 +38,8 @@ from core.subprocess_utils import (
     ProbeCancelledError,
     format_returncode,
     kill_process_tree,
-    run_probe,
+    run_cancellable_capture,
+    subprocess_text_kwargs,
     subprocess_windows_no_window_kwargs,
 )
 from core.subtitle_codec import plan_subtitle_codec
@@ -150,19 +151,29 @@ def producer_command(ffmpeg_bin: str, spec: StreamTrackSpec | Sequence[StreamTra
     return command
 
 
-def probe_start_time(source: Path, ffprobe_bin: str) -> float:
-    """``start_time`` du conteneur (minimum sur tous ses flux), en s ; erreur explicite si illisible."""
+def probe_start_time(source: Path, ffprobe_bin: str, cancelled: Callable[[], bool] | None = None) -> float:
+    """``start_time`` du conteneur (minimum sur tous ses flux), en s ; erreur explicite si illisible.
+
+    ``cancelled`` : sonde tuée à l'annulation → :class:`TaskCancelledError`, jamais prise pour une origine
+    illisible."""
+    def check_cancelled() -> None:
+        if cancelled is not None and cancelled():
+            raise TaskCancelledError()
+
     try:
-        result = run_probe(
+        result = run_cancellable_capture(
             [ffprobe_bin, "-v", "error", "-show_entries", "format=start_time", "-of", "json",
              *ffprobe_input_args(source)],
-            timeout=30,
+            cancel_cb=cancelled, check_cancelled=check_cancelled, timeout=30, **subprocess_text_kwargs(),
         )
+        check_cancelled()  # sonde revenue malgré l'annulation : jamais utilisée
         payload = json.loads(result.stdout or "{}")
         value = (payload.get("format") or {}).get("start_time")
         if result.returncode == 0 and value not in (None, "N/A"):
             return float(value)
-    except (OSError, subprocess.SubprocessError, ValueError, ProbeCancelledError):
+    except ProbeCancelledError as exc:
+        raise TaskCancelledError() from exc
+    except (OSError, subprocess.SubprocessError, ValueError):
         pass
     raise RuntimeError(f"Origine temporelle de {Path(source).name} illisible (ffprobe start_time).")
 
@@ -516,7 +527,7 @@ class StreamInputs:
         if self._ffprobe is not None and group[0].origin_s is None:
             if source not in self._origins:
                 try:
-                    self._origins[source] = probe_start_time(source, self._ffprobe)
+                    self._origins[source] = probe_start_time(source, self._ffprobe, self._cancelled)
                 except RuntimeError:
                     # En-tête seul (métadonnées, aucun bloc lu) : une source sans
                     # origine sondable (SRT externe) reste lisible ; une route l'exige.

@@ -952,7 +952,8 @@ class HdrStudio(QWidget):
                 result = run_survival(capture, fel, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
                                       bitrate_kbps=bitrate_kbps, fps=snapshot.fps or 24000 / 1001, area=area,
                                       duration_s=snapshot.duration_s,
-                                      progress=lambda text, value: self._progress.emit(token, text, value))
+                                      progress=lambda text, value: self._progress.emit(token, text, value),
+                                      cancel=cancel)
                 self._fel_done.emit(token, dataclasses.replace(fel, survival=result), "")
             except subprocess.CalledProcessError as exc:
                 detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]

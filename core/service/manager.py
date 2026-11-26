@@ -171,6 +171,8 @@ class JobManager:
         self._cancelling = 0
         self._stopper: threading.Thread | None = None
         self._stop_failure: BaseException | None = None
+        #: Jobs dont le fil n'a pas démarré, à annoncer en échec hors du verrou.
+        self._failed_starts: builtins.list[_Job] = []
 
     @property
     def draining(self) -> bool:
@@ -210,6 +212,7 @@ class JobManager:
                 self._pending.remove(job)
                 self._schedule()  # il retenait peut-être les jobs suivants
                 self._changed.notify_all()
+            self._publish_failed_starts()
             raise
         # Identifiant communiqué : le job existe ; toute fin de l'annonce le retire de la file ou l'y laisse annoncé.
         failure: ApiError | None = None
@@ -225,6 +228,7 @@ class JobManager:
                 self._finish_locked(job, failure or ApiError(ErrorCode.CANCELLED, "Job annulé avant son démarrage."))
             self._schedule()
             self._changed.notify_all()
+        self._publish_failed_starts()
         if refused:
             try:
                 self._publish_terminal([job])
@@ -257,6 +261,7 @@ class JobManager:
             else:
                 self._cancelling += 1  # réservé dès la sélection : l'arrêt attend ces rappels et leurs émissions
         if queued:
+            self._publish_failed_starts()
             self._publish_terminal([target])
             return True
         try:
@@ -353,7 +358,26 @@ class JobManager:
         job.thread = threading.Thread(target=self._run, args=(job, self._config), name=f"job-{job.spec.name}",
                                       daemon=True)
         self._threads.add(job.thread)
-        job.thread.start()
+        try:
+            job.thread.start()
+        except BaseException as exc:  # noqa: BLE001 — fil impossible (ressources) : job en échec, file poursuivie
+            # Rien n'a démarré : fil retiré du suivi, compteur rétabli, fin enregistrée ; ses événements sont
+            # publiés hors du verrou (:meth:`_publish_failed_starts`).
+            self._threads.discard(job.thread)
+            self._running[job.spec.queue] -= 1
+            self._finish_locked(job, ApiError(ErrorCode.WORKFLOW_FAILED, f"Démarrage du job impossible : {exc}"))
+            self._failed_starts.append(job)
+            self._changed.notify_all()
+
+    def _publish_failed_starts(self) -> None:
+        """Hors verrou : événements terminaux des jobs dont le fil n'a pas pu démarrer."""
+        with self._lock:
+            jobs, self._failed_starts[:] = list(self._failed_starts), []
+        if jobs:
+            try:
+                self._publish_terminal(jobs)
+            except BaseException:  # noqa: BLE001 — destination en échec : la fin reste enregistrée (get)
+                pass
 
     def _finish_locked(self, job: _Job, error: ApiError | None = None, result: Model | None = None) -> None:
         """Fin enregistrée (avant ses événements terminaux) ; le job reste connu jusqu'à leur publication."""
@@ -452,6 +476,7 @@ class JobManager:
                 self._config = renewed
             self._running[job.spec.queue] -= 1
             self._schedule()
+        self._publish_failed_starts()
         try:
             self._publish_terminal(dropped)
         except BaseException:  # noqa: BLE001 - destination en échec : les jobs restent enregistrés annulés

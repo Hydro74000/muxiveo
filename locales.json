@@ -12110,5 +12110,13 @@
   "Piste vidéo #{index} absente de B ({name}) : première piste vidéo de B (#{chosen}) comparée (--hdr-compare-track pour la choisir).": {
     "fra": "Piste vidéo #{index} absente de B ({name}) : première piste vidéo de B (#{chosen}) comparée (--hdr-compare-track pour la choisir).",
     "eng": "Video track #{index} not found in B ({name}): B's first video track (#{chosen}) compared (--hdr-compare-track to choose it)."
+  },
+  "Test de survie annulé.": {
+    "fra": "Test de survie annulé.",
+    "eng": "Survival test cancelled."
+  },
+  "Test de survie : délai maximal dépassé.": {
+    "fra": "Test de survie : délai maximal dépassé.",
+    "eng": "Survival test: time limit exceeded."
   }
 }

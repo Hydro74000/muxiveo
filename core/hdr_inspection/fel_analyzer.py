@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -765,11 +766,42 @@ def survival_indices(total: int) -> list[int]:
     return sorted({round(i * (total - 1) / 7) for i in range(8)}) if total > 8 else list(range(total))
 
 
-def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Callable[[IO[bytes]], object]) -> None:
-    """Exécute ``cmd`` : entrée écrite par un fil, sortie lue par l'appelant, erreurs collectées."""
+#: Durée maximale d'un test de survie à l'encodage (encodage puis décodage d'une seconde d'images).
+SURVIVAL_TIMEOUT_S = 600.0
+
+
+class SurvivalCancelled(InterruptedError):
+    """Test de survie arrêté par l'annulation (processus tué, fils rejoints)."""
+
+
+def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Callable[[IO[bytes]], object], *,
+              cancel: threading.Event | None = None, deadline: float | None = None) -> None:
+    """Exécute ``cmd`` : entrée écrite par un fil, sortie lue par l'appelant, erreurs collectées.
+
+    ``cancel`` / ``deadline`` (horloge monotone) : surveillés par un fil qui tue le processus ; lectures et attente
+    rendent alors la main (fils rejoints) et :class:`SurvivalCancelled` / ``TimeoutError`` est levée."""
+    from core.subprocess_utils import kill_process_tree
+
+    # Groupe de processus propre (POSIX) : l'arrêt tue aussi les descendants qui garderaient les pipes ouverts.
     process = subprocess.Popen(  # nosec B603 (outil configuré, arguments séparés)
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        **subprocess_windows_no_window_kwargs(include_stdin=False))
+        start_new_session=sys.platform != "win32", **subprocess_windows_no_window_kwargs(include_stdin=False))
+    finished = threading.Event()
+    stopped: list[str] = []
+
+    def watch() -> None:
+        while not finished.wait(0.05):
+            if cancel is not None and cancel.is_set():
+                stopped.append("cancelled")
+            elif deadline is not None and time.monotonic() > deadline:
+                stopped.append("timeout")
+            else:
+                continue
+            kill_process_tree(process)
+            return
+
+    watcher = threading.Thread(target=watch, name="fel-survival-watch", daemon=True)
+    watcher.start()
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
     stdin, stderr = process.stdin, process.stderr
     errors: list[bytes] = []
@@ -792,24 +824,34 @@ def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Call
     try:
         consume(process.stdout)
     except BaseException:
-        process.kill()
-        raise
+        kill_process_tree(process)
+        if not stopped:
+            raise
     finally:
         process.stdout.close()
         for thread in threads:
             thread.join()
         process.wait()
+        finished.set()
+        watcher.join()
+    if stopped and stopped[0] == "cancelled":
+        raise SurvivalCancelled(translate_text("Test de survie annulé."))
+    if stopped:
+        raise TimeoutError(translate_text("Test de survie : délai maximal dépassé."))
     if process.returncode:
         raise subprocess.CalledProcessError(process.returncode, cmd[0], stderr=b"".join(errors))
 
 
 def encode_round_trip(frames: Sequence[Frame], *, ffmpeg_bin: str, encoder: str, bitrate_kbps: int,
-                      frame_rate: str, keep: Sequence[int] | None = None) -> list[Frame]:
+                      frame_rate: str, keep: Sequence[int] | None = None, cancel: threading.Event | None = None,
+                      timeout: float = SURVIVAL_TIMEOUT_S) -> list[Frame]:
     """Encode puis décode les images (HEVC 10 bits au débit demandé) ; mêmes dimensions.
 
     ``keep`` : rangs des images décodées conservées (toutes par défaut) ; les autres sont lues puis
-    oubliées, et les images d'entrée transmises une à une (mémoire bornée en UHD).
+    oubliées, et les images d'entrée transmises une à une (mémoire bornée en UHD). ``cancel`` / ``timeout``
+    (deux étapes comprises) : processus tués, :class:`SurvivalCancelled` / ``TimeoutError``.
     """
+    deadline = time.monotonic() + timeout
     height, width = frames[0].y.shape
     device, output = _encoder_args(encoder)
     common = ["-v", "error", "-nostdin"]
@@ -823,7 +865,7 @@ def encode_round_trip(frames: Sequence[Frame], *, ffmpeg_bin: str, encoder: str,
     _streamed([ffmpeg_bin, *common, *device, "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-s", f"{width}x{height}",
                "-r", frame_rate, "-i", "pipe:0", *output, "-c:v", encoder, "-b:v", f"{bitrate_kbps}k",
                "-maxrate", f"{bitrate_kbps * 2}k", "-bufsize", f"{bitrate_kbps * 2}k", "-f", "hevc", "pipe:1"],
-              feed_frames, lambda pipe: chunks.append(pipe.read()))
+              feed_frames, lambda pipe: chunks.append(pipe.read()), cancel=cancel, deadline=deadline)
     encoded = b"".join(chunks)
     wanted = set(range(len(frames)) if keep is None else keep)
     size = width * height * 3 // 2 * 2
@@ -837,14 +879,17 @@ def encode_round_trip(frames: Sequence[Frame], *, ffmpeg_bin: str, encoder: str,
             index += 1
 
     _streamed([ffmpeg_bin, *common, "-f", "hevc", "-i", "pipe:0", "-f", "rawvideo", "-pix_fmt", "yuv420p10le",
-               "pipe:1"], lambda pipe: pipe.write(encoded), read_frames)
+               "pipe:1"], lambda pipe: pipe.write(encoded), read_frames, cancel=cancel, deadline=deadline)
     return result
 
 
 def run_survival(capture: CaptureLayer, fel: FelReport, *, ffmpeg_bin: str, encoder: str, bitrate_kbps: int,
                  fps: float, area: Callable[[float], tuple[int, int, int, int] | None],
-                 duration_s: float | None = None, progress: Callable[[str, int], None] | None = None) -> Survival:
+                 duration_s: float | None = None, progress: Callable[[str, int], None] | None = None,
+                 cancel: threading.Event | None = None) -> Survival:
     """Encode une seconde du moment le plus détaillé et mesure la part de l'apport conservée.
+
+    ``cancel`` : encodage et décodage de test interruptibles (:class:`SurvivalCancelled`).
 
     La rafale reste dans la source (``duration_s``) : avancée ou raccourcie près de la fin d'un extrait.
     ``subprocess.CalledProcessError`` : encodeur indisponible (stderr dans l'exception).
@@ -876,7 +921,7 @@ def run_survival(capture: CaptureLayer, fel: FelReport, *, ffmpeg_bin: str, enco
         progress(translate_text("Encodage de test…"), 50)
     rate = Fraction(fps).limit_denominator(1001)
     encoded = encode_round_trip(reconstructed, ffmpeg_bin=ffmpeg_bin, encoder=encoder, bitrate_kbps=bitrate_kbps,
-                                frame_rate=f"{rate.numerator}/{rate.denominator}", keep=picked)
+                                frame_rate=f"{rate.numerator}/{rate.denominator}", keep=picked, cancel=cancel)
     return survival([reconstructed[i] for i in picked], mapped, encoded, encoder=encoder, bitrate_kbps=bitrate_kbps,
                     rows=active_rows(mapped[0], area(moment.time_s)))
 

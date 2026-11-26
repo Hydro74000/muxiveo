@@ -320,7 +320,12 @@ def fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: int
             try:
                 survival_capture = capture_on("auto")
                 kept = run_survival(survival_capture, result, ffmpeg_bin=ffmpeg, encoder=encoder,
-                                    bitrate_kbps=bitrate, fps=fps, area=area, duration_s=duration or None)
+                                    bitrate_kbps=bitrate, fps=fps, area=area, duration_s=duration or None,
+                                    cancel=cancel)
+            except InterruptedError as exc:  # test de survie annulé (processus tués) : « cancelled »
+                if token is not None:
+                    token.raise_if_cancelled()
+                raise ApiError(ErrorCode.CANCELLED, "Opération annulée.") from exc
             except subprocess.CalledProcessError as exc:
                 detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
                 raise JobError(f"FEL Analyzer : encodeur {encoder} indisponible : {detail or exc}", EXIT_TOOL) from exc
