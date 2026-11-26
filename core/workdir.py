@@ -29,7 +29,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 from core.file_lock import FileLock, lock_is_free
 from core.file_types import _WINDOWS_RESERVED_STEMS
@@ -577,6 +577,38 @@ _TMDB_IMAGE_CHUNK = 64 * 1024
 
 def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
                      max_bytes: int = TMDB_IMAGE_MAX_BYTES) -> bytes:
+    """Image TMDB (:func:`_fetch_tmdb_image`) sous échéance **dure** : connexion, en-têtes et cadrage HTTP compris,
+    la requête se déroule dans un fil abandonné à l'échéance (``TimeoutError``) ; ce fil se termine de lui-même au
+    plus tard au délai socket suivant (réponse fermée)."""
+    outcome: dict[str, object] = {}
+
+    def work() -> None:
+        try:
+            outcome["data"] = _fetch_tmdb_image(url, timeout=timeout, deadline=deadline, max_bytes=max_bytes,
+                                                opened=outcome)
+        except BaseException as exc:  # noqa: BLE001 — relancée dans le fil appelant
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=work, name="tmdb-image", daemon=True)
+    worker.start()
+    worker.join(deadline)
+    if worker.is_alive():
+        response = outcome.get("response")
+        close = getattr(response, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001 — fermeture au mieux : le fil finira au délai socket
+                pass
+        raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
+    error = outcome.get("error")
+    if isinstance(error, BaseException):
+        raise error
+    return cast(bytes, outcome["data"])
+
+
+def _fetch_tmdb_image(url: str, *, timeout: float, deadline: float, max_bytes: int,
+                      opened: dict[str, object]) -> bytes:
     """Octets d'une image TMDB : HTTPS vérifié (non vérifié seulement avec ``MUXIVEO_TMDB_INSECURE_SSL=1``,
     jamais en repli), durée **totale** bornée par ``deadline`` (le délai socket ne borne qu'une lecture), taille
     bornée par ``max_bytes``.
@@ -589,6 +621,7 @@ def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
     req = urllib.request.Request(url, headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": APP_USER_AGENT})
     limit = time.monotonic() + deadline
     with _urlopen_image(req, timeout=timeout) as resp:
+        opened["response"] = resp  # fermée par l'appelant à l'échéance
         declared = resp.headers.get("Content-Length") if getattr(resp, "headers", None) is not None else None
         if declared is not None and str(declared).isdigit() and int(declared) > max_bytes:
             raise ValueError(f"image TMDB trop volumineuse ({int(declared)} octets, maximum {max_bytes})")

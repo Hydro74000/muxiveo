@@ -387,9 +387,12 @@ def _run_job(job: dict, args: argparse.Namespace, config: AppConfig, options, lo
         payload.update(export_workflow=str(options.export_workflow), export_directory=options.export_directory)
     with interrupt_guard(CancelToken()) as cancel:
         try:
+            # Template de ``--save`` : document de la commande, jamais remplacé par le NFO d'une sortie rendue par
+            # un gabarit (connue seulement après la préparation : contrôle de media.run avant le job).
+            saved = (Path(str(args.save)).expanduser(),) if getattr(args, "save", None) else ()
             result, ctx = run_operation("media.run", payload, config=config, logger=logger,
                                         overrides=_job_overrides(options), cancel=cancel,
-                                        documents=argv_documents(args))
+                                        documents=argv_documents(args) + saved)
         except ApiError as error:
             if not error.logged:
                 raise

@@ -80,6 +80,8 @@ def test_meta_that_is_not_an_object_reads_as_absent(tmp_path):
     {"scene_starts": np.array([4, 2], np.int32)},
     {"average": np.zeros((10, 1), np.float32)},
     {"window": [0, 0, 16]},
+    {"average": np.array([np.nan] + [50.0] * 9, np.float32)},
+    {"scene_starts": np.array([4, 2], np.uint32)},  # non signé décroissant : diff débordait
 ])
 def test_inconsistent_measurement_reads_as_absent(tmp_path, change):
     source, cache, key = _setup(tmp_path)
@@ -188,3 +190,20 @@ def test_fel_moment_thumbnails_of_another_shape_read_as_absent(tmp_path):
     cache.store_fel(source, 0, FelReport(None, samples, summarise(list(samples)),
                                          (Moment(10.0, 1.0, good, good, good),)))
     assert cache.load_fel(source, 0) is not None
+
+
+def test_dolby_vision_analysis_with_nan_l1_reads_as_absent(tmp_path):
+    from core.hdr_inspection.dovi import parse_dovi_export
+    from tests.test_hdr_inspection import _rpu, _write_export
+
+    source, cache, key = _setup(tmp_path)
+    cache.store(source, 0, parse_dovi_export(_write_export(tmp_path / "rpu.json", [_rpu(i) for i in range(5)])), None)
+    entry = _entries(cache._root, key)["dynamique"]
+    with np.load(entry, allow_pickle=False) as data:
+        arrays = {name: data[name] for name in data.files}
+    arrays["dovi.l1_max"] = np.full(5, np.nan)
+    meta = arrays.pop("meta")
+    buffer = io.BytesIO()
+    np.savez_compressed(buffer, meta=meta, **arrays)
+    entry.write_bytes(buffer.getvalue())
+    assert cache.load(source, 0) is None

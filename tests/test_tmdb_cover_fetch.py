@@ -104,6 +104,21 @@ def test_reads_never_ask_for_a_full_buffer(monkeypatch):
     assert fetch_tmdb_image(URL) == b"ab" and set(calls) == {"read1"}
 
 
+def test_slow_connection_or_headers_hit_the_hard_deadline(monkeypatch):
+    """Connexion ou en-têtes au goutte-à-goutte : l'échéance totale borne aussi ``urlopen``."""
+    monkeypatch.delenv("MUXIVEO_TMDB_INSECURE_SSL", raising=False)
+
+    def slow_urlopen(req, timeout=None, context=None):
+        time.sleep(1.5)  # chaque octet arrive avant le délai socket : celui-ci ne borne rien
+        return _Response([b"img"])
+
+    monkeypatch.setattr(urllib.request, "urlopen", slow_urlopen)
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        fetch_tmdb_image(URL, deadline=0.2)
+    assert time.monotonic() - started < 1.0
+
+
 def test_oversized_response_is_refused(monkeypatch):
     monkeypatch.delenv("MUXIVEO_TMDB_INSECURE_SSL", raising=False)
     monkeypatch.setattr(urllib.request, "urlopen",

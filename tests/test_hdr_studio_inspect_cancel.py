@@ -116,3 +116,27 @@ def test_cancelled_patch_still_publishes_its_terminal_state(qt_app, tmp_path):
         assert states == ["cancelled"]
     finally:
         _close(qt_app, studio)
+
+
+def test_b_inspection_that_returns_normally_frees_the_panel(qt_app, tmp_path, monkeypatch):
+    """Non-régression : retour normal de l'inspection de B (sans « Annuler ») : panneau libéré, piste réactivée."""
+    import ui.panels.hdr_studio.panel as panel_module
+    from tests.test_hdr_inspection import _info, _video
+
+    class _Quick:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def inspect(self, path):
+            info = _info(Path(path))
+            info.video_tracks = [_video(index=0), _video(index=1)]
+            return info
+
+    monkeypatch.setattr(panel_module, "FileInspector", _Quick)
+    studio = _studio(tmp_path)
+    try:
+        studio.load_compare(_media(tmp_path, "b.mkv"))
+        assert _wait(qt_app, lambda: studio._compare_info is not None, 5.0)
+        assert not studio._busy and studio._inspection is None and studio._compare_tab.track.isEnabled()
+    finally:
+        _close(qt_app, studio)

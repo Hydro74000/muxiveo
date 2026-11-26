@@ -77,15 +77,29 @@ def _frames_of(values: dict) -> int:
     return cast(int, frames)
 
 
+def _finite(array: np.ndarray) -> bool:
+    """Tableau numérique sans valeur non finie (NaN, infini)."""
+    if not np.issubdtype(array.dtype, np.number):
+        return False
+    return bool(np.all(np.isfinite(array))) if np.issubdtype(array.dtype, np.floating) else True
+
+
+def _scene_starts(starts: np.ndarray, frames: int) -> bool:
+    """Débuts de plans : entiers strictement croissants dans [0, frames) (comparés en entiers signés : un entier
+    non signé décroissant ferait déborder la différence)."""
+    if starts.ndim != 1 or not np.issubdtype(starts.dtype, np.integer):
+        return False
+    values = starts.astype(np.int64)
+    return bool(np.all(values >= 0)) and bool(np.all(values < max(frames, 1))) and bool(np.all(np.diff(values) > 0))
+
+
 def _per_frame(arrays: dict[str, np.ndarray], prefix: str, names: tuple[str, ...], frames: int) -> None:
-    """Tableaux d'une analyse dynamique : une valeur numérique par image ; débuts de plans croissants dans
+    """Tableaux d'une analyse dynamique : une valeur numérique finie par image ; débuts de plans croissants dans
     [0, frames)."""
     for name in names:
         array = arrays[f"{prefix}.{name}"]
-        _require(array.shape == (frames,) and np.issubdtype(array.dtype, np.number))
-    starts = arrays[f"{prefix}.scene_starts"]
-    _require(starts.ndim == 1 and np.issubdtype(starts.dtype, np.integer))
-    _require(bool(np.all(starts >= 0)) and bool(np.all(starts < max(frames, 1))) and bool(np.all(np.diff(starts) > 0)))
+        _require(array.shape == (frames,) and _finite(array))
+    _require(_scene_starts(arrays[f"{prefix}.scene_starts"], frames))
 
 
 def _checked_moment(data: dict[str, np.ndarray], index: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -110,11 +124,9 @@ def _checked_measurement(layer: str, meta: dict, arrays: dict[str, np.ndarray]) 
     _require(arrays["y9999"].shape == (frames,) and arrays["y100"].shape == (frames,))
     _require(arrays["percentiles"].shape == (frames, len(PERCENTILES)))
     _require(arrays["histogram"].shape == (_HISTOGRAM_BINS,))
-    starts = arrays["scene_starts"]
-    _require(starts.ndim == 1 and np.issubdtype(starts.dtype, np.integer))
-    _require(bool(np.all(starts >= 0)) and bool(np.all(starts < frames)) and bool(np.all(np.diff(starts) > 0)))
+    _require(_scene_starts(arrays["scene_starts"], frames))
     for name in ("max_rgb", "average", "y9999", "y100", "percentiles", "histogram"):
-        _require(np.issubdtype(arrays[name].dtype, np.number))
+        _require(_finite(arrays[name]))
     verified = meta.get("verified_frames")
     # Compte exact relevé à l'enregistrement : retenu seulement s'il décrit bien cette mesure (anciennes entrées :
     # absent, statut recalculé).

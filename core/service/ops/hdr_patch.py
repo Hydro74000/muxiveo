@@ -416,7 +416,7 @@ def _load(request: HdrPatchRequest, ctx: ExecutionContext,
     # Comptage exact seulement si la correction peut écrire image par image (HDR10+ recalculé, réalignement du
     # HDR10+) ; corrections statiques et RPU : aucun comptage supplémentaire (statut affiché « non vérifié »).
     counter = packet_counter(ctx.tool("ffprobe"), Path(snapshot.path), snapshot.stream_index, ctx.cancel.event) \
-        if _may_write_per_frame(request) else None
+        if _may_write_per_frame(request) and snapshot.hdr10plus else None
     frame_check = frame_count_check(snapshot.frames if snapshot.frames_exact else None, counter)
     measurement = load_checked_measurement(cache, snapshot, frame_check)
     wanted = request.measurement

@@ -487,3 +487,25 @@ def test_media_run_nfo_never_replaces_the_request_document(tmp_path, monkeypatch
         call(CATALOG, "media.run", {"job": {"version": 1, "sources": [str(_media(tmp_path / "a.mkv"))],
                                             "output": str(tmp_path / "sortie.mkv")}}, ctx)
     assert caught.value.code is ErrorCode.INVALID_REQUEST and ran == [] and _digest(request) == before
+
+
+def test_remux_save_never_targets_the_nfo_of_a_templated_output(tmp_path, monkeypatch):
+    """Sortie rendue par un gabarit : le NFO n'est connu qu'après la préparation ; job refusé, template intact."""
+    from core.service.ops import media as media_ops
+    from cli.commands import cmd_remux
+
+    source = _media(tmp_path / "film.mkv")
+    monkeypatch.setattr(media_ops, "build_remux_config",
+                        lambda *a, **k: SimpleNamespace(output=tmp_path / "sortie.mkv", sources=[],
+                                                        extra_attachments=[]))
+    ran: list[Any] = []
+    monkeypatch.setattr(media_ops, "run_remux", lambda *a, **k: ran.append(1) or "")
+    save = tmp_path / "sortie.nfo"
+    config = AppConfig()
+    config.generate_nfo = True
+    args = build_parser().parse_args(["remux", "-i", str(source), "--output-template", str(tmp_path / "sortie.mkv"),
+                                      "--save", str(save)])
+    with pytest.raises(ApiError) as caught:
+        cmd_remux(args, config, Logger())
+    assert caught.value.code is ErrorCode.INVALID_REQUEST and ran == []
+    assert json.loads(save.read_text(encoding="utf-8"))  # template écrit, jamais remplacé par le NFO
