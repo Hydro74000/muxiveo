@@ -23,6 +23,8 @@ class OperationState:
     summary: str
     ready: bool
     reason: str = ""
+    #: Nom affiché dans le titre de l'espace de travail ; vide : déduit de ``summary`` (« sortie ← source »).
+    project: str = ""
 
 
 class OperationBar(QWidget):

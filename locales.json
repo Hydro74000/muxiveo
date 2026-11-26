@@ -12254,5 +12254,65 @@
   "Piste vidéo #{index}": {
     "fra": "Piste vidéo #{index}",
     "eng": "Video track #{index}"
+  },
+  "Muxage": {
+    "fra": "Muxage",
+    "eng": "Muxing"
+  },
+  "Définir le fichier de sortie…": {
+    "fra": "Définir le fichier de sortie…",
+    "eng": "Set the output file…"
+  },
+  "Fichier existant — son remplacement sera demandé au lancement.": {
+    "fra": "Fichier existant — son remplacement sera demandé au lancement.",
+    "eng": "File already exists — you will be asked to replace it at launch."
+  },
+  "Dossier de destination introuvable : {folder}": {
+    "fra": "Dossier de destination introuvable : {folder}",
+    "eng": "Destination folder not found: {folder}"
+  },
+  "Destination illisible : {error}": {
+    "fra": "Destination illisible : {error}",
+    "eng": "Destination unreadable: {error}"
+  },
+  "{n} source": {
+    "fra": "{n} source",
+    "eng": "{n} source"
+  },
+  "{n} sources": {
+    "fra": "{n} sources",
+    "eng": "{n} sources"
+  },
+  "{n} piste": {
+    "fra": "{n} piste",
+    "eng": "{n} track"
+  },
+  "{n} pistes": {
+    "fra": "{n} pistes",
+    "eng": "{n} tracks"
+  },
+  "sans réencodage": {
+    "fra": "sans réencodage",
+    "eng": "no re-encoding"
+  },
+  "vidéo {codecs}": {
+    "fra": "vidéo {codecs}",
+    "eng": "video {codecs}"
+  },
+  "vidéo copiée": {
+    "fra": "vidéo copiée",
+    "eng": "video copied"
+  },
+  "audio copié": {
+    "fra": "audio copié",
+    "eng": "audio copied"
+  },
+  "{n} piste audio réencodée": {
+    "fra": "{n} piste audio réencodée",
+    "eng": "{n} audio track re-encoded"
+  },
+  "{n} pistes audio réencodées": {
+    "fra": "{n} pistes audio réencodées",
+    "eng": "{n} audio tracks re-encoded"
   }
 }

@@ -149,6 +149,7 @@ from ui.confirm import ValidationOverridePrompt
 from ui.design_system import scale as _scale
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
+from ui.panels.remux_panel.widgets.output_bar import OutputBar, ScrollFade
 
 if TYPE_CHECKING:
     from core.hdr10plus_generation import EngineSupport
@@ -428,6 +429,7 @@ class EncodePanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self._page_layout = root     # défilement puis barre « Fichier de sortie »
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -476,6 +478,14 @@ class EncodePanel(QWidget):
 
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
+        self._scroll = scroll
+        ScrollFade(scroll)
+
+    def host_output_bar(self, bar: OutputBar) -> None:
+        """Affiche la barre « Fichier de sortie » du panneau Conteneur sous le défilement de cette page."""
+        self._page_layout.addWidget(bar)
+        bar.show()      # reparentée : réaffichée tout de suite (le layout ne le fait qu'au tour de boucle suivant)
+        bar.follow_scroll(self._scroll)
 
     def _new_tab_page(self) -> tuple[QWidget, QVBoxLayout]:
         page = QWidget()

@@ -130,6 +130,7 @@ from ui.plugin_controller import (
     TrtPluginController,
 )
 from ui.operation_bar import OperationBar, OperationState
+from ui.operation_summary import media_operation_summary
 from ui.tool_admission import ToolAdmission
 from ui.styles import workflow_icon
 from ui.widgets.log_panel import LogPanel, split_log_source
@@ -2431,12 +2432,19 @@ class MainWindow(QMainWindow):
         # Les pistes et calibrations sont mutables : une copie permet de
         # distinguer une édition réelle d'une simple notification de readiness.
         self._last_operation_signature = copy.deepcopy(self._operation_signature(owner))
+        if owner == "media":
+            self._remux_panel.output_bar.refresh_state()   # fichier publié : signalé comme existant
 
     def _on_ready_changed(self, _ready: bool) -> None:
         self._request_operation_refresh()
 
     def _on_active_page_changed(self, page: int) -> None:
         self._sidebar.select_page(page)
+        # Fichier de sortie : une seule barre, suivie par la page média affichée (Encodage ou Conteneur).
+        if page == 2:
+            self._encode_panel.host_output_bar(self._remux_panel.output_bar)
+        elif page == 3:
+            self._remux_panel.host_output_bar(self._remux_panel.output_bar)
         self._refresh_operation_bar()
 
     def _operation_states(self) -> list[OperationState]:
@@ -2448,12 +2456,15 @@ class MainWindow(QMainWindow):
         analysing = self._remux_panel.cadence_resolution_pending()
         ready = config is not None and not analysing
         output = config.output if config is not None else None
+        # Chemin visible dans la barre « Fichier de sortie » : la barre d'opération résume le traitement.
         media = OperationState(
             "media", 2 if encoding else 3,
             translate_text("Remux & Encode"),
-            str(output) if output else translate_text("Projet média partagé entre remux et encodage"),
+            media_operation_summary(remux, encode if encoding else None) if config is not None
+            else translate_text("Projet média partagé entre remux et encodage"),
             ready, translate_text("Analyse de la hauteur audio en cours (conversion de cadence).") if analysing
             else translate_text("Ajoutez une source et renseignez le fichier de sortie."),
+            project=output.name if output else "",
         )
         return [media, self._hybrid_panel.operation_state(), self._dovi_panel.operation_state(),
                 self._hdr_panel.operation_state()]
@@ -2473,7 +2484,7 @@ class MainWindow(QMainWindow):
                 "extract": "Extraction en cours…", "audio_sync": "Synchronisation en cours…",
             }.get(self._op_mode, "Opération en cours…"))
         current = next((op for op in operations if op.key == active and op.ready), None)
-        project = Path(current.summary.split(" ← ", 1)[0]).name if current else ""
+        project = (current.project or Path(current.summary.split(" ← ", 1)[0]).name) if current else ""
         result = self._last_operation_result
         if result is not None and not self._running:
             if self._operation_signature(result[0]) != self._last_operation_signature:

@@ -272,18 +272,34 @@ def test_failed_individual_recalibration_discards_the_previous_plan(window, tmp_
 
 def test_context_and_media_settings_share_one_operation(window, tmp_path, monkeypatch):
     ready_hybrid(window, tmp_path)
-    encode = SimpleNamespace(output=tmp_path / "encoded.mkv")
+    # Champs lus par le résumé de la barre d'opération (configuration du Conteneur et de l'Encodage).
+    encode = SimpleNamespace(output=tmp_path / "encoded.mkv", sources=[], track_order=[], video=None,
+                             video_tracks=[], audio_tracks=[], target_size_mb=None)
     monkeypatch.setattr(window._encode_panel, "collect_config", lambda: encode)
     monkeypatch.setattr(window._encode_panel, "is_pure_copy", lambda _: False)
     for page in (2, 3):
         window._stack.setCurrentIndex(page)
         assert window._run_btn.text() == "Remux & Encode"
         assert len([op for op in window._operation_states() if op.key == "media"]) == 1
+        # Chemin dans la barre « Fichier de sortie » ; titre de l'espace de travail = nom de la sortie.
+        assert "encoded.mkv" in window._workspace_title.text()
+        assert "encoded.mkv" not in window._status_lbl.text()
     monkeypatch.setattr(window._encode_panel, "is_pure_copy", lambda _: True)
     monkeypatch.setattr(window._remux_panel, "collect_config", lambda: encode)
     window._encode_panel.operation_changed.emit()
     QTest.qWait(90)
     assert window._run_btn.text() == "Remux & Encode"
+
+
+def test_output_bar_follows_media_pages(window):
+    bar = window._remux_panel.output_bar
+    assert window._remux_panel._output_edit.parentWidget().parentWidget() is bar
+    for page, host in ((2, window._encode_panel), (3, window._remux_panel), (2, window._encode_panel)):
+        window._stack.setCurrentIndex(page)
+        assert bar.parentWidget() is host
+        assert bar.isVisible()
+    window._stack.setCurrentIndex(4)
+    assert not bar.isVisible()
 
 
 def test_incomplete_context_keeps_other_operations_accessible(window, tmp_path, monkeypatch, qt_app):

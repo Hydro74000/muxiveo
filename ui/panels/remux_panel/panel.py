@@ -86,6 +86,7 @@ from ui.design_system import font_px as _font_px, scale as _scale
 from ui.panels.remux_panel.widgets.attachments import _AttachmentPanel
 from ui.panels.remux_panel.widgets.chapters import _ChapterPanel
 from ui.panels.remux_panel.widgets.file_list import _FileListWidget
+from ui.panels.remux_panel.widgets.output_bar import OutputBar, ScrollFade
 from ui.panels.remux_panel.widgets.track_table import _TrackTable, track_sync_active
 from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
 
@@ -351,6 +352,7 @@ class RemuxPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self._page_layout = root     # défilement puis barre « Fichier de sortie »
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -521,11 +523,7 @@ class RemuxPanel(QWidget):
 
         content_layout.addWidget(_separator())
 
-        content_layout.addWidget(_section_label("FICHIER DE SORTIE"))
-        backend_row = QHBoxLayout()
-        backend_row.setSpacing(_scale(8))
-        backend_label = QLabel(translate_text("Backend de muxage"))
-        backend_label.setStyleSheet(f"color: {_C.TEXT_SEC}; background: transparent;")
+        # Fichier de sortie : barre fixe sous le défilement (partagée avec la page Encodage), pas une section.
         self._mux_backend_combo = QComboBox()
         for value, label in (
             ("auto", "Auto"), ("native", "Natif Matroska"), ("ffmpeg", "FFmpeg"),
@@ -539,25 +537,13 @@ class RemuxPanel(QWidget):
         self._mux_backend_combo.currentIndexChanged.connect(
             lambda _index: self.mux_backend_changed.emit(self.current_mux_backend())
         )
-        backend_row.addWidget(backend_label)
-        backend_row.addWidget(self._mux_backend_combo)
-        backend_row.addStretch()
-        content_layout.addLayout(backend_row)
-        out_row = QHBoxLayout()
-        out_row.setSpacing(_scale(8))
-
         self._output_edit = QLineEdit()
-        self._output_edit.setPlaceholderText("/chemin/vers/sortie.mkv")
+        self._output_edit.setPlaceholderText(translate_text("Définir le fichier de sortie…"))
         self._output_edit.setStyleSheet(_input_style())
         self._output_edit.textChanged.connect(self._rebuild_preview)
-        out_row.addWidget(self._output_edit, stretch=1)
-
         browse_out = _secondary_button("Choisir…")
         browse_out.clicked.connect(self._browse_output)
-        out_row.addWidget(browse_out)
-
-        content_layout.addLayout(out_row)
-        content_layout.addWidget(_separator())
+        self._output_bar = OutputBar(self._output_edit, browse_out, self._mux_backend_combo)
 
         cmd_header = QHBoxLayout()
         cmd_header.addWidget(_section_label("APERÇU COMMANDE"))
@@ -590,7 +576,21 @@ class RemuxPanel(QWidget):
         content_layout.addStretch()
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
+        self._scroll = scroll
+        ScrollFade(scroll)
+        self.host_output_bar(self._output_bar)
         self._install_global_drop_targets(scroll, content)
+
+    @property
+    def output_bar(self) -> OutputBar:
+        """Barre « Fichier de sortie », placée par MainWindow dans la page Conteneur ou Encodage affichée."""
+        return self._output_bar
+
+    def host_output_bar(self, bar: OutputBar) -> None:
+        """Affiche ``bar`` sous le défilement de cette page."""
+        self._page_layout.addWidget(bar)
+        bar.show()      # reparentée : réaffichée tout de suite (le layout ne le fait qu'au tour de boucle suivant)
+        bar.follow_scroll(self._scroll)
 
     def _on_add_files(self, paths: list[str]) -> None:
         inspection.on_add_files(self, paths)
@@ -812,6 +812,8 @@ class RemuxPanel(QWidget):
         # de la configuration (barre d'exécution, lancement immédiat) ; jamais pendant une lecture.
         if output_name.refresh_profile_output(self):
             return      # champ de sortie réécrit : son textChanged a déjà relancé cette méthode
+        if hasattr(self, "_output_bar"):
+            self._output_bar.set_required(bool(self._source_files))
         self.operation_changed.emit()
         if hasattr(self, "_autosave_timer"):
             from ui.panels.remux_panel.functions.workflow import mark_dirty
