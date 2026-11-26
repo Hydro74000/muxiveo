@@ -66,6 +66,7 @@ def app_update_install(request: UpdateInstallRequest, ctx: ExecutionContext) -> 
         ctx.on_result_written(lambda: mark(list(previous), kind))
     channel = request.channel or str(getattr(ctx.config, "update_channel", "stable") or "stable")
     info = ctx.port("query_latest_release", query_latest_release)(channel)
+    ctx.cancel.raise_if_cancelled()  # annulée pendant la consultation : jamais « à jour », rien n'est signalé
     if info is None:
         raise JobError("Dernière version introuvable (réseau ou flux de mise à jour indisponible).", EXIT_WORKFLOW)
     if not info.is_newer:

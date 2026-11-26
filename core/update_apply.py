@@ -738,22 +738,35 @@ def _journal_paths(parent: Path, install: str) -> tuple[Path, Path]:
     return folder / f"{key}.json", folder / f"{key}.lock"
 
 
-def _read_reports(path: Path) -> list[dict]:
+#: Taille maximale lue d'un journal de comptes rendus (plusieurs dizaines de milliers d'entrées).
+MAX_REPORTS_BYTES = 64 * 1024**2
+
+
+def _read_reports(path: Path, *, strict: bool = False) -> list[dict]:
+    """Entrées du journal ; absent : liste vide. ``strict`` (avant toute modification) : journal illisible ou
+    trop volumineux → ``OSError``, jamais remplacé par une liste vide (comptes rendus en attente perdus)."""
     try:
-        if path.is_symlink() or path.stat().st_size > MAX_METADATA_BYTES * 8:
-            return []
+        if path.is_symlink():
+            raise OSError(f"journal des mises à jour invalide : {path}")
+        if path.stat().st_size > MAX_REPORTS_BYTES:
+            raise OSError(f"journal des mises à jour trop volumineux : {path}")
         doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        if not isinstance(doc, dict) or not isinstance(doc.get("results"), list):
+            raise ValueError("journal sans liste de résultats")
+    except FileNotFoundError:
         return []
-    entries = doc.get("results") if isinstance(doc, dict) else None
-    return [entry for entry in entries or () if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise OSError(f"journal des mises à jour illisible ({exc}) : conservé tel quel") from exc
+        return []
+    return [entry for entry in doc["results"] if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
 
 
 def _update_reports(parent: Path, install: str, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
     """Lecture-modification-écriture du journal sous verrou ; renvoie les entrées après modification."""
     path, lock = _journal_paths(parent, install)
     with JournalLock(lock):
-        entries = _read_reports(path)
+        entries = _read_reports(path, strict=True)
         updated = change(list(entries))
         if updated != entries:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -767,12 +780,20 @@ def pending_reports(parent: Path, install: Path | str) -> list[dict]:
     return _read_reports(path)
 
 
-def _keep_report(parent: Path, owner: str, entry: dict) -> None:
-    """Recopie dans le journal le compte rendu d'un dossier supprimé avant d'avoir été signalé."""
+def _keep_report(parent: Path, owner: str, entry: dict, work: Path | None = None) -> bool:
+    """Recopie dans le journal le compte rendu d'un dossier supprimé avant d'avoir été signalé ; ``work`` : dossier
+    dont le témoin ``reported`` est relu **sous le verrou** (un signalement concurrent l'a peut-être posé).
+    Faux si le journal n'a pas pu être écrit : le dossier, seule copie du compte rendu, doit alors être gardé."""
     def change(entries: list[dict]) -> list[dict]:
+        if work is not None and (work / REPORTED_FILE).exists():
+            return entries  # signalé entre-temps : rien à garder
         return entries if any(item["id"] == entry["id"] for item in entries) else [*entries, entry]
 
-    _update_reports(parent, owner, change)
+    try:
+        _update_reports(parent, owner, change)
+    except OSError:
+        return False
+    return True
 
 
 def mark_reported(parent: Path, install: Path | str, ids: list[str]) -> None:
@@ -781,15 +802,20 @@ def mark_reported(parent: Path, install: Path | str, ids: list[str]) -> None:
     wanted = set(ids)
     if not wanted:
         return
-    for work in _workdirs(parent):
-        if work.name in wanted:
-            try:
-                (work / REPORTED_FILE).touch()
-            except OSError:
-                pass
     owner = os.path.realpath(str(install))
-    if pending_reports(parent, owner):
-        _update_reports(parent, owner, lambda entries: [item for item in entries if item["id"] not in wanted])
+
+    def change(entries: list[dict]) -> list[dict]:
+        # Sous le verrou du journal : témoins posés et entrées retirées ensemble (un ménage concurrent relit le
+        # témoin sous ce même verrou avant de recopier).
+        for work in _workdirs(parent):
+            if work.name in wanted:
+                try:
+                    (work / REPORTED_FILE).touch()
+                except OSError:
+                    pass
+        return [item for item in entries if item["id"] not in wanted]
+
+    _update_reports(parent, owner, change)
 
 
 def collect_results(parent: Path, now: float | None = None, *, discard: list[Path] | None = None,
@@ -813,7 +839,8 @@ def collect_results(parent: Path, now: float | None = None, *, discard: list[Pat
 
     def remove(work: Path, owner: str | None, entry: dict | None) -> None:
         if entry is not None and owner is not None and not (work / REPORTED_FILE).exists():
-            _keep_report(parent, owner, entry)
+            if not _keep_report(parent, owner, entry, work):
+                return  # journal inaccessible : le dossier reste la seule copie du compte rendu
         if discard is not None:
             discard.append(work)
         else:
@@ -848,6 +875,9 @@ def collect_results(parent: Path, now: float | None = None, *, discard: list[Pat
         elif age > 3600:
             remove(work, None, None)  # téléchargement abandonné (propriétaire inconnu compris)
     for owner, items in finished.items():
+        # Ordre des mises à jour : heure de fin consignée dans le résultat (jamais la date du dossier, modifiée
+        # par le témoin ``reported``), sinon date du dossier.
+        items.sort(key=lambda item: _finished_at(item[0], item[1]))
         latest_ok = next((work for work, doc, _entry in reversed(items) if doc.get("ok")), None)
         for work, doc, entry in items:
             # État ambigu ou fichiers personnels en collision : seule copie possible, jamais supprimée.
@@ -859,6 +889,16 @@ def collect_results(parent: Path, now: float | None = None, *, discard: list[Pat
         seen = {entry["id"] for entry in results}
         results += [entry for entry in pending_reports(parent, wanted) if entry["id"] not in seen]
     return results
+
+
+def _finished_at(work: Path, doc: dict) -> float:
+    finished = doc.get("finished")
+    if isinstance(finished, (int, float)) and not isinstance(finished, bool):
+        return float(finished)
+    try:
+        return work.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def cleanup_stale(paths: list[Path], install: Path | str | None = None) -> None:
