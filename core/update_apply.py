@@ -508,7 +508,8 @@ def _write_journal(path: Path, doc: dict) -> None:
     fd, name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        # Fins de ligne LF sur toutes les plates-formes : taille écrite = taille contrôlée (journal borné).
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             json.dump(doc, stream, ensure_ascii=False, indent=1)
             stream.flush()
             os.fsync(stream.fileno())
@@ -666,6 +667,9 @@ def _remove_workdir(work: Path) -> None:
     """Garde le marqueur (de son format) jusqu'à la dernière suppression pour reprendre un ménage interrompu."""
     tag = _tag(work)
     try:
+        # Résultat retiré en premier : un ménage concurrent ne recopie jamais le compte rendu d'un dossier en cours
+        # de suppression (il l'a recopié avant, ou il était signalé).
+        (work / RESULT_FILE).unlink(missing_ok=True)
         for child in work.iterdir():
             if child.name == tag:
                 continue
@@ -791,7 +795,7 @@ def _keep_report(parent: Path, owner: str, entry: dict, work: Path | None = None
     def change(entries: list[dict]) -> list[dict]:
         # Sous le verrou : signalé entre-temps, ou dossier déjà retiré par un autre ménage (qui a recopié son compte
         # rendu s'il n'était pas signalé) : rien à garder, jamais de compte rendu ressuscité.
-        if work is not None and (not work.is_dir() or (work / REPORTED_FILE).exists()):
+        if work is not None and (not (work / RESULT_FILE).is_file() or (work / REPORTED_FILE).exists()):
             return entries
         return entries if any(item["id"] == entry["id"] for item in entries) else [*entries, entry]
 

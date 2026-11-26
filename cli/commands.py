@@ -371,9 +371,11 @@ def _protect_job_sidecars(guard: Any, job: dict, args: argparse.Namespace, optio
     from core.sidecar_output import nfo_enabled, nfo_path
 
     output = job.get("output")
-    if not output and job.get("output_template"):
+    if job.get("output_template") or (output and str(output).endswith(("/", "\\"))) or (
+            output and Path(str(output)).expanduser().is_dir()):
+        # Sortie rendue par un gabarit (dans un dossier ou non) : résolue par la préparation du job.
         preview, _job = _preview_job(job, options, config, logger)
-        output = (preview.config or {}).get("output")
+        output = (preview.config or {}).get("output") or output
     if output:
         guard.protect(Path(str(output)).expanduser(), "sortie du job")
     if options.export_workflow:

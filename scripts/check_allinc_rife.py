@@ -82,6 +82,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+#: Distributions d'exécution attendues dans l'inventaire Python d'un build (requirements.txt).
+_REQUIRED_DISTRIBUTIONS = ("pyside6", "numpy", "pymediainfo", "certifi")
+
+
+def inventory_errors(python: object) -> list[str]:
+    """Inventaire Python du manifeste (décision DE) : chaque entrée nommée et versionnée, dépendances
+    d'exécution toutes présentes."""
+    if not isinstance(python, list) or not python:
+        return ["inventaire Python absent de tools-manifest.json"]
+    versions = {str(item.get("name", "")).lower(): str(item.get("version", "")) for item in python
+                if isinstance(item, dict)}
+    errors = [f"inventaire Python : entrée sans nom ou sans version ({item!r})" for item in python
+              if not isinstance(item, dict) or not item.get("name") or not item.get("version")]
+    errors += [f"inventaire Python : {name} absent ou sans version" for name in _REQUIRED_DISTRIBUTIONS
+               if not versions.get(name)]
+    return errors
+
+
+def manifest_inventory_errors(manifest: Path) -> list[str]:
+    """Contrôle d'un manifeste seul (bundle macOS monté, installeur standard)."""
+    try:
+        return inventory_errors(json.loads(manifest.read_text(encoding="utf-8")).get("python"))
+    except (OSError, ValueError, AttributeError) as exc:
+        return [f"{manifest.name} illisible ({exc})"]
+
+
 def nvencc_errors(package_name: str, dest: Path) -> list[str]:
     """Anomalies NVEncC de la variante : embarqué dans l'AllInc, absent (marqueur posé) dans l'AllInc NoVidia."""
     novidia = "novidia" in package_name.lower()
@@ -98,10 +124,7 @@ def nvencc_errors(package_name: str, dest: Path) -> list[str]:
     except (OSError, ValueError, AttributeError) as exc:
         return [f"tools-manifest.json illisible ({exc})"]
     errors: list[str] = []
-    # Inventaire Python du build (décision DE) : présent et non vide, PySide6 compris.
-    names = {str(item.get("name", "")).lower() for item in python} if isinstance(python, list) else set()
-    if "pyside6" not in names:
-        errors.append("inventaire Python absent de tools-manifest.json (PySide6 non listé)")
+    errors += inventory_errors(python)
     if novidia:
         if binary or "nvencc" in tools:
             errors.append("NVEncC embarqué dans la variante NoVidia")
@@ -162,10 +185,29 @@ def check(package: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Vérifie l'extension mvo-rife dans des paquets all-inclusive.")
-    parser.add_argument("packages", nargs="+", type=Path)
+    parser.add_argument("packages", nargs="*", type=Path)
+    parser.add_argument("--manifest", type=Path, action="append", default=[],
+                        help="tools-manifest.json d'un artefact déjà monté (DMG macOS) : inventaire Python seul.")
+    parser.add_argument("--inventory-only", action="store_true",
+                        help="Paquets sans outils embarqués (installeur standard) : inventaire Python seul.")
     args = parser.parse_args()
     failed = False
-    for package in args.packages:
+    for manifest in args.manifest:
+        print(f"{manifest} :")
+        errors = manifest_inventory_errors(manifest)
+        for error in errors:
+            print(f"::error::{manifest.name} : {error}")
+        failed |= bool(errors)
+    for package in args.packages if args.inventory_only else ():
+        print(f"{package.name} :")
+        with tempfile.TemporaryDirectory(prefix="inventory-check-") as tmp:
+            _extract(package, Path(tmp))
+            manifests = sorted(Path(tmp).rglob("tools-manifest.json"))
+            errors = manifest_inventory_errors(manifests[0]) if manifests else ["tools-manifest.json absent"]
+        for error in errors:
+            print(f"::error::{package.name} : {error}")
+        failed |= bool(errors)
+    for package in () if args.inventory_only else args.packages:
         print(f"{package.name} :")
         errors = check(package)
         for error in errors:

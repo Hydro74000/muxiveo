@@ -180,3 +180,25 @@ def test_survival_never_runs_unwatched(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         fel_analyzer._streamed([ffmpeg], lambda pipe: None, lambda pipe: pipe.read(), cancel=threading.Event())
     assert started and started[0].poll() is not None  # processus arrêté et attendu
+
+
+@posix_only
+def test_survival_io_thread_failure_stops_ffmpeg_at_once(tmp_path, monkeypatch):
+    import core.hdr_inspection.fel_analyzer as fel_analyzer
+
+    ffmpeg = _tool(tmp_path, "sleep 30")
+    started: list = []
+    original_tree = fel_analyzer._start_tree
+    monkeypatch.setattr(fel_analyzer, "_start_tree", lambda cmd: started.append(original_tree(cmd)) or started[-1])
+    original = threading.Thread.start
+
+    def start(self):  # type: ignore[no-untyped-def]
+        if self.name == "fel-survival-in":
+            raise RuntimeError("can't start new thread")
+        return original(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    began = time.monotonic()
+    with pytest.raises(RuntimeError):
+        fel_analyzer._streamed([ffmpeg], lambda pipe: None, lambda pipe: pipe.read(), cancel=threading.Event())
+    assert started and started[0].poll() is not None and time.monotonic() - began < 2.0

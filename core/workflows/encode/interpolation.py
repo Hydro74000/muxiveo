@@ -20,6 +20,7 @@ from __future__ import annotations
 import functools
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -818,8 +819,13 @@ def _engine_probe(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
     from core import plugins
 
     trt = cmd[cmd.index("--trt-plugin") + 1] if "--trt-plugin" in cmd[:-1] else None
-    # Nom nu (``PATH``) : résolu ici, lancé et loué sous ce chemin (jamais un autre binaire que celui loué).
-    cmd = [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]
+    # Nom nu (``PATH``) : résolu ici, lancé et loué sous ce chemin (jamais un autre binaire que celui loué) ;
+    # introuvable : jamais lancé (un moteur installé entre deux recherches démarrerait sans bail).
+    if os.sep not in cmd[0] and (os.altsep is None or os.altsep not in cmd[0]):
+        resolved = shutil.which(cmd[0])
+        if resolved is None:
+            raise FileNotFoundError(f"Moteur vidéo introuvable : {cmd[0]}")
+        cmd = [resolved, *cmd[1:]]
     deadline = time.monotonic() + _PROBE_LEASE_WAIT_S
     while True:
         try:

@@ -1849,6 +1849,7 @@ class HybridStudio(QWidget):
 
     def _on_donor_reassigned(self, row: int, ep: MatrixEpisode):
         self._pending_sync_rows.discard(row)
+        self._sync_refused_rows.pop(row, None)  # donneur changé : refus réévalué à la prochaine préparation
         if row in self.jobs:
             del self.jobs[row]
         item_status = self.table.item(row, 3)
@@ -2086,6 +2087,8 @@ class HybridStudio(QWidget):
         for row, episode in enumerate(self.matrix_episodes):
             if row in self.jobs and (self._defer_audio_sync or row not in self._pending_sync_rows):
                 continue
+            if row in self._sync_refused_rows:  # refusée (synchro impossible) : jamais remise en file
+                continue
             if not episode.is_complete:
                 item = self.table.item(row, 3)
                 if item is not None:
@@ -2138,9 +2141,10 @@ class HybridStudio(QWidget):
             except Exception as exc:
                 from core.workflows.hybrid_matrix import SyncUnavailableError
 
-                if isinstance(exc, SyncUnavailableError):  # refus structuré, émis avant l'échec de la ligne
+                if isinstance(exc, SyncUnavailableError):  # refus structuré : seul signal de cette ligne
                     self.sync_refused.emit(generation, row, exc)
-                self.failed.emit(generation, row, str(exc))
+                else:
+                    self.failed.emit(generation, row, str(exc))
 
         self.executor.submit(task)
 
@@ -2324,11 +2328,16 @@ class HybridStudio(QWidget):
         item.setForeground(QColor(_C.WARN if cuts else _C.OK))
 
     def _on_sync_refused(self, generation: int, row: int, error: object) -> None:
-        """Refus structuré d'un épisode (synchro impossible) : ligne exclue du lot, récapitulée en fin d'opération."""
-        if self._row_returned(generation, row) and not self.stopped:
+        """Refus structuré d'un épisode (synchro impossible) : ligne en échec, exclue du lot, récapitulée en fin
+        d'opération ; le poste n'est libéré qu'une fois (ce signal remplace ``failed`` pour cette ligne)."""
+        if not self._row_returned(generation, row):
+            return
+        if not self.stopped:
             self._sync_refused_rows[row] = error
             self.jobs.pop(row, None)
             self._pending_sync_rows.discard(row)
+            self._mark_failed(row, str(error))
+        self._fill_preparation()
 
     def _sync_refusal_recap(self) -> str:
         """Texte du récapitulatif des épisodes refusés pour synchro impossible ("" s'il n'y en a pas)."""
@@ -2347,16 +2356,20 @@ class HybridStudio(QWidget):
                 self._pending_sync_rows.add(row)
             else:
                 self._pending_sync_rows.discard(row)
-            self._prepare_failures[row] = message
-            item = self.table.item(row, 3)
-            if item is not None:
-                item.setText(translate_text("Échec"))
-                item.setForeground(QColor(_C.ERROR))
-                item.setToolTip(message)
-            name = self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else ""
-            self.log_message.emit("ERROR", f"[{name}] {message}")
-            self._update_run_button()
+            self._mark_failed(row, message)
         self._fill_preparation()
+
+    def _mark_failed(self, row: int, message: str) -> None:
+        """Ligne en « Échec » (motif en info-bulle, journal ERROR) ; préparation en cours poursuivie par l'appelant."""
+        self._prepare_failures[row] = message
+        item = self.table.item(row, 3)
+        if item is not None:
+            item.setText(translate_text("Échec"))
+            item.setForeground(QColor(_C.ERROR))
+            item.setToolTip(message)
+        name = self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else ""
+        self.log_message.emit("ERROR", f"[{name}] {message}")
+        self._update_run_button()
 
     def on_failed(self, message: str):
         self._defer_audio_sync = False

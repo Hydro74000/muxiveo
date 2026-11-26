@@ -162,11 +162,20 @@ def test_studio_refused_row_never_blocks_nor_is_reprepared(studio, tmp_path, mon
                                             donor_files=[(None, tmp_path / f"d{i}.mkv")]) for i in range(3)]
     studio.jobs = {0: _job(tmp_path), 2: copy.deepcopy(_job(tmp_path))}
     generation = studio._prepare_generation
-    monkeypatch.setattr(studio, "_row_returned", lambda generation_, row: True)
+    studio._prepare_running = {1}  # poste de la ligne 2 occupé par sa préparation
+    monkeypatch.setattr(studio, "_fill_preparation", lambda: None)
     error = SyncUnavailableError("S01E02", [(1, "aucune piste audio du master")])
-    studio._on_sync_refused(generation, 1, error)
-    studio._on_episode_failed(generation, 1, str(error))
-    assert 1 not in studio.jobs and 1 in studio._sync_refused_rows
+    studio._on_sync_refused(generation, 1, error)  # seul signal de la ligne : poste libéré une fois
+    assert studio._prepare_running == set() and 1 not in studio.jobs and 1 in studio._sync_refused_rows
+    assert studio.table.item(1, 3) is None or studio.table.item(1, 3).text() == "Échec" or \
+        studio.table.item(1, 3).text() == "Failed"
+    queued: list[int] = []
+    monkeypatch.setattr(studio, "_fill_preparation", lambda: queued.extend(studio._prepare_queue))
+    studio.jobs.pop(2)
+    studio.args = SimpleNamespace()
+    studio._start_preparation()  # une autre ligne a besoin d'un plan : la ligne refusée n'est pas remise en file
+    assert 1 not in queued and 2 in queued
+    studio.jobs[2] = copy.deepcopy(_job(tmp_path))
     assert studio._complete_missing_plans() is False  # ligne refusée jamais reprise
     launched: list[bool] = []
     monkeypatch.setattr(studio, "run", lambda: launched.append(True))
@@ -204,3 +213,14 @@ def test_main_window_defers_the_recap_while_a_panel_works(monkeypatch):
     idle = SimpleNamespace(_running=False)
     main_window_module.MainWindow._show_sync_refusals(idle, "récap")  # type: ignore[arg-type]
     assert shown == ["récap"]
+
+
+def test_studio_donor_change_clears_the_refusal(studio, tmp_path):
+    from core.workflows.hybrid_matrix import MatrixEpisode
+
+    studio.table.setRowCount(1)
+    episode = MatrixEpisode(season=1, episode=1, master_file=tmp_path / "m.mkv", donor_files=[(None, tmp_path / "d.mkv")])
+    studio.matrix_episodes = [episode]
+    studio._sync_refused_rows = {0: SyncUnavailableError("S01E01", [(1, "x")])}
+    studio._on_donor_reassigned(0, episode)
+    assert studio._sync_refused_rows == {}

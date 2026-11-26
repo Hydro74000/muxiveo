@@ -1227,6 +1227,8 @@ def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path
     portable_built = []
 
     monkeypatch.setattr(package_mod, "_WIN_BUNDLE", bundle)
+    monkeypatch.setattr(package_mod, "_windows_bundle_inventory",  # bundle réutilisé : inventaire du préfixe Wine
+                        lambda b: [{"name": "PySide6", "version": "6.10.2"}])
     monkeypatch.setattr(package_mod, "_ensure_wine", lambda: None)
     monkeypatch.setattr(package_mod, "_ensure_makensis", lambda: None)
     monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
@@ -1355,6 +1357,8 @@ def test_build_windows_novidia_before_allinc_and_portable_with_nvencc(tmp_path, 
     zip_markers: list[bool] = []
 
     monkeypatch.setattr(package_mod, "_WIN_BUNDLE", bundle)
+    monkeypatch.setattr(package_mod, "_windows_bundle_inventory",  # bundle réutilisé : inventaire du préfixe Wine
+                        lambda b: [{"name": "PySide6", "version": "6.10.2"}])
     monkeypatch.setattr(package_mod, "_ensure_wine", lambda: None)
     monkeypatch.setattr(package_mod, "_ensure_makensis", lambda: None)
     monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
@@ -1409,7 +1413,8 @@ def test_check_allinc_nvencc_variant(tmp_path, novidia):
     tools.mkdir(parents=True)
     entries = [{"tool": "ffmpeg"}] + ([] if novidia else [{"tool": "nvencc"}])
     (tools / "tools-manifest.json").write_text(json.dumps({"version": 1, "tools": entries,
-                                                           "python": [{"name": "PySide6", "version": "6.10.2"}]}),
+                                                           "python": [{"name": n, "version": "1"} for n in
+                                                                      ("PySide6", "numpy", "pymediainfo", "certifi")]}),
                                                encoding="utf-8")
     if novidia:
         (tmp_path / "usr" / "bin" / "_ALLINC_NOVIDIA").touch()

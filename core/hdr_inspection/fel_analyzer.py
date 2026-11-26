@@ -807,6 +807,17 @@ def _start_tree(cmd: list[str]) -> subprocess.Popen:
     return process
 
 
+def _close_job(process: subprocess.Popen) -> None:
+    """Job Windows du processus refermé (handle libéré) une fois le processus terminé."""
+    job = getattr(process, "_muxiveo_job", None)
+    if job is not None:
+        try:
+            job.close()
+        except OSError:
+            pass
+        setattr(process, "_muxiveo_job", None)
+
+
 def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Callable[[IO[bytes]], object], *,
               cancel: threading.Event | None = None, deadline: float | None = None) -> None:
     """Exécute ``cmd`` : entrée écrite par un fil, sortie lue par l'appelant, erreurs collectées.
@@ -836,6 +847,7 @@ def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Call
     except BaseException:  # surveillance impossible : processus arrêté, jamais laissé sans contrôle
         kill_process_tree(process)
         process.wait()
+        _close_job(process)
         raise
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
     stdin, stderr = process.stdin, process.stderr
@@ -854,8 +866,20 @@ def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Call
 
     threads = [threading.Thread(target=write, name="fel-survival-in", daemon=True),
                threading.Thread(target=lambda: errors.append(stderr.read()), name="fel-survival-err", daemon=True)]
-    for thread in threads:
-        thread.start()
+    started: list[threading.Thread] = []
+    try:
+        for thread in threads:
+            thread.start()
+            started.append(thread)
+    except BaseException:  # fil d'E/S impossible : processus arrêté aussitôt, jamais laissé jusqu'à l'échéance
+        kill_process_tree(process)
+        finished.set()
+        process.wait()
+        for thread in started:
+            thread.join()
+        _close_job(process)
+        raise
+    threads = started
     try:
         consume(process.stdout)
     except BaseException:
@@ -869,6 +893,7 @@ def _streamed(cmd: list[str], feed: Callable[[IO[bytes]], object], consume: Call
         process.wait()
         finished.set()
         watcher.join()
+        _close_job(process)
     if stopped and stopped[0] == "cancelled":
         raise SurvivalCancelled(translate_text("Test de survie annulé."))
     if stopped:

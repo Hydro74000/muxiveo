@@ -12150,5 +12150,13 @@
   "Ces épisodes n'ont pas été traités, faute de piste de référence pour caler leurs donneurs :": {
     "fra": "Ces épisodes n'ont pas été traités, faute de piste de référence pour caler leurs donneurs :",
     "eng": "These episodes were not processed, for lack of a reference track to align their donors:"
+  },
+  "{episode}, donneur n° {donor} : {reason}": {
+    "fra": "{episode}, donneur n° {donor} : {reason}",
+    "eng": "{episode}, donor no. {donor}: {reason}"
+  },
+  "Synchro impossible : {count} épisode(s) non traité(s) ({details}).": {
+    "fra": "Synchro impossible : {count} épisode(s) non traité(s) ({details}).",
+    "eng": "Sync impossible: {count} episode(s) not processed ({details})."
   }
 }

@@ -326,6 +326,8 @@ jobs:
             "dist\releases\Muxiveo-Setup-AllInc-$env:PACKAGE_VERSION.exe" `
             "dist\releases\Muxiveo-Setup-AllInc_NoVidia-$env:PACKAGE_VERSION.exe" `
             "dist\releases\Muxiveo-Windows-x64-allinc-$env:PACKAGE_VERSION.zip"
+          # Installeur standard (aucun outil embarqué) : inventaire Python du build seul.
+          python scripts/check_allinc_rife.py --inventory-only "dist\releases\Muxiveo-Setup-$env:PACKAGE_VERSION.exe"
 
       - name: Collect Windows assets
         shell: pwsh
@@ -409,6 +411,17 @@ jobs:
           PACKAGE_VERSION: ${{ needs.release-metadata.outputs.package_version }}
         run: |
           python package.py --dmg --version "$PACKAGE_VERSION"
+
+      - name: Check the Python inventory of the delivered DMG
+        shell: bash
+        env:
+          VERSION: ${{ needs.release-metadata.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          mount="$(mktemp -d)"
+          hdiutil attach "dist/releases/Muxiveo-${VERSION}.dmg" -nobrowse -readonly -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" -quiet || true' EXIT
+          python scripts/check_allinc_rife.py --manifest "$mount/Muxiveo.app/Contents/Resources/tools-manifest.json"
 
       - name: Collect macOS assets
         shell: bash

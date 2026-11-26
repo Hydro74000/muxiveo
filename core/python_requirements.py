@@ -29,7 +29,7 @@ BUILD_REQUIREMENTS_FILE = REQUIREMENTS_FILE.with_name("requirements-build.txt")
 _MODULE_NAMES = {"pyside6": "PySide6"}
 _LINE_RE = re.compile(
     r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:>=\s*(?P<minimum>[0-9][0-9.]*))?"
-    r"(?P<excluded>(?:\s*,\s*!=\s*[0-9][0-9.]*)*)"
+    r"(?P<excluded>(?:\s*,?\s*!=\s*[0-9][0-9.]*)*)"
     r"(?:\s*,?\s*<\s*(?P<upper>[0-9][0-9.]*))?$"
 )
 #: Raison d'une contrainte (commentaire au-dessus de la ligne) : ``# != 6.12.0 : …`` ou ``# < 7 : …``.

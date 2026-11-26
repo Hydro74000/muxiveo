@@ -184,8 +184,10 @@ def _recap_sync_refusals(ctx: ExecutionContext, refusals: list[dict[str, Any]]) 
     if not refusals:
         return
     episodes = sorted({entry["episode"] for entry in refusals})
-    ctx.events.warning(translate_text("Synchro impossible : {count} épisode(s) non traité(s) ({names}).",
-                                      count=len(episodes), names=", ".join(episodes)),
+    details = " ; ".join(translate_text("{episode}, donneur n° {donor} : {reason}", episode=entry["episode"],
+                                        donor=entry["donor"], reason=entry["reason"]) for entry in refusals)
+    ctx.events.warning(translate_text("Synchro impossible : {count} épisode(s) non traité(s) ({details}).",
+                                      count=len(episodes), details=details),
                        code="sync_unavailable", episodes=episodes, donors=refusals)
 
 

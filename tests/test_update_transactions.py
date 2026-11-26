@@ -181,3 +181,18 @@ def test_a_workdir_removed_by_another_cleanup_is_never_resurrected(tmp_path):
     owner = os.path.realpath(install)
     assert update_apply._keep_report(tmp_path, owner, {"id": gone.name, "ok": True}, gone)
     assert update_apply.pending_reports(tmp_path, install) == []
+
+
+def test_a_workdir_being_removed_is_never_resurrected(tmp_path):
+    """Suppression en cours (résultat retiré en premier, témoin ``reported`` pas encore) : rien n'est recopié."""
+    install = tmp_path / "Muxiveo"
+    work = _work(tmp_path, "en-cours", install)  # dossier présent, plus de result.json
+    owner = os.path.realpath(install)
+    assert update_apply._keep_report(tmp_path, owner, {"id": work.name, "ok": True}, work)
+    assert update_apply.pending_reports(tmp_path, install) == []
+
+
+def test_journal_is_written_with_lf_line_endings(tmp_path):
+    path = tmp_path / "journal.json"
+    update_apply._write_journal(path, {"a": [1, 2]})
+    assert b"\r\n" not in path.read_bytes()

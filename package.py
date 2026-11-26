@@ -70,6 +70,7 @@ from core.github_release import (
 from core.python_requirements import BUILD_REQUIREMENTS_FILE, read_requirements, unsatisfied_requirements
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
+    MANIFEST_NAME,
     PREEXISTING,
     RECORDED_ONLY,
     VERIFIED_GITHUB_DIGEST,
@@ -2656,6 +2657,21 @@ def _setup_wine_vcruntime() -> None:
     _ok("vcrun2019 installé")
 
 
+def _windows_bundle_inventory(bundle_dir: Path) -> list[dict[str, str]]:
+    """Inventaire Python d'un bundle Windows réutilisé (``--skip-wine``) : manifeste existant, sinon préfixe Wine ;
+    jamais l'interpréteur Linux du packaging (inventaire faux)."""
+    for manifest in (bundle_dir / "tools" / MANIFEST_NAME, bundle_dir / MANIFEST_NAME):
+        try:
+            python = json.loads(manifest.read_text(encoding="utf-8")).get("python")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(python, list) and python:
+            return python
+    if _WIN_PY_EXE.is_file():
+        return python_inventory(["wine", str(_WIN_PY_EXE)], env=_wine_env("-all"))
+    raise SystemExit("--skip-wine : inventaire Python du bundle Windows introuvable (ni manifeste ni préfixe Wine).")
+
+
 def _wine_python_specs() -> list[str]:
     """Dépendances du préfixe Wine : requirements.txt (Python 3.11 du préfixe) et requirements-build.txt, PySide6
     remplacé par sa version figée du build croisé (``_WIN_PYSIDE6_VER``)."""
@@ -3596,6 +3612,7 @@ def build_windows(
     if skip_wine and _WIN_BUNDLE.exists():
         _info(f"--skip-wine : bundle existant réutilisé → {_WIN_BUNDLE}")
         bundle_dir = _WIN_BUNDLE
+        TOOL_MANIFEST.python = _windows_bundle_inventory(bundle_dir)
     else:
         _setup_wine_python()
         _setup_wine_vcruntime()
@@ -3604,6 +3621,7 @@ def build_windows(
 
     bundle_windows_licenses(bundle_dir)
 
+    TOOL_MANIFEST.write(bundle_dir)  # inventaire Python de l'installeur standard (aucun outil embarqué)
     installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
     final_std = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
 
@@ -3867,6 +3885,7 @@ if __name__ == "__main__":
             _ok(f"Artefact Windows Store : {final_file}")
         else:
             _ensure_makensis()
+            TOOL_MANIFEST.write(bundle_dir)  # inventaire Python de l'installeur standard (aucun outil embarqué)
             installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
             final_std = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
 
