@@ -198,6 +198,7 @@ class CompareTab(QWidget):
                     self.track.setCurrentIndex(self.track.count() - 1)
         finally:
             self._updating = False
+        self._sync()
 
     def set_side_a(self, side: Side | None) -> None:
         same = (side is not None and self._a is not None and side.report.snapshot.path == self._a.report.snapshot.path
@@ -249,6 +250,8 @@ class CompareTab(QWidget):
         self.analyze_btn.setEnabled(bool(dynamic) and not self._busy and b is not None and not b.report.dynamic)
         self.offset.setEnabled(self._comparison is not None)
         self.auto_btn.setEnabled(self._comparison is not None)
+        # Panneau occupé (inspection d'un nouveau B comprise) : piste de B figée jusqu'au retour.
+        self.track.setEnabled(not self._busy and self.track.count() > 1)
 
     # ── Rendu ───────────────────────────────────────────────────────────
     @staticmethod

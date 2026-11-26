@@ -1093,8 +1093,8 @@ class HdrStudio(QWidget):
 
     def compare_track_changed(self, stream_index: int) -> None:
         info = self._compare_info
-        if info is None:
-            return
+        if info is None or self._inspection is not None:
+            return  # inspection d'une source en cours : son retour décide de la piste affichée
         self._compare_token += 1
         token = self._compare_token
         cancel = self._cache_cancel("compare")

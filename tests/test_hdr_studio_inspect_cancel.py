@@ -22,10 +22,17 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="sonde factice e
 
 
 def _slow_tool(tmp_path: Path) -> Path:
+    """Sonde factice : note son démarrage (une ligne par lancement) puis dort 30 s."""
     tool = tmp_path / "slow-ffprobe"
-    tool.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    marker = tmp_path / "probes.log"
+    tool.write_text(f"#!/bin/sh\necho started >> '{marker}'\nsleep 30\n", encoding="utf-8")
     tool.chmod(0o755)
     return tool
+
+
+def _started(tmp_path: Path) -> int:
+    marker = tmp_path / "probes.log"
+    return len(marker.read_text(encoding="utf-8").splitlines()) if marker.is_file() else 0
 
 
 def _studio(tmp_path: Path) -> HdrStudio:
@@ -59,17 +66,40 @@ def test_cancel_frees_the_panel_and_kills_the_probe(qt_app, tmp_path, side):
             studio.load_source(_media(tmp_path, "a.mkv"))
         else:
             studio.load_compare(_media(tmp_path, "b.mkv"))
-        assert _wait(qt_app, lambda: studio._busy and studio._cancel_btn.isVisibleTo(studio), 2.0)
+        assert _wait(qt_app, lambda: _started(tmp_path) == 1, 5.0)  # sonde réellement lancée
+        assert studio._busy and studio._cancel_btn.isVisibleTo(studio)
         started = time.monotonic()
-        studio.cancel()
+        studio._cancel_btn.click()
         assert not studio._busy and time.monotonic() - started < 1.0  # libre avant la fin de la sonde
-        assert _idle(qt_app, studio, 10.0)  # sonde arrêtée (30 s sinon)
         assert studio._info is None and studio._report is None and studio._compare_info is None
-        # Nouvelle source acceptée aussitôt.
+        # Nouvelle source acceptée aussitôt ; sa sonde démarre seulement si la précédente a été arrêtée
+        # (fil de travail unique, sonde de 30 s sinon).
         studio.load_source(_media(tmp_path, "c.mkv"))
         assert studio._busy and studio._inspection is not None
-        studio.cancel()
-        assert _idle(qt_app, studio, 10.0)
+        assert _wait(qt_app, lambda: _started(tmp_path) == 2, 5.0)
+        studio._cancel_btn.click()
+        assert _idle(qt_app, studio, 10.0) and studio._info is None
+    finally:
+        _close(qt_app, studio)
+
+
+def test_b_track_change_during_a_new_b_inspection_is_ignored(qt_app, tmp_path):
+    from tests.test_hdr_inspection import _info, _video
+
+    studio = _studio(tmp_path)
+    try:
+        old = _info(tmp_path / "ancien.mkv")
+        old.video_tracks = [_video(index=0), _video(index=1)]
+        studio._compare_info = old
+        studio._compare_tab.set_tracks(old.path, [(0, "#0"), (1, "#1")], 0)
+        assert studio._compare_tab.track.isEnabled()
+        studio.load_compare(_media(tmp_path, "b.mkv"))
+        assert _wait(qt_app, lambda: _started(tmp_path) == 1, 5.0)
+        assert not studio._compare_tab.track.isEnabled()  # piste de B figée pendant l'inspection
+        studio.compare_track_changed(1)
+        assert studio._busy and studio._inspection is not None  # changement ignoré, inspection intacte
+        studio._cancel_btn.click()
+        assert not studio._busy and _idle(qt_app, studio, 10.0)
     finally:
         _close(qt_app, studio)
 
