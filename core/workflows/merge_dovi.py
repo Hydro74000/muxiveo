@@ -984,6 +984,9 @@ class MergeDoviWorkflow(QObject):
         outcome: tuple[str, WorkflowStep, str] = ("finished", WorkflowStep.CLEANUP, "")
         failure: MergeDoviFailure | None = None
         auto = alignment is not None and alignment.auto
+        # Alignement forcé (décision DC) : demandé pour injecter les métadonnées, son échec n'est jamais converti
+        # en repli HDR10 seul, à aucune étape (audit de présence, alignement, contrôle des métadonnées).
+        forced = auto and alignment is not None and alignment.metadata_only
         film1_pass: Film1Pass | None = None
         aligned: AlignmentResult | None = None
         try:
@@ -994,6 +997,7 @@ class MergeDoviWorkflow(QObject):
             validation = self._step_validate(
                 film1, film2, profile,
             )
+            hdr10_fallback = validation.film1_needs_sdr_to_hdr10 and not forced
             flags = validation.flags
             static_hdr_film1 = validation.static_film1
             static_hdr_film2 = validation.static_film2
@@ -1031,9 +1035,9 @@ class MergeDoviWorkflow(QObject):
                 film2,
                 adjustment=metadata_adjustment,
                 metadata_requested=metadata_requested,
-                allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
+                allow_hdr10_fallback=hdr10_fallback,
                 aligned=auto,
-                metadata_only=auto and alignment is not None and alignment.metadata_only,
+                metadata_only=forced,
             )
             if (not auto and metadata_requested
                     and frame_counts.metadata_verdict(metadata_adjustment) is not None):
@@ -1060,7 +1064,7 @@ class MergeDoviWorkflow(QObject):
                     raise _CancelledError() from exc
                 except (AlignmentError, OSError, ValueError, RuntimeError) as exc:
                     self._check_cancel()
-                    if not validation.film1_needs_sdr_to_hdr10:
+                    if not hdr10_fallback:
                         raise WorkflowError(WorkflowStep.EXTRACT_PARALLEL, translate_text(
                             "Alignement des métadonnées impossible : {error}", error=str(exc))) from exc
                     self.step_progress.emit(WorkflowStep.EXTRACT_PARALLEL, "[WARN] " + translate_text(
@@ -1093,7 +1097,7 @@ class MergeDoviWorkflow(QObject):
                     aligned = self._step_align(
                         film1_pass, film2, paths, flags, frame_counts, alignment,
                         static_hdr_film1, static_hdr_film2, presence,
-                        allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
+                        allow_hdr10_fallback=hdr10_fallback,
                     )
                     self._release_film1_pass(film1_pass, WorkflowStep.ALIGN)
                     film1_pass = None
@@ -1109,7 +1113,7 @@ class MergeDoviWorkflow(QObject):
                     paths,
                     flags,
                     MetadataAdjustment.EXACT if auto else metadata_adjustment,
-                    allow_hdr10_fallback=validation.film1_needs_sdr_to_hdr10,
+                    allow_hdr10_fallback=hdr10_fallback,
                 )
                 self._check_cancel()
 
@@ -1223,7 +1227,7 @@ class MergeDoviWorkflow(QObject):
         elif kind == "cancelled":
             self.workflow_cancelled.emit()
         else:
-            self.workflow_failed.emit(step, message, failure)
+            self.workflow_failed.emit(step, message, None if self._cancelled else failure)
 
     def _discard_consumed(self, step: WorkflowStep, paths: _WorkflowPaths, *candidates: Path) -> None:
         """Supprime les intermédiaires devenus inutiles (libère l'espace des phases suivantes)."""
@@ -1527,13 +1531,18 @@ class MergeDoviWorkflow(QObject):
         # imposerait une lecture complète ; ses métadonnées extraites (petits
         # fichiers) sont comptées exactement à CHECK_METADATA.
         fc1 = self._get_framecount(film1)
-        fc2_deferred = _is_raw_hevc(film2)
+        # Alignement forcé : Film 2 jamais lu (ni comptage de ses paquets) ; métadonnées comptées à CHECK_METADATA.
+        fc2_deferred = _is_raw_hevc(film2) or metadata_only
         fc2 = None if fc2_deferred else self._get_framecount(film2)
 
         diff = abs(fc2 - fc1) if fc1 is not None and fc2 is not None else None
         result = FrameCountResult(fc1, fc2, diff, fc2_deferred=fc2_deferred)
 
-        if fc2_deferred:
+        if metadata_only:
+            self.step_progress.emit(step, translate_text(
+                "Film 1 : {fc1} frames  |  Film 2 : non lu (alignement forcé), comptage exact sur ses métadonnées "
+                "extraites.", fc1=fc1))
+        elif fc2_deferred:
             self.step_progress.emit(
                 step,
                 f"Film 1 : {fc1} frames  |  Film 2 : flux brut, comptage exact sur ses "
@@ -1546,8 +1555,8 @@ class MergeDoviWorkflow(QObject):
         if aligned and metadata_requested and metadata_only:
             # Alignement forcé (décision DC) : jamais annoncé « image par image ».
             self.step_progress.emit(step, translate_text(
-                "Alignement forcé : correspondance établie par les coupes des métadonnées à l'étape d'alignement, "
-                "image de Film 2 non vérifiée{counted}.",
+                "Alignement forcé : la correspondance sera établie à l'étape d'alignement par les seules coupes des "
+                "métadonnées, image de Film 2 non vérifiée{counted}.",
                 counted=translate_text(" (Film 1 compté par sa lecture complète)") if result.fc1 is None else ""))
         elif aligned and metadata_requested:
             self.step_progress.emit(step, translate_text(

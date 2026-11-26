@@ -12195,10 +12195,6 @@
     "fra": "L5 de Film 1 seul : image de Film 2 non lue (alignement forcé)",
     "eng": "L5 of Film 1 only: Film 2 picture not read (forced alignment)"
   },
-  "Alignement forcé : correspondance établie par les coupes des métadonnées à l'étape d'alignement, image de Film 2 non vérifiée{counted}.": {
-    "fra": "Alignement forcé : correspondance établie par les coupes des métadonnées à l'étape d'alignement, image de Film 2 non vérifiée{counted}.",
-    "eng": "Forced alignment: match established by the metadata cuts at the alignment step, Film 2 picture not verified{counted}."
-  },
   "{what} : alignement par les coupes des métadonnées, image de Film 2 non vérifiée": {
     "fra": "{what} : alignement par les coupes des métadonnées, image de Film 2 non vérifiée",
     "eng": "{what}: alignment by the metadata cuts, Film 2 picture not verified"
@@ -12230,5 +12226,13 @@
   "Forcer l'alignement sur les métadonnées": {
     "fra": "Forcer l'alignement sur les métadonnées",
     "eng": "Force alignment on the metadata"
+  },
+  "Alignement forcé : la correspondance sera établie à l'étape d'alignement par les seules coupes des métadonnées, image de Film 2 non vérifiée{counted}.": {
+    "fra": "Alignement forcé : la correspondance sera établie à l'étape d'alignement par les seules coupes des métadonnées, image de Film 2 non vérifiée{counted}.",
+    "eng": "Forced alignment: the match will be established at the alignment step by the metadata cuts only, Film 2 picture not verified{counted}."
+  },
+  "Film 1 : {fc1} frames  |  Film 2 : non lu (alignement forcé), comptage exact sur ses métadonnées extraites.": {
+    "fra": "Film 1 : {fc1} frames  |  Film 2 : non lu (alignement forcé), comptage exact sur ses métadonnées extraites.",
+    "eng": "Film 1: {fc1} frames  |  Film 2: not read (forced alignment), exact count on its extracted metadata."
   }
 }

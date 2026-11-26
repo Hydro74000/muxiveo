@@ -361,3 +361,135 @@ def test_segment_uid_of_a_streamed_origin_never_depends_on_its_header_path(tmp_p
         return _compiled(tmp_path, rewritten, {(origin, 0): "flux:3"}, origin=(origin, 0)).segment_uid
 
     assert segment_uid("producteur-1.mkv") == segment_uid("producteur-2.mkv")
+
+
+# ── Relecture Codex 21 ─────────────────────────────────────────────────────
+
+
+def _forced_run(tmp_path: Path, *, presence_fails: bool = False, check_fails: bool = False):
+    """``_run`` en alignement forcé, Film 1 SDR (repli HDR10 possible hors mode forcé), étapes remplacées."""
+    from core.workflows.merge_dovi import DoviProfile, ValidationContext
+
+    film1, film2 = tmp_path / "film1.mkv", tmp_path / "film2.mkv"
+    film1.write_bytes(b"x")
+    film2.write_bytes(b"x")
+    paths = _paths(tmp_path, film1)
+    wf = MergeDoviWorkflow()
+    any_wf = cast(Any, wf)
+    any_wf._step_validate = lambda *_a: ValidationContext(
+        flags=HDRFlags(has_dovi=True), static_film1=StaticHdrMetadata(), static_film2=StaticHdrMetadata(),
+        film1_needs_sdr_to_hdr10=True)
+    any_wf._step_detect_dovi = lambda *_a: None
+    any_wf._step_framecount = lambda *_a, **_k: FrameCountResult(100, None, None)
+    any_wf._step_check_storage = lambda *_a, **_k: None
+    any_wf._start_film1_pass = lambda _film1: SimpleNamespace()
+    any_wf._stop_film1_pass = lambda _pass: True
+    any_wf._release_film1_pass = lambda *_a: None
+    for name in ("_step_extract_hevc", "_step_extract_metadata", "_step_convert_sdr_to_hdr10", "_step_cleanup",
+                 "_discard_consumed", "_step_inject_dovi", "_step_inject_hdr10plus"):
+        setattr(wf, name, lambda *_a, **_k: None)
+
+    def presence(*_a):
+        if presence_fails:
+            raise AlignmentError("audit impossible")
+        return {}
+
+    def check(_counts, _paths, flags, _adjustment, *, allow_hdr10_fallback=False):
+        assert allow_hdr10_fallback is False  # mode forcé : jamais de repli HDR10 seul
+        if check_fails:
+            raise WorkflowError(WorkflowStep.CHECK_METADATA, "comptages différents")
+        return flags
+
+    any_wf._audit_film2_presence = presence
+    any_wf._step_check_metadata = check
+    seen: dict[str, Any] = {}
+
+    def step_align(*args, allow_hdr10_fallback=False):
+        seen["align_fallback"] = allow_hdr10_fallback
+        return None if not check_fails else _forced_result()
+
+    any_wf._step_align = step_align
+    any_wf._step_inject_static_hdr = lambda *_a: False
+    any_wf._step_verify = lambda *_a, **_k: None
+    any_wf._step_remux = lambda *_a, **_k: seen.setdefault("remux", True)
+    failures: list[tuple] = []
+    wf.workflow_failed.connect(lambda step, message, detail: failures.append((step, message, detail)))
+    wf._run(film1, film2, paths, DoviProfile.P8_1, alignment=AlignmentOptions(metadata_only=True))
+    return failures, seen
+
+
+def _forced_result() -> AlignmentResult:
+    table = _table(100)
+    forced = AlignmentMap(100, 100, (Segment(0, 100, 0),), (), (), np.asarray([0]), {"metadata_only": True})
+    return AlignmentResult(forced, None, None, None, resolve_static_hdr(None, None), None, table, None, [])
+
+
+def test_forced_run_never_falls_back_to_hdr10_after_a_failed_presence_audit(tmp_path) -> None:
+    failures, seen = _forced_run(tmp_path, presence_fails=True)
+    assert failures and "audit impossible" in failures[0][1] and "remux" not in seen  # Film 2 jamais importé
+
+
+def test_forced_run_never_falls_back_to_hdr10_at_check_metadata(tmp_path) -> None:
+    failures, seen = _forced_run(tmp_path, check_fails=True)
+    assert seen["align_fallback"] is False
+    assert failures and failures[0][0] == WorkflowStep.CHECK_METADATA and "remux" not in seen
+
+
+def test_cancellation_during_cleanup_never_offers_a_relaunch(tmp_path) -> None:
+    film1 = tmp_path / "film1.mkv"
+    film1.write_bytes(b"x")
+    wf = MergeDoviWorkflow()
+
+    def refused(*_args):
+        raise WorkflowError(WorkflowStep.ALIGN, "Film 2 non décodable.", MergeDoviFailure("film2_undecodable", True))
+
+    cast(Any, wf)._step_validate = refused
+    cast(Any, wf)._discard_failed_run = lambda *_a: setattr(wf, "_cancelled", True)  # annulation pendant le nettoyage
+    failures: list[tuple] = []
+    wf.workflow_failed.connect(lambda step, message, detail: failures.append(detail))
+    wf._run(film1, tmp_path / "film2.mkv", _paths(tmp_path, film1), cast(Any, None))
+    assert failures == [None]
+
+
+def test_forced_frame_count_never_reads_film2(tmp_path) -> None:
+    film1, film2 = tmp_path / "a.mkv", tmp_path / "b.mkv"
+    wf = MergeDoviWorkflow()
+    counted: list[Path] = []
+    cast(Any, wf)._get_framecount = lambda path: counted.append(path) or 100
+    lines: list[str] = []
+    wf.step_progress.connect(lambda _step, line: lines.append(line))
+    result = wf._step_framecount(film1, film2, aligned=True, metadata_only=True)
+    assert counted == [film1] and result.fc2 is None
+    assert any("sera établie" in line for line in lines)
+    assert not any("correspondance établie" in line or "image par image" in line for line in lines)
+
+
+def test_forced_remux_never_imports_film2_chapters(tmp_path) -> None:
+    from unittest.mock import patch
+
+    film1, film2 = tmp_path / "film1.mkv", tmp_path / "film2.mkv"
+    film1.write_bytes(b"film1")
+    film2.write_bytes(b"film2")
+    paths = _paths(tmp_path, film1)
+    flags = HDRFlags(has_dovi=False, has_hdr10plus=False)
+    paths.film1_hevc_input.write_bytes(b"hevc")
+    wf = MergeDoviWorkflow()
+    cast(Any, wf)._mux_native_video = lambda _fh, _f1, p, _vp, _d, _c, **_kw: p.film1_wrapped_video.write_bytes(b"w")
+    cast(Any, wf)._read_video_track_props = lambda _f: {"pixel_width": 3840, "pixel_height": 2160}
+    plans: list[Any] = []
+    cast(Any, wf)._assemble_final_mkv = lambda plan, _d: plans.append(plan) or plan.output.write_bytes(b"out")
+    lines: list[str] = []
+    wf.step_progress.connect(lambda _step, line: lines.append(line))
+
+    class _Reader:
+        def __init__(self, path): self.path = path
+        def tracks(self): return []
+        def raw_top_level(self, _id): return [b"chapters"] if self.path == film2 else []
+        def attachment_headers(self): return []
+        def segment_title(self): return ""
+        def chapter_editions(self): pytest.fail("chapitres de Film 2 lus en alignement forcé")
+
+    with patch("core.workflows.merge_dovi.MatroskaReader", _Reader):
+        wf._step_remux(film1, paths, flags, film2=film2, aligned=_forced_result())
+    assert plans and plans[0].chapter_source is None and not plans[0].chapter_entries
+    assert any(line.startswith("[WARN]") and "alignement forcé" in line for line in lines)

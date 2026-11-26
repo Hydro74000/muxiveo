@@ -1196,8 +1196,9 @@ class MergeDoviPanel(QWidget):
         )
         self._set_idle_state()
         self.op_state_changed.emit("failed", translate_text("Échec."))
+        cancelled = bool(getattr(self._workflow, "_cancelled", False))  # annulation demandée pendant le nettoyage
         if (isinstance(detail, MergeDoviFailure) and detail.code == "film2_undecodable"
-                and detail.metadata_alignment_possible):
+                and detail.metadata_alignment_possible and not cancelled):
             # Après le passage au repos de la barre d'exécution : la relance suit le chemin de « Lancer ».
             QTimer.singleShot(0, lambda: self._offer_forced_alignment(local_message))
 
