@@ -227,6 +227,9 @@ class HdrStudio(QWidget):
         # Comptes exacts des pistes (clé du cache : chemin, taille, date, piste), gardés pour toute mesure suivante.
         self._exact_counts: dict[str, int] = {}
         self._exact_counts_lock = threading.Lock()
+        #: Inspection en cours (rôle « main » ou « compare », jeton, annulation) : « Annuler » lève l'occupation
+        #: aussitôt, son retour annulé est ignoré.
+        self._inspection: tuple[str, int, threading.Event] | None = None
         self._count_busy = False  # occupation due au seul comptage d'un chargement du cache
         self._measurement: ImageMeasurement | None = None
         self._last_output: Path | None = None
@@ -443,15 +446,14 @@ class HdrStudio(QWidget):
         self._track_combo.clear()
         self._track_combo.blockSignals(False)
         self._render(None)
-        self._set_busy(True, translate_text("Inspection de {name}…", name=path.name))
-        self._progress_bar.setRange(0, 0)
         ffprobe, mediainfo = str(self._config.tool_ffprobe), str(self._config.tool_mediainfo)
         cancel = self._cache_cancel("main")
         self._cancel = cancel
+        self._begin_inspection("main", token, cancel, translate_text("Inspection de {name}…", name=path.name))
 
         def task() -> None:
             try:
-                info = FileInspector(ffprobe, mediainfo).inspect(path)
+                info = FileInspector(ffprobe, mediainfo, cancel_event=cancel).inspect(path)  # sondes tuées
                 video = info.video_tracks
                 index = _requested_track(info, stream_index)
                 cached = self._cached(path, index, _inspected_frames(info, index), cancel) if video else None
@@ -463,10 +465,25 @@ class HdrStudio(QWidget):
 
         self._submit(task)
 
-    def _on_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
-        if token != self._token:
-            return
+    def _begin_inspection(self, role: str, token: int, cancel: threading.Event, status: str) -> None:
+        """Inspection rapide de A (``main``) ou de B (``compare``) : occupation signalée, « Annuler » visible."""
+        self._inspection = (role, token, cancel)
+        self._set_busy(True, status)
+        self._progress_bar.setRange(0, 0)
+
+    def _end_inspection(self, role: str, token: int) -> bool:
+        """Retour de l'inspection (``role``, ``token``) : vrai si c'est celle en cours, non annulée (occupation
+        levée ici) ; faux pour un retour annulé ou périmé (ignoré, l'occupation a déjà été levée)."""
+        current = self._inspection
+        if current is None or current[0] != role or current[1] != token or current[2].is_set():
+            return False
+        self._inspection = None
         self._set_busy(False)
+        return True
+
+    def _on_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
+        if token != self._token or not self._end_inspection("main", token):
+            return
         if info is None or not info.video_tracks:
             self._notify("ERROR", error or translate_text("Aucune piste vidéo."))
             return
@@ -1053,13 +1070,15 @@ class HdrStudio(QWidget):
             return
         self._compare_token += 1
         token = self._compare_token
-        self._compare_tab.set_status(translate_text("Inspection de {name}…", name=path.name))
+        status = translate_text("Inspection de {name}…", name=path.name)
+        self._compare_tab.set_status(status)
         ffprobe, mediainfo = str(self._config.tool_ffprobe), str(self._config.tool_mediainfo)
         cancel = self._cache_cancel("compare")
+        self._begin_inspection("compare", token, cancel, status)
 
         def task() -> None:
             try:
-                info = FileInspector(ffprobe, mediainfo).inspect(path)
+                info = FileInspector(ffprobe, mediainfo, cancel_event=cancel).inspect(path)  # sondes tuées
                 video = info.video_tracks
                 index = _requested_track(info, stream_index)
                 self._compare_inspected.emit(token, info, index, self._cached(
@@ -1088,6 +1107,9 @@ class HdrStudio(QWidget):
     def _on_compare_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
         if token != self._compare_token:
             return
+        if self._inspection is not None and self._inspection[0] == "compare":
+            if not self._end_inspection("compare", token):
+                return
         if info is None or not info.video_tracks:
             self._compare_notify("ERROR", error or translate_text("Aucune piste vidéo."))
             return
@@ -1354,6 +1376,15 @@ class HdrStudio(QWidget):
     def cancel(self) -> None:
         self._cancel.set()
         self._pending_analyze = False  # inspection annulée : pas d'analyse automatique ensuite
+        if self._inspection is not None:  # inspection rapide (A ou B) : occupation levée aussitôt, retour ignoré
+            role, _token, event = self._inspection
+            event.set()
+            self._inspection = None
+            if role == "compare":
+                self._compare_token += 1  # chargement de B périmé (piste B : jeton propre)
+                self._compare_tab.set_status(translate_text("Inspection annulée."))
+            self._set_busy(False)
+            self._set_status(translate_text("Inspection annulée."))
         for cache_cancel in self.__dict__.get("_cache_cancels", {}).values():
             cache_cancel.set()  # comptage exact d'un chargement du cache (piste changée, piste B)
         if self._count_busy:  # occupation du seul comptage : levée ici (aucune tâche ne la lèvera)

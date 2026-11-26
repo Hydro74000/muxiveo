@@ -12090,5 +12090,9 @@
   "Nombre d'images": {
     "fra": "Nombre d'images",
     "eng": "Frame count"
+  },
+  "Inspection annulée.": {
+    "fra": "Inspection annulée.",
+    "eng": "Inspection cancelled."
   }
 }

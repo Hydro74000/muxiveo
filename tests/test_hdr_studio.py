@@ -639,8 +639,10 @@ def test_cancel_during_inspection_drops_pending_analysis(studio, qt_app, tmp_pat
     monkeypatch.setattr(studio, "analyze", lambda *a, **k: analyses.append(True))
     studio.load_source(_media(tmp_path), 0, analyze=True)
     studio.cancel()
-    assert _wait(qt_app, lambda: studio._info is not None)
-    assert analyses == []
+    # Inspection annulée (D5, lot 5) : son retour est ignoré, rien n'est affiché ni analysé.
+    assert _wait(qt_app, lambda: getattr(studio, "_inflight", 0) == 0)
+    qt_app.processEvents()
+    assert studio._info is None and analyses == [] and not studio._busy
 
 
 def test_unreadable_exact_count_is_retried(studio, tmp_path, monkeypatch):
