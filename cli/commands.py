@@ -28,6 +28,7 @@ from cli.remux_config import config_to_template
 from cli.encode_options import apply_encode_options, encode_block_from_args
 from cli.interrupts import interrupt_guard
 from cli.service_adapter import (
+    argv_documents,
     envelope,
     exit_code_for_result,
     overrides_from_args,
@@ -333,7 +334,13 @@ def cmd_remux(args: argparse.Namespace, config: AppConfig, logger: Logger) -> in
         )
     job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     if args.save:
-        write_json(Path(args.save).expanduser(), config_to_template(job))
+        # Template jamais écrit sur un fichier lu ou produit par le job (sources, documents, sortie).
+        from core.sidecar_output import SidecarGuard, job_document_paths
+
+        guard = SidecarGuard(job_document_paths(job))
+        guard.protect_many(argv_documents(args), "document de la requête")
+        guard.claim(args.save, "template (--save)")
+        guard.write_json(Path(args.save).expanduser(), config_to_template(job))
         logger.emit("info", f"Template sauvegardé : {args.save}")
     return _run_job(job, args, config, options, logger)
 
@@ -352,7 +359,8 @@ def _run_job(job: dict, args: argparse.Namespace, config: AppConfig, options, lo
     with interrupt_guard(CancelToken()) as cancel:
         try:
             result, ctx = run_operation("media.run", payload, config=config, logger=logger,
-                                        overrides=_job_overrides(options), cancel=cancel)
+                                        overrides=_job_overrides(options), cancel=cancel,
+                                        documents=argv_documents(args))
         except ApiError as error:
             if not error.logged:
                 raise
@@ -417,7 +425,8 @@ def _batch_via_operation(args: argparse.Namespace, config: AppConfig, logger: Lo
             payload["mux_backend"] = args.mux_backend
     with interrupt_guard(CancelToken()) as cancel:
         result, ctx = run_operation(name, payload, config=config, logger=logger,
-                                    overrides=overrides_from_options(options), cancel=cancel)
+                                    overrides=overrides_from_options(options), cancel=cancel,
+                                    documents=argv_documents(args))
     print_json(envelope(name, ctx.events.job, result=result))
     return exit_code_for_result(result)
 

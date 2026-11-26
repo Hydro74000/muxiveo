@@ -9863,9 +9863,9 @@
     "fra": "Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).",
     "eng": "With --hdr-fel: exit code 3 if the verdict is lower (moderate, useful)."
   },
-  "Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart).": {
-    "fra": "Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart).",
-    "eng": "With --hdr-fel: most marked moments as full-resolution PNG (without FEL, with FEL, difference map)."
+  "Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart), publiés après l'analyse ; A et B de même nom : suffixe .A / .B.": {
+    "fra": "Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart), publiés après l'analyse ; A et B de même nom : suffixe .A / .B.",
+    "eng": "With --hdr-fel: most marked moments as full-resolution PNG (without FEL, with FEL, difference map), published after the analysis; A and B with the same name: .A / .B suffix."
   },
   "Avec --hdr-fel : test de survie à l'encodage (ex. libx265:35000).": {
     "fra": "Avec --hdr-fel : test de survie à l'encodage (ex. libx265:35000).",

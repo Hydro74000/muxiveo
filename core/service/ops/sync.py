@@ -21,7 +21,7 @@ from core.workflows.audio_sync import AudioSyncTrack
 from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
 from core.workflows.subtitle_sync import shift_text
 from core.workflows.sync_calibration import SyncCalibration
-from core.workflows.workflow_store import atomic_write_text
+from core.sidecar_output import guard_for
 
 
 def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, default: str = "audio", *,
@@ -104,6 +104,10 @@ def _audio_scanner(request: SyncScanRequest, ctx: ExecutionContext) -> Any:
            long_running=True, mutating=True,
            errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED))
 def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult:
+    # Calibration réservée avant l'analyse : jamais sur la référence, la cible ni le document de la requête.
+    guard = guard_for(ctx, sources=(request.ref, request.target))
+    if request.output_json is not None:
+        guard.claim(request.output_json, "calibration écrite")
     ffprobe, ffmpeg = ctx.tool("ffprobe"), ctx.tool("ffmpeg")
     port = ctx.port("detect_stream_kind", detect_stream_kind)
 
@@ -167,8 +171,8 @@ def sync_scan(request: SyncScanRequest, ctx: ExecutionContext) -> SyncScanResult
         ))
     calibration = result.to_dict()
     if request.output_json is not None:
-        atomic_write_text(Path(request.output_json),
-                          json.dumps(calibration, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+        guard.write_text(Path(request.output_json),
+                         json.dumps(calibration, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
         ctx.events.artifact("calibration", str(request.output_json))
     return SyncScanResult(calibration=calibration)
 

@@ -9,22 +9,24 @@ from pathlib import Path
 from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
 from core.jobs.dynamic_sync import perform_dynamic_sync as perform_dynamic_sync  # réexport (tests, scripts)
 from core.service.ops.sync import detect_stream_kind as detect_stream_kind  # remplaçable (tests)
-from core.workflows.workflow_store import atomic_write_text
 from cli.constants import EXIT_OK
 from cli.options import common_options
 from cli.remux_config import build_remux_config
 from cli.runtime import run_remux_config
 from cli.interrupts import interrupt_guard
 from core.workflows.hybrid import HybridPair as HybridPair  # réexport (tests)
-from cli.service_adapter import envelope, exit_code_for_result, overrides_from_args, print_json, run_operation
+from cli.service_adapter import (
+    argv_documents,
+    envelope,
+    exit_code_for_result,
+    overrides_from_args,
+    print_json,
+    run_operation,
+)
 from core.jobs.hybrid_pairs import HybridOptions, HybridSteps, pairs_for
 from core.jobs.hybrid_pairs import prepare_pair as _prepare_pair
 from core.jobs.runtime import remux_workflow
 from core.service.context import CancelToken
-
-
-def _write_json(path, value):
-    atomic_write_text(Path(path), json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
 
 
 def scanner(args, config):
@@ -53,7 +55,7 @@ def cmd_sync_scan(args, config, logger):
         "detect_stream_kind": lambda *a, **k: detect_stream_kind(*a, **k),
     }
     result, ctx = run_operation("sync.scan", payload, config=config, logger=logger,
-                                overrides=overrides_from_args(args), ports=ports)
+                                overrides=overrides_from_args(args), ports=ports, documents=argv_documents(args))
     if getattr(args, "log_format", "text") == "events":
         print_json(envelope("sync.scan", ctx.events.job, result=result))
     else:
@@ -179,7 +181,8 @@ def cmd_hybrid(args, config, logger):
             payload.pop(key, None)
     with interrupt_guard(CancelToken()) as cancel:
         result, ctx = run_operation(name, payload, config=config, logger=logger,
-                                    overrides=overrides_from_args(args), cancel=cancel)
+                                    overrides=overrides_from_args(args), cancel=cancel,
+                                    documents=argv_documents(args))
     if getattr(args, "log_format", "text") == "events":
         print_json(envelope(name, ctx.events.job, result=result))
     elif plan:

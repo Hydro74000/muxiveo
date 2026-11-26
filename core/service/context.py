@@ -106,7 +106,9 @@ class ExecutionContext:
     valeurs relatives (commande historique : dossier courant ; ``call`` : dossier de la requête ; service : celui
     de la soumission) ; ``None`` : aucune valeur relative n'est acceptée, jamais le dossier courant du processus.
     ``allow_privileged`` : opérations privilégiées (configuration, extensions, mise à jour) autorisées — commandes
-    historiques, ``call --allow-privileged`` ; refusées par défaut.
+    historiques, ``call --allow-privileged`` ; refusées par défaut. ``protected_paths`` : documents du transport lus
+    avant l'opération (``call --request F``, ``--config``, ``--template``…), jamais remplacés par une annexe
+    (:mod:`core.sidecar_output`).
     """
 
     config: Any
@@ -117,6 +119,7 @@ class ExecutionContext:
     api: bool = True
     base_dir: Path | None = None
     allow_privileged: bool = False
+    protected_paths: tuple[Path, ...] = ()
 
     @classmethod
     def create(
@@ -133,6 +136,7 @@ class ExecutionContext:
         base_dir: Path | None = None,
         allow_privileged: bool = False,
         emitter: Emitter | None = None,
+        protected_paths: tuple[Path, ...] = (),
     ) -> ExecutionContext:
         """``emitter`` : émetteur déjà créé (gestionnaire de jobs : numérotation continue depuis l'admission) ;
         ``sink``, ``job`` et ``parent`` sont alors ignorés."""
@@ -145,6 +149,7 @@ class ExecutionContext:
             api=api,
             base_dir=base_dir,
             allow_privileged=allow_privileged,
+            protected_paths=tuple(Path(path) for path in protected_paths),
         )
 
     def tool(self, name: str) -> str:

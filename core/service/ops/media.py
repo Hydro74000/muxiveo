@@ -180,6 +180,7 @@ class JobOptions(Model):
             work_dir=str(overrides.work_dir) if overrides.work_dir is not None else None,
             api=ctx.api,
             base_dir=ctx.base_dir,
+            protected_paths=ctx.protected_paths,
             **values,
             **extra,
         )

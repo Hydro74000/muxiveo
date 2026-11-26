@@ -9,10 +9,15 @@ from core.atomic_io import atomic_write_text
 from core.json_documents import read_json_document, resolve_document_paths
 
 
-def save_workflow(path: Path, job: dict):
+def workflow_text(job: dict) -> str:
+    """Texte d'un exact-job (contrat vérifié)."""
     from core.jobs.contract import validate_job_contract
     validate_job_contract(job, require_version=True)
-    atomic_write_text(path, json.dumps(job, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+    return json.dumps(job, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+
+
+def save_workflow(path: Path, job: dict):
+    atomic_write_text(path, workflow_text(job))
 
 
 def load_workflow(path: Path, relocate=None) -> dict:

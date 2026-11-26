@@ -11,7 +11,7 @@ from cli.constants import EXIT_OK, EXIT_VALIDATION
 from cli.interrupts import interrupt_guard
 from cli.logging import Logger
 from cli.options import common_options
-from cli.service_adapter import envelope, overrides_from_options, print_json, run_operation
+from cli.service_adapter import argv_documents, envelope, overrides_from_options, print_json, run_operation
 from core.config import AppConfig
 from core.inspector import FileInspector as FileInspector  # remplaçable (tests)
 from core.service.context import CancelToken
@@ -71,7 +71,7 @@ def add_hdr_options(parser: argparse.ArgumentParser) -> None:
                        help="Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful).")
     group.add_argument("--hdr-fel-moments", default=None, metavar="DOSSIER",
                        help="Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, "
-                            "carte de l'écart).")
+                            "carte de l'écart), publiés après l'analyse ; A et B de même nom : suffixe .A / .B.")
     group.add_argument("--hdr-fel-exposure", type=float, default=0.0, metavar="EV",
                        help="Avec --hdr-fel-moments : exposition des PNG (EV, -6 à 6 ; défaut 0).")
     group.add_argument("--hdr-advice", action="store_true",
@@ -113,7 +113,7 @@ def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger)
     with interrupt_guard(CancelToken()) as cancel:
         result, ctx = run_operation("hdr.inspect", payload, config=config, logger=logger,
                                     overrides=overrides_from_options(common_options(args)), ports=ports,
-                                    cancel=cancel)
+                                    cancel=cancel, documents=argv_documents(args))
     assert isinstance(result, HdrInspectResult)
     if args.log_format == "events":
         print_json(envelope("hdr.inspect", ctx.events.job, result=result))

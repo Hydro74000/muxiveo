@@ -75,7 +75,7 @@ muxiveo --cli inspect [-h] [--sync-mode {physical,container}] [--sync-subtitles 
 | `--hdr-fel-interval` | Avec --hdr-fel : une image mesurée toutes les SECONDES (défaut 30 ; 60 rapide, 10 fin). |
 | `--hdr-fel-survival` | Avec --hdr-fel : test de survie à l'encodage (ex. libx265:35000). |
 | `--hdr-fel-min` | Avec --hdr-fel : code de sortie 3 si le verdict est inférieur (moderate, useful). — `moderate`, `useful` |
-| `--hdr-fel-moments` | Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart). |
+| `--hdr-fel-moments` | Avec --hdr-fel : moments les plus marqués en PNG pleine définition (sans FEL, avec FEL, carte de l'écart), publiés après l'analyse ; A et B de même nom : suffixe .A / .B. |
 | `--hdr-fel-exposure` | Avec --hdr-fel-moments : exposition des PNG (EV, -6 à 6 ; défaut 0). |
 | `--hdr-advice` | Recommandations (clé `advice`) : MaxCLL/MaxFALL et MDCV proposés, simulation du tone mapping d'une TV, réalignement d'après la mesure de l'image. |
 | `--hdr-display-peak` | Avec --hdr-advice : pic de l'écran simulé (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits). |

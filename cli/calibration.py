@@ -15,7 +15,7 @@ from core.service.context import CancelToken
 from cli.constants import LOG_FORMATS
 from cli.interrupts import interrupt_guard
 from cli.logging import Logger
-from cli.service_adapter import envelope, print_json, run_operation
+from cli.service_adapter import argv_documents, envelope, print_json, run_operation
 
 
 def parse_time_ms(text: str) -> float:
@@ -153,7 +153,8 @@ def build_calibration_request(args: argparse.Namespace) -> tuple[str, dict[str, 
 def cmd_calibration(args: argparse.Namespace, config: AppConfig, logger: Logger) -> int:
     name, request = build_calibration_request(args)
     with interrupt_guard(CancelToken()) as cancel:  # Ctrl+C (analyse de cadence) : « cancelled », code 6
-        result, ctx = run_operation(name, request, config=config, logger=logger, cancel=cancel)
+        result, ctx = run_operation(name, request, config=config, logger=logger, cancel=cancel,
+                                    documents=argv_documents(args))
     if args.log_format == "events":
         print_json(envelope(name, ctx.events.job, result=result))
     elif getattr(result, "file", None):

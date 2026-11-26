@@ -48,12 +48,16 @@ def load_job_document(path: Path) -> dict[str, Any]:
     return resolve_document_paths(load_json(path), path.absolute().parent)
 
 
+def json_text(payload: Any) -> str:
+    """Document JSON indenté (UTF-8, valeurs non finies refusées), fin de ligne comprise."""
+    return json.dumps(payload, ensure_ascii=False, indent=2, default=json_default, allow_nan=False) + "\n"
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, default=json_default) + "\n",
-        encoding="utf-8",
-    )
+    """Écriture atomique : dossiers parents créés, droits du fichier remplacé conservés, sinon umask."""
+    from core.atomic_io import atomic_publish_text
+
+    atomic_publish_text(Path(path), json_text(payload))
 
 
 #: Choix exclusifs d'un objet : une surcharge qui fournit une clé d'un groupe retire de la base celles de l'autre.

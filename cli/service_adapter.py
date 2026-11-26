@@ -87,15 +87,18 @@ def run_operation(
     overrides: Overrides | None = None,
     ports: Mapping[str, Callable[..., Any]] | None = None,
     cancel: CancelToken | None = None,
+    documents: tuple[Path, ...] = (),
 ) -> tuple[Model, ExecutionContext]:
     """Exécute une opération pour une commande historique (arguments déjà validés par argparse).
 
     Chemins de l'argv conservés tels quels (relatifs au cwd) : sorties historiques inchangées.
     Documents (``--config``, templates) tolérants : une clé hors contrat est signalée, jamais refusée.
+    ``documents`` : documents lus avant l'opération (:func:`argv_documents`), protégés des annexes.
     """
     # Commande historique (pas une requête de l'API) : valeurs relatives depuis le dossier courant, paramètres libres.
     ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides, ports=ports, cancel=cancel,
-                                  api=False, base_dir=Path.cwd(), allow_privileged=True)
+                                  api=False, base_dir=Path.cwd(), allow_privileged=True,
+                                  protected_paths=documents)
     result = call(CATALOG, name, dict(payload), ctx, allow_relative=True, strict_documents=False)
     return result, ctx
 
@@ -138,6 +141,24 @@ def overrides_from_options(options: Any) -> Overrides:
     )
 
 
+#: Options de l'argv désignant un document lu avant l'opération (protégé des annexes).
+_DOCUMENT_OPTIONS = ("config", "template", "batch", "request", "recipe", "calibration")
+
+
+def argv_documents(args: argparse.Namespace) -> tuple[Path, ...]:
+    """Documents de l'argv lus par la commande (``--config``, ``--template``, ``--batch``, ``--recipe``…)."""
+    found: list[Path] = []
+    for name in _DOCUMENT_OPTIONS:
+        value = getattr(args, name, None)
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if isinstance(item, (str, Path)) and str(item) not in ("", "-"):
+                found.append(Path(item).expanduser())
+    profile = getattr(args, "profile", None)
+    if isinstance(profile, str) and profile and Path(profile).expanduser().is_file():
+        found.append(Path(profile).expanduser())
+    return tuple(found)
+
+
 def _read_request(source: str | None) -> tuple[Any, Path]:
     """Requête JSON : fichier (chemins relatifs à son dossier) ou ``-`` (stdin, relatifs au cwd)."""
     if not source:
@@ -160,7 +181,8 @@ def cmd_call(args: argparse.Namespace, config: Any, logger: Logger) -> int:
     from cli.interrupts import interrupt_guard
 
     ctx = ExecutionContext.create(config, sink_for(logger), overrides=overrides_from_args(args),
-                                  allow_privileged=bool(getattr(args, "allow_privileged", False)))
+                                  allow_privileged=bool(getattr(args, "allow_privileged", False)),
+                                  protected_paths=argv_documents(args))
     try:
         authorize(CATALOG.get(name), ctx.allow_privileged)  # refus avant toute lecture du fichier ou de stdin
         payload, base_dir = _read_request(args.request)

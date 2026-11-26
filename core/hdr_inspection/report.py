@@ -11,6 +11,7 @@ import json
 import struct
 import zlib
 from dataclasses import asdict
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -464,8 +465,11 @@ def render_html(report: InspectionReport, *, measurement: ImageMeasurement | Non
 
 def write_report(path: Path, report: InspectionReport, *, measurement: ImageMeasurement | None = None,
                  fel: FelReport | None = None, comparison: Comparison | None = None,
-                 other: InspectionReport | None = None, advice: Advice | None = None) -> Path:
-    """Écrit le rapport : HTML si l'extension est ``.html``/``.htm``, JSON sinon (écriture atomique)."""
+                 other: InspectionReport | None = None, advice: Advice | None = None,
+                 write: Callable[[Path, str], object] | None = None) -> Path:
+    """Écrit le rapport : HTML si l'extension est ``.html``/``.htm``, JSON sinon (écriture atomique).
+
+    ``write`` : écriture de l'annexe (garde des sorties annexes de la requête) ; défaut : remplacement atomique."""
     path = Path(path)
     if path.suffix.lower() in (".html", ".htm"):
         content = render_html(report, measurement=measurement, fel=fel, comparison=comparison, other=other,
@@ -473,5 +477,8 @@ def write_report(path: Path, report: InspectionReport, *, measurement: ImageMeas
     else:
         content = json.dumps(report_data(report, measurement=measurement, fel=fel, comparison=comparison, other=other,
                                          advice=advice), ensure_ascii=False, indent=2, allow_nan=False) + "\n"
-    atomic_write_text(path, content, mode=0o644)  # document à partager
+    if write is not None:
+        write(path, content)
+    else:
+        atomic_write_text(path, content, mode=0o644)  # document à partager
     return path

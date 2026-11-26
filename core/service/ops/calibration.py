@@ -17,6 +17,7 @@ from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field
 from core.service.operations import operation
 from core.workflows.sync_calibration import SyncCalibration, compose_calibrations, invert_calibration
+from core.sidecar_output import SidecarGuard, guard_for
 
 
 @dataclass(frozen=True)
@@ -73,9 +74,20 @@ def _result(calibration: SyncCalibration, written: Path | None = None) -> Calibr
                              file=str(written) if written is not None else None)
 
 
-def _write(calibration: SyncCalibration, output: Path | None, force: bool, ctx: ExecutionContext) -> Path | None:
+def _guard(ctx: ExecutionContext, output: Path | None, media: tuple[Path, ...] = ()) -> SidecarGuard:
+    """Calibration écrite réservée avant toute analyse : jamais sur un média sondé ni sur le document de la
+    requête ; la calibration éditée elle-même reste remplaçable (``force``)."""
+    guard = guard_for(ctx, sources=media)
+    if output is not None:
+        guard.claim(output, "calibration écrite")
+    return guard
+
+
+def _write(calibration: SyncCalibration, output: Path | None, force: bool, ctx: ExecutionContext,
+           guard: SidecarGuard) -> Path | None:
     if output is None:
         return None
+    guard.verify(output)
     if output.exists() and not force:
         raise JobError(f"Fichier existant : {output} (utiliser --force)", EXIT_EXISTS)
     payload = (json.dumps(calibration.to_dict(), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -168,6 +180,7 @@ def _apply_edit(calibration: SyncCalibration, edit: CalibrationEdit, position: i
 def calibration_edit(request: CalibrationEditRequest, ctx: ExecutionContext) -> CalibrationResult:
     if not request.edits and not request.resolve_cadence:
         raise ApiError(ErrorCode.INVALID_REQUEST, "calibration.edit : au moins une édition (ou resolve_cadence).")
+    guard = _guard(ctx, request.output, tuple(Path(item.path) for item in request.resolve_cadence))
     calibration = load_calibration(request.calibration)
     for position, edit in enumerate(request.edits):
         calibration = _apply_edit(calibration, edit, position)
@@ -187,7 +200,7 @@ def calibration_edit(request: CalibrationEditRequest, ctx: ExecutionContext) -> 
             ctx.cancel.raise_if_cancelled()  # analyse interrompue par le jeton (AudioSyncError) : annulation
             raise
         ctx.cancel.raise_if_cancelled()  # analyse annulée : rien n'est écrit, jamais « succeeded »
-    return _result(calibration, _write(calibration, request.output, request.force, ctx))
+    return _result(calibration, _write(calibration, request.output, request.force, ctx, guard))
 
 
 @dataclass(frozen=True)
@@ -203,8 +216,9 @@ class CalibrationComposeRequest(Model):
 @operation("calibration.compose", request=CalibrationComposeRequest, result=CalibrationResult, mutating=True,
            summary="Composer deux calibrations (cible face à une référence synchronisée : synchro dans la sortie).")
 def calibration_compose(request: CalibrationComposeRequest, ctx: ExecutionContext) -> CalibrationResult:
+    guard = _guard(ctx, request.output)
     calibration = compose_calibrations(load_calibration(request.inner, "inner"), load_calibration(request.outer, "outer"))
-    return _result(calibration, _write(calibration, request.output, request.force, ctx))
+    return _result(calibration, _write(calibration, request.output, request.force, ctx, guard))
 
 
 @dataclass(frozen=True)
@@ -217,5 +231,6 @@ class CalibrationInvertRequest(Model):
 @operation("calibration.invert", request=CalibrationInvertRequest, result=CalibrationResult, mutating=True,
            summary="Inverser une calibration (synchro de la référence face à la cible).")
 def calibration_invert(request: CalibrationInvertRequest, ctx: ExecutionContext) -> CalibrationResult:
+    guard = _guard(ctx, request.output)
     calibration = invert_calibration(load_calibration(request.calibration))
-    return _result(calibration, _write(calibration, request.output, request.force, ctx))
+    return _result(calibration, _write(calibration, request.output, request.force, ctx, guard))

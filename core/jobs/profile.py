@@ -33,6 +33,7 @@ from core.jobs.batch import (
     PreviewStep,
     RunStep,
     assert_unique_batch_outputs,
+    batch_sidecar_guard,
     job_primary_input,
     log_batch_failures,
     write_batch_summary,
@@ -445,6 +446,8 @@ def run_profile_batch(
             if not continue_on_error:
                 break
     assert_unique_batch_outputs(planned)
+    sidecars = batch_sidecar_guard(planned, config=config, options=options, documents=(profile_path,),
+                                   summary_path=summary_path, dry_run=dry_run)
 
     # Phase 2 — exécution dans l'ordre.
     failures = 0
@@ -510,7 +513,7 @@ def run_profile_batch(
     }
     if cancelled:
         summary["cancelled"] = True
-    write_batch_summary(summary_path, summary)
+    write_batch_summary(summary_path, summary, sidecars)
     log_batch_failures(logger, summary_jobs, event="profile_batch_failure")
     logger.emit("info", f"Batch profil terminé : {total - failures}/{total} succès.", event="profile_batch_summary", total=total, failures=failures)
     return BatchOutcome(exit_code, summary, cancelled)

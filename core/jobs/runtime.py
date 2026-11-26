@@ -17,6 +17,7 @@ from core.output_commit import ExistingPolicy, OutputRefusedError
 from core.service.context import CancelToken
 from core.service.errors import ApiError, ErrorCode, ErrorDetail, error_code
 from core.service.jobs import await_task, relay
+from core.sidecar_output import SidecarGuard, remux_input_paths
 from core.workflows.encode.progress_tracking import TimelineProgress
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import RemuxConfig, RemuxValidationError
@@ -44,19 +45,38 @@ def export_exact_job(remux_config: RemuxConfig, options: CommonOptions, *, encod
     ``encode`` : bloc d'encodage du job, conservé tel quel dans le job exact.
     """
     from core.profiles.selectors import remux_config_to_exact_job
-    from core.workflows.workflow_store import save_workflow
+    from core.workflows.workflow_store import workflow_text
 
-    destination = Path(str(options.export_workflow))
-    if options.export_directory:
-        destination.mkdir(parents=True, exist_ok=True)
-        destination /= remux_config.output.stem + ".exact-job.json"
+    destination = exact_job_destination(remux_config, options)
+    guard = remux_sidecar_guard(remux_config, options)
+    guard.claim(destination, "exact-job (--export-workflow)")
     job = remux_config_to_exact_job(remux_config)
     if encode is not None:
         from core.json_documents import portable_encode_block
 
         job = {**job, "encode": portable_encode_block(encode, options.base_dir)}
-    save_workflow(destination, job)
+    text = workflow_text(job)
+    if options.export_directory:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    guard.write_text(destination, text)
     return destination
+
+
+def exact_job_destination(remux_config: RemuxConfig, options: CommonOptions) -> Path:
+    """Fichier de ``--export-workflow`` : le chemin donné, ou ``<dossier>/<sortie>.exact-job.json`` en lot."""
+    destination = Path(str(options.export_workflow))
+    if options.export_directory:
+        destination /= remux_config.output.stem + ".exact-job.json"
+    return destination
+
+
+def remux_sidecar_guard(remux_config: RemuxConfig, options: CommonOptions) -> SidecarGuard:
+    """Fichiers protégés d'un job : documents du transport, sources, pièces jointes, sortie planifiée."""
+    guard = SidecarGuard()
+    guard.protect_many(getattr(options, "protected_paths", ()) or (), "document de la requête")
+    guard.protect_many(remux_input_paths(remux_config), "source")
+    guard.protect(remux_config.output, "sortie")
+    return guard
 
 
 def run_remux(

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from core.jobs.constants import EXIT_ARGS, EXIT_OK
+from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_VALIDATION
 from core.jobs.errors import JobError
 from core.jobs.hybrid_studio import (
     MATCHING,
@@ -39,6 +39,7 @@ from core.service.schemas.documents import ENCODE_BLOCK_REF
 from core.service.operations import operation
 from core.service.ops.batch import _Children
 from core.service.ops.media import JobOptions
+from core.sidecar_output import SidecarGuard, guard_for, nfo_enabled, nfo_path, remux_input_paths
 from core.workflows.hybrid_matrix import HybridRecipe
 
 #: Réglages par défaut d'une hybridation (réécriture physique, sous-titres en miroir, fondu 80 ms).
@@ -200,6 +201,32 @@ def _spec(request: HybridRequest, ctx: ExecutionContext) -> StudioSpec:
         output_template=request.output_template, output_all=request.output_all)
 
 
+def _sidecar_guard(request: HybridRequest, ctx: ExecutionContext, spec: StudioSpec,
+                   prepared: list[PreparedEpisode]) -> SidecarGuard:
+    """Fichiers protégés d'une hybridation : documents (requête, recette, profil), masters, donneurs, pièces
+    jointes et sorties planifiées de tous les épisodes."""
+    guard = guard_for(ctx)
+    if request.recipe is not None:
+        guard.protect(request.recipe, "recette")
+    if request.profile and Path(str(request.profile)).expanduser().is_file():
+        guard.protect(request.profile, "profil")
+    for item in prepared:
+        guard.protect(item.episode.master_file, "master")
+        guard.protect_many((path for _source, path in item.episode.donor_files), "donneur")
+        if item.remux_config is not None:
+            guard.protect_many(remux_input_paths(item.remux_config), "source")
+            guard.protect(item.remux_config.output, "sortie")
+    return guard
+
+
+def _episode_export(request: HybridRequest, prepared: list[PreparedEpisode], remux_config: Any) -> Path:
+    """Exact-job d'un épisode (``export_workflow``) : le fichier donné, ou ``<dossier>/<sortie>.exact-job.json``."""
+    destination = Path(str(request.export_workflow))
+    if len(prepared) > 1:
+        destination /= remux_config.output.stem + ".exact-job.json"
+    return destination
+
+
 def _prepare(request: HybridRequest, ctx: ExecutionContext,
              cache: PreparationCache | None = None) -> tuple[StudioSpec, list[PreparedEpisode]]:
     spec = _spec(request, ctx)
@@ -263,17 +290,35 @@ def hybrid_plan(request: HybridPlanRequest, ctx: ExecutionContext) -> HybridPlan
                 entry["encode"] = encode_plan_payload(resolved, checked)
     ctx.cancel.raise_if_cancelled()  # annulation pendant la validation de l'encodage : aucun export
     exported: list[Path] = []
+    # Annexes réservées toutes ensemble avant la première écriture (exact-jobs, recette).
+    valid = [item for item, entry in zip(prepared, episodes) if "error" not in entry]  # encodage refusé : non exporté
+    if request.export_jobs is None and request.save_recipe is None:
+        return _plan_result(failures, prepared, episodes, spec, [])
+    guard = _sidecar_guard(request, ctx, spec, prepared)
     if request.export_jobs is not None:
         check_outputs(prepared, spec.output_template)
-        valid = [item for item, entry in zip(prepared, episodes) if "error" not in entry]  # encodage refusé : non exporté
-        exported = export_jobs(valid, Path(request.export_jobs), encode=request.encode, base_dir=ctx.base_dir)
+        stems = [item.remux_config.output.stem for item in valid if item.remux_config is not None]
+        if len(set(stems)) != len(stems):
+            raise JobError("Plusieurs workflows portent le même nom.", EXIT_VALIDATION)
+        for item in valid:
+            if item.remux_config is not None:
+                guard.claim(Path(request.export_jobs) / (item.remux_config.output.stem + ".exact-job.json"),
+                            f"exact-job de {item.episode.display_name}")
+    if request.save_recipe is not None:
+        guard.claim(request.save_recipe, "recette écrite (--save-recipe)")
+    if request.export_jobs is not None:
+        exported = export_jobs(valid, Path(request.export_jobs), encode=request.encode, base_dir=ctx.base_dir,
+                               write=guard.write_text)
         for path in exported:
             ctx.events.artifact("exact-job", str(path))
     if request.save_recipe is not None:
-        from core.atomic_io import atomic_write_text
-
-        atomic_write_text(Path(request.save_recipe), recipe_json(spec.recipe))
+        guard.write_text(Path(request.save_recipe), recipe_json(spec.recipe))
         ctx.events.artifact("recipe", str(request.save_recipe))
+    return _plan_result(failures, prepared, episodes, spec, exported)
+
+
+def _plan_result(failures: int, prepared: list[PreparedEpisode], episodes: list[dict[str, Any]], spec: StudioSpec,
+                 exported: list[Path]) -> HybridPlanResult:
     status: Literal["succeeded", "partial", "failed"] = (
         "succeeded" if not failures else "failed" if failures == len(prepared) else "partial")
     return HybridPlanResult(status=status, episodes=tuple(episodes),
@@ -310,6 +355,22 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
     if failed_early is not None and not request.continue_on_error:
         prepared = prepared[:failed_early + 1]
     check_outputs([item for item in prepared if item.error is None], spec.output_template)
+    # Annexes de toute la saison réservées avant le premier épisode : rapport, exact-jobs, NFO de chaque épisode
+    # remuxé ou encodé (aucun en aperçu ni en export).
+    ready = [item for item in prepared if item.error is None and item.remux_config is not None]
+    writes_nfo = request.export_workflow is None and not request.dry_run and nfo_enabled(ctx.config, spec.common)
+    guard = (_sidecar_guard(request, ctx, spec, prepared)
+             if request.report_json is not None or request.export_workflow is not None or (writes_nfo and ready)
+             else SidecarGuard())
+    for item in ready:
+        planned = item.remux_config
+        assert planned is not None
+        if request.export_workflow is not None:
+            guard.claim(_episode_export(request, prepared, planned), f"exact-job de {item.episode.display_name}")
+        elif writes_nfo:
+            guard.claim(nfo_path(planned.output), f"NFO de {item.episode.display_name}")
+    if request.report_json is not None:
+        guard.claim(request.report_json, "rapport des épisodes (--report-json)")
     children = _Children(ctx, cache)
     entries: list[dict[str, Any]] = []
     cancelled = False
@@ -330,19 +391,18 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
             entry["output"] = str(remux_config.output)
             entry["calibration"] = item.calibration.to_dict() if item.calibration is not None else None
             if request.export_workflow is not None:
-                destination = Path(request.export_workflow)
-                if len(prepared) > 1:
-                    destination.mkdir(parents=True, exist_ok=True)
-                    destination /= remux_config.output.stem + ".exact-job.json"
+                destination = _episode_export(request, prepared, remux_config)
                 from core.profiles.selectors import remux_config_to_exact_job
-                from core.workflows.workflow_store import save_workflow
+                from core.workflows.workflow_store import workflow_text
 
                 job = remux_config_to_exact_job(remux_config)
                 if request.encode is not None:
                     from core.json_documents import portable_encode_block
 
                     job = {**job, "encode": portable_encode_block(request.encode, ctx.base_dir)}
-                save_workflow(destination, job)
+                text = workflow_text(job)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                guard.write_text(destination, text)
                 entry["status"] = "exported"
             else:
                 child = children.logger(index)
@@ -395,21 +455,23 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
                 children.finish(child, status)
             entries.append({**entry, "status": status, "error": str(exc) or type(exc).__name__})
             try:
-                _write_report(request, entries)
+                _write_report(request, entries, guard)
             except Exception as report_error:  # jamais à la place de l'interruption d'origine
                 logger.emit("error", f"Rapport des épisodes non écrit : {report_error}")
             raise
-    _write_report(request, entries)
+    _write_report(request, entries, guard)
     return HybridResult(status=_status(entries, cancelled),
                         episodes=tuple({**entry, "job": entry.get("job")} for entry in entries))
 
 
-def _write_report(request: HybridRequest, entries: list[dict[str, Any]]) -> None:
-    """Rapport JSON des épisodes (``report_json``) : aussi après une interruption propagée."""
+def _write_report(request: HybridRequest, entries: list[dict[str, Any]], guard: SidecarGuard | None = None) -> None:
+    """Rapport JSON des épisodes (``report_json``) : aussi après une interruption propagée ; ``guard`` : garde des
+    annexes de la saison (rapport réservé avant le premier épisode)."""
     if request.report_json is None:
         return
     from core.atomic_io import atomic_write_text
 
+    write = guard.write_text if guard is not None else atomic_write_text
     episodes = [{key: value for key, value in entry.items() if key != "job"} for entry in entries]  # rapport inchangé
-    atomic_write_text(Path(request.report_json), json.dumps({"version": 1, "episodes": episodes},
+    write(Path(request.report_json), json.dumps({"version": 1, "episodes": episodes},
                                                              ensure_ascii=False, indent=2, allow_nan=False) + "\n")

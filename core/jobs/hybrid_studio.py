@@ -241,13 +241,16 @@ def check_outputs(prepared: Sequence[PreparedEpisode], template: str = "") -> No
 
 
 def export_jobs(prepared: Sequence[PreparedEpisode], directory: Path, *,
-                encode: dict[str, Any] | None = None, base_dir: Path | None = Path()) -> list[Path]:
+                encode: dict[str, Any] | None = None, base_dir: Path | None = Path(),
+                write: Callable[[Path, str], object] | None = None) -> list[Path]:
     """Exact-jobs finalisés des épisodes préparés (« Sauvegarder les workflows » du Studio).
 
-    ``encode`` : bloc d'encodage de la commande, conservé dans chaque job exact.
+    ``encode`` : bloc d'encodage de la commande, conservé dans chaque job exact. ``write`` : écriture d'une
+    annexe réservée (garde des sorties annexes) ; défaut : remplacement atomique.
     """
+    from core.atomic_io import atomic_write_text
     from core.profiles.selectors import remux_config_to_exact_job
-    from core.workflows.workflow_store import save_workflow
+    from core.workflows.workflow_store import workflow_text
 
     from core.json_documents import portable_encode_block
 
@@ -258,9 +261,10 @@ def export_jobs(prepared: Sequence[PreparedEpisode], directory: Path, *,
                 for config in ready]
     if len({path for path, _payload in payloads}) != len(payloads):
         raise JobError("Plusieurs workflows portent le même nom.", EXIT_VALIDATION)
+    texts = [(path, workflow_text(payload)) for path, payload in payloads]  # tous valides avant la première écriture
     directory.mkdir(parents=True, exist_ok=True)
-    for path, payload in payloads:
-        save_workflow(path, payload)
+    for path, text in texts:
+        (write or atomic_write_text)(path, text)
     return [path for path, _payload in payloads]
 
 

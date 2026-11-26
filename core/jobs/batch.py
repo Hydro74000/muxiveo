@@ -356,10 +356,47 @@ def job_primary_input(job: dict[str, Any]) -> str:
         return ""
 
 
-def write_batch_summary(path: str | None, payload: dict[str, Any]) -> None:
+def write_batch_summary(path: str | None, payload: dict[str, Any], guard: Any = None) -> None:
+    """Résumé du lot (``--summary``) ; ``guard`` : garde des annexes du lot (résumé réservé au précontrôle)."""
     if not path:
         return
+    if guard is not None:
+        guard.write_json(Path(path).expanduser(), payload)
+        return
     write_json(Path(path).expanduser(), payload)
+
+
+def batch_sidecar_guard(planned: list[PlannedBatchJob], *, config: Any, options: CommonOptions,
+                        documents: tuple[str | Path | None, ...], summary_path: str | None, dry_run: bool) -> Any:
+    """Précontrôle des annexes d'un lot, avant le premier job : résumé, exact-jobs (``--export-workflow``) et NFO de
+    chaque job qui en écrit un, jamais sur une source, une sortie, un document du lot ni une autre annexe.
+
+    Seules les écritures effectives sont réservées (aucun NFO en aperçu ni en export).
+    """
+    from core.jobs.runtime import exact_job_destination
+    from core.sidecar_output import SidecarGuard, encode_input_paths, nfo_enabled, nfo_path, remux_input_paths
+
+    guard = SidecarGuard()
+    guard.protect_many(getattr(options, "protected_paths", ()) or (), "document de la requête")
+    guard.protect_many((doc for doc in documents if doc and Path(doc).expanduser().is_file()), "document du lot")
+    ready = [entry for entry in planned if entry.remux_config is not None]
+    for entry in ready:
+        guard.protect_many(remux_input_paths(entry.remux_config), "source")
+        guard.protect(entry.remux_config.output, "sortie")
+        if entry.encode_config is not None:
+            guard.protect_many(encode_input_paths(entry.encode_config), "source")
+            guard.protect(getattr(entry.encode_config, "output", None), "sortie")
+    exporting = bool(getattr(options, "export_workflow", None))
+    writes_nfo = not dry_run and not exporting and nfo_enabled(config, options)
+    for entry in ready:
+        if exporting:
+            guard.claim(exact_job_destination(entry.remux_config, options), f"exact-job du job {entry.index + 1}")
+        elif writes_nfo:
+            output = getattr(entry.encode_config, "output", None) or entry.remux_config.output
+            guard.claim(nfo_path(output), f"NFO du job {entry.index + 1}")
+    if summary_path:
+        guard.claim(Path(summary_path).expanduser(), "résumé du lot (--summary)")
+    return guard
 
 
 def log_batch_failures(logger: Logger, summary_jobs: list[dict[str, Any]], *, event: str = "batch_failure") -> None:
@@ -540,6 +577,8 @@ def run_batch(
             if not continue_on_error:
                 break
     assert_unique_batch_outputs(planned)
+    sidecars = batch_sidecar_guard(planned, config=config, options=options, documents=(template_path, batch_path),
+                                   summary_path=summary_path, dry_run=dry_run)
 
     # Phase 2 — exécution dans l'ordre du batch.
     failures = 0
@@ -649,7 +688,7 @@ def run_batch(
     }
     if cancelled:
         summary["cancelled"] = True
-    write_batch_summary(summary_path, summary)
+    write_batch_summary(summary_path, summary, sidecars)
     log_batch_failures(logger, summary_jobs)
     logger.emit("info", f"Batch terminé : {total - failures}/{total} succès.", event="batch_summary", total=total, failures=failures)
     return BatchOutcome(exit_code, summary, cancelled)

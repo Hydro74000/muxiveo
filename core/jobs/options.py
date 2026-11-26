@@ -49,6 +49,9 @@ class CommonOptions:
     #: Dossier de référence des valeurs relatives tardives (gabarit de sortie, preset ou profil par fichier) ;
     #: commandes historiques : dossier courant ; ``None`` (API sans dossier) : valeur relative refusée.
     base_dir: Path | None = field(default_factory=Path.cwd)
+    #: Documents du transport lus avant le job (``call --request``, ``--config``…) : jamais remplacés par une
+    #: annexe (:mod:`core.sidecar_output`).
+    protected_paths: tuple[Path, ...] = ()
 
     @classmethod
     def from_namespace(cls, args: Any) -> "CommonOptions":

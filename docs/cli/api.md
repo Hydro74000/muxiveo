@@ -201,6 +201,17 @@ Vaut pour les médias (remux, encodage, extraction, `hdr.patch`) et les document
 un nom libre (`-1`, `-2`…). Remplacés sans condition, comme annoncé : `sync.scan` (`output_json`),
 `hybrid.plan` (`save_recipe`), `hybrid.run` (`report_json`), rapports et moments FEL d'`hdr.inspect`.
 
+**Sorties annexes.** Une annexe (rapport, calibration, template, résumé de lot, exact-job, recette, NFO, PNG des
+moments FEL) n'est jamais écrite sur un fichier que la requête lit ou produit : source, B d'une comparaison,
+document de la requête (`call --request`, `--config`, `--template`, `--batch`, recette, profil), sortie
+planifiée ou autre annexe — liens symboliques et physiques compris. Le contrôle porte sur **toutes** les annexes
+avant la première écriture et le premier job (lot, saison Hybrid : rapport, exact-jobs, NFO de chaque épisode ou
+job qui en écrit un ; aucun NFO réservé en aperçu ni en export) : collision → `invalid_request`, rien n'est
+écrit ni exécuté. Une annexe existante sans lien avec la requête est remplacée. Moments FEL : PNG écrits dans
+des fichiers cachés du dossier de destination puis publiés en une passe après l'analyse de toutes les sources
+(nom déjà réservé ailleurs → `busy`, rien publié ; échec en cours de passe → `workflow_failed` listant les
+images publiées et non publiées) ; A et B de même nom : suffixe `.A` / `.B`.
+
 ## Worker `serve`
 
 ```bash

@@ -40,6 +40,14 @@ from core.service.context import CancelToken, ExecutionContext
 from core.service.errors import ApiError, ErrorCode
 from core.service.models import Model, field, list_of
 from core.service.operations import operation
+from core.sidecar_output import (
+    PendingFile,
+    SidecarGuard,
+    discard_pending,
+    guard_for,
+    publish_pending,
+    stage_bytes,
+)
 from core.workdir import create_process_work_dir
 
 LEVELS = ("static", "dynamic", "measure")
@@ -296,8 +304,19 @@ def fel_analysis(config: AppConfig, report: InspectionReport, *, interval_s: int
 
 def write_fel_moments(report: InspectionReport, fel: FelReport, directory: Path, *, exposure: float, ffmpeg: str,
                       threads: int, logger: Logger, token: CancelToken | None = None) -> list[Path]:
+    """Moments les plus marqués du FEL Analyzer écrits et publiés aussitôt (source protégée)."""
+    guard = SidecarGuard([(Path(report.snapshot.path), "source")])
+    return publish_pending(guard, stage_fel_moments(report, fel, directory, exposure=exposure, ffmpeg=ffmpeg,
+                                                    threads=threads, logger=logger, token=token))
+
+
+def stage_fel_moments(report: InspectionReport, fel: FelReport, directory: Path, *, exposure: float, ffmpeg: str,
+                      threads: int, logger: Logger, token: CancelToken | None = None,
+                      side: str = "") -> list[PendingFile]:
     """Moments les plus marqués du FEL Analyzer en pleine définition : PNG sans FEL, avec FEL et carte de l'écart
-    (comparateur avant / après du HDR Studio)."""
+    (comparateur avant / après du HDR Studio), écrits en candidats cachés de ``directory`` (publiés par
+    :func:`~core.sidecar_output.publish_pending`). ``side`` : suffixe de côté (``A`` / ``B``) quand A et B portent
+    le même nom ; erreur ou annulation : candidats supprimés."""
     from core.fel.engine import FelEngine, FelError
     from core.hdr_inspection.fel_analyzer import (
         active_rows,
@@ -308,7 +327,6 @@ def write_fel_moments(report: InspectionReport, fel: FelReport, directory: Path,
         render_sdr,
     )
     from core.hdr_inspection.report import png_bytes
-    from core.atomic_io import atomic_write_bytes
 
     if not fel.moments:
         return []
@@ -320,14 +338,14 @@ def write_fel_moments(report: InspectionReport, fel: FelReport, directory: Path,
     if token is not None:
         token.on_cancel(cancel.set)
     directory.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
+    written: list[PendingFile] = []
     capture = None
     try:
         capture = plugin_capture(FelEngine.installed(), Path(snapshot.path), snapshot.stream_index, ffmpeg_bin=ffmpeg,
                                  width=snapshot.width or 3840, height=snapshot.height or 2160,
                                  frame_rate=f"{rate.numerator}/{rate.denominator}", threads=threads,
                                  cancelled=cancel)
-        stem = Path(snapshot.path).stem
+        stem = Path(snapshot.path).stem + (f".{side}" if side else "")
         for moment in fel.moments:
             if cancel.is_set():
                 break
@@ -344,12 +362,24 @@ def write_fel_moments(report: InspectionReport, fel: FelReport, directory: Path,
             for suffix, image in (("sans-fel", render_sdr(images.mapped, exposure)),
                                   ("avec-fel", render_sdr(images.reconstructed, exposure)),
                                   ("ecart", images.difference)):
-                path = directory / f"{base}.{suffix}.png"
-                atomic_write_bytes(path, png_bytes(image), mode=0o644)  # images à partager
-                written.append(path)
-            logger.emit("info", f"FEL Analyzer : moment {base[len(stem) + 5:]} écrit")
+                written.append(stage_bytes(directory / f"{base}.{suffix}.png", png_bytes(image),
+                                           role="image du FEL Analyzer"))
+            logger.emit("info", f"FEL Analyzer : moment {base[len(stem) + 5:]} capturé")
+        if cancel.is_set():
+            raise InterruptedError
+    except InterruptedError:
+        discard_pending(written)
+        if token is not None:
+            token.raise_if_cancelled()
+        raise
     except (RuntimeError, FelError, OSError) as exc:
+        discard_pending(written)
+        if token is not None:
+            token.raise_if_cancelled()  # capture interrompue par l'annulation : jamais « outil en échec »
         raise JobError(f"FEL Analyzer : capture des moments impossible ({exc}).", EXIT_TOOL) from exc
+    except BaseException:
+        discard_pending(written)
+        raise
     finally:
         cancel.set()
         close_capture(capture)
@@ -377,6 +407,12 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
         raise JobError("--hdr-report : une seule source, ou deux avec --hdr-compare.", EXIT_ARGS)
     if request.offset is not None and not request.compare:
         raise JobError("--hdr-offset s'utilise avec --hdr-compare.", EXIT_ARGS)
+    # Annexes réservées avant toute analyse : jamais sur une source ni sur le document de la requête.
+    guard = guard_for(ctx, sources=inputs)
+    report_target = guard.claim(request.report, "rapport HDR") if request.report else None
+    if request.fel_moments_dir is not None:
+        guard.protect(request.fel_moments_dir, "dossier des moments FEL")  # jamais pris pour une annexe
+    same_stem = len(inputs) == 2 and Path(inputs[0]).stem == Path(inputs[1]).stem
     config, logger = ctx.config, EmitterLogger(ctx.events)
     ffmpeg = ctx.tool("ffmpeg")
     inspector = ctx.port("file_inspector", FileInspector)(ffprobe_bin=ctx.tool("ffprobe"),
@@ -391,8 +427,26 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
     fel_interval = request.fel_interval if request.fel else None
     sides: list[Side] = []
     fel_reports: list[FelReport] = []
-    moments: list[Path] = []
-    for path in inputs:
+    pending: list[PendingFile] = []
+    try:
+        moments = _inspect_sides(request, ctx, inputs, sides, fel_reports, pending, level=level, same_stem=same_stem,
+                                 inspector=inspector, dynamic=dynamic, cache=cache, work_root=work_root,
+                                 threads=threads, survival=survival, fel_interval=fel_interval, ffmpeg=ffmpeg,
+                                 guard=guard, logger=logger)
+    except BaseException:
+        discard_pending(pending)  # erreur, collision ou annulation : aucune image publiée
+        raise
+    return _inspect_result(request, ctx, sides, fel_reports, moments, report_target, guard, logger)
+
+
+def _inspect_sides(request: HdrInspectRequest, ctx: ExecutionContext, inputs: list[Path], sides: list[Side],
+                   fel_reports: list[FelReport], pending: list[PendingFile], *, level: str, same_stem: bool,
+                   inspector: Any, dynamic: Any, cache: InspectionCache, work_root: Path, threads: int,
+                   survival: tuple[str, int] | None, fel_interval: int | None, ffmpeg: str, guard: SidecarGuard,
+                   logger: EmitterLogger) -> list[Path]:
+    """Analyse de chaque source ; moments FEL en candidats (``pending``), publiés en une passe à la fin."""
+    config = ctx.config
+    for side_index, path in enumerate(inputs):
         ctx.cancel.raise_if_cancelled()
         info = inspector.inspect(path)
         ctx.cancel.raise_if_cancelled()  # sonde terminée malgré une annulation : rien n'est publié
@@ -425,13 +479,24 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
                                token=ctx.cancel)
             fel_reports.append(fel)
             if request.fel_moments_dir is not None:
-                written = write_fel_moments(report, fel, Path(request.fel_moments_dir), exposure=request.fel_exposure,
-                                            ffmpeg=ffmpeg, threads=threads, logger=logger, token=ctx.cancel)
-                for path in written:
-                    ctx.events.artifact("fel-moment", str(path))
-                moments += written
+                pending += stage_fel_moments(report, fel, Path(request.fel_moments_dir),
+                                             exposure=request.fel_exposure, ffmpeg=ffmpeg, threads=threads,
+                                             logger=logger, token=ctx.cancel,
+                                             side="AB"[side_index] if same_stem else "")
         sides.append(Side(report, measurement))
     ctx.cancel.raise_if_cancelled()
+    moments = publish_pending(guard, pending)
+    pending.clear()
+    for written in moments:
+        ctx.events.artifact("fel-moment", str(written))
+    return moments
+
+
+def _inspect_result(request: HdrInspectRequest, ctx: ExecutionContext, sides: list[Side],
+                    fel_reports: list[FelReport], moments: list[Path], report_target: Path | None,
+                    guard: SidecarGuard, logger: EmitterLogger) -> HdrInspectResult:
+    """Comparaison, recommandations, rapport (annexe réservée) et verdicts."""
+    config = ctx.config
     comparison = compare(sides[0], sides[1], request.offset) if request.compare else None
     fels: list[FelReport | None] = list(fel_reports) if fel_reports else [None] * len(sides)
     advices: list[Advice | None] = [None] * len(sides)
@@ -445,10 +510,12 @@ def hdr_inspect(request: HdrInspectRequest, ctx: ExecutionContext) -> HdrInspect
         payload["comparison"] = report_data(sides[0].report, measurement=sides[0].measurement, comparison=comparison,
                                             other=sides[1].report)["comparison"]
     report_path = None
-    if request.report:
-        report_path = write_report(Path(request.report), sides[0].report, measurement=sides[0].measurement,
+    if report_target is not None:
+        write_report(report_target, sides[0].report, measurement=sides[0].measurement,
                                    fel=fels[0], comparison=comparison,
-                                   other=sides[1].report if comparison is not None else None, advice=advices[0])
+                                   other=sides[1].report if comparison is not None else None, advice=advices[0],
+                                   write=guard.write_text)
+        report_path = Path(str(request.report))  # chemin tel que demandé (sorties historiques)
         logger.emit("info", f"Rapport HDR écrit : {report_path}")
         ctx.events.artifact("report", str(report_path))
     verdicts = []

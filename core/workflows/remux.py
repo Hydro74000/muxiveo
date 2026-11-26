@@ -337,6 +337,13 @@ class RemuxWorkflow(QObject):
             f"MUX_BACKEND requested={plan.requested_backend} selected={plan.selected_backend} plan_version=1",
         )
         errors = self.validate(config, plan=plan)
+        if self._generate_nfo:
+            # NFO écrit après le job : jamais sur un fichier qu'il lit (pièce jointe externe, source).
+            from core.sidecar_output import nfo_input_conflict, remux_input_paths
+
+            conflict = nfo_input_conflict(config.output, remux_input_paths(config))
+            if conflict:
+                errors = [*errors, conflict]
         if errors:
             raise RemuxValidationError(errors)
         for message in duplicate_default_track_warnings(

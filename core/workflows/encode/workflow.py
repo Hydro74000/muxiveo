@@ -4350,6 +4350,13 @@ class EncodeWorkflow(QObject):
         # Chemins absolus AVANT tout : plan, contrat, commande et transaction
         # doivent consommer exactement les mêmes chemins que l'exécution.
         config = self._absolute_paths_config(config)
+        if self._generate_nfo:
+            # NFO écrit après le job : jamais sur un fichier qu'il lit (pièce jointe externe, source).
+            from core.sidecar_output import encode_input_paths, nfo_input_conflict
+
+            conflict = nfo_input_conflict(config.output, encode_input_paths(config))
+            if conflict:
+                raise EncodeError(conflict)
         # Destination réservée pour toute la durée du job : un second job vers
         # la même sortie échoue ici, avant toute préparation.
         try:
