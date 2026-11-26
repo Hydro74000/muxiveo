@@ -68,7 +68,7 @@ from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
 from core.github_release import github_release_asset, release_asset, verify_download
-from core.python_requirements import read_requirements, unsatisfied_requirements
+from core.python_requirements import BUILD_REQUIREMENTS_FILE, read_requirements, unsatisfied_requirements
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
     RECORDED_ONLY,
@@ -253,8 +253,14 @@ def ensure_build_deps() -> None:
     # ── Dépendances Python ────────────────────────────────────────────────
     missing_py: list[str] = []
 
-    if importlib.util.find_spec("PyInstaller") is None:
-        missing_py.append("pyinstaller")
+    # Outils de build : requirements-build.txt (mêmes règles que requirements.txt, aucune version figée) ;
+    # PyInstaller non importable : toujours réinstallé.
+    build_requirements = read_requirements(BUILD_REQUIREMENTS_FILE)
+    build_unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(build_requirements)}
+    for requirement in build_requirements:
+        absent = requirement.distribution.lower() == "pyinstaller" and importlib.util.find_spec("PyInstaller") is None
+        if requirement.distribution in build_unsatisfied or absent:
+            missing_py.append(requirement.spec)
 
     requirements = read_requirements()
     unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}

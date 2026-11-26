@@ -4,8 +4,10 @@
 # =============================================================================
  
 # Interface graphique
-# Qt 6.11.3 et 6.12.0 rognent la zone de saisie des spinbox stylées.
-# 6.12.0 provoque aussi « deallocating None » sous Python < 3.12.
+# Aucun verrouillage : versions supérieures admises ; incompatibilité connue déclarée ci-dessous, une raison par
+# contrainte (« # != x.y.z : raison » ou « # < x.y : raison »), affichée par le setup si la version est refusée.
+# != 6.11.3 : Qt 6.11.3 rogne la zone de saisie des spinbox stylées.
+# != 6.12.0 : Qt 6.12.0 rogne les spinbox stylées et provoque « deallocating None » sous Python < 3.12.
 PySide6>=6.6.0,!=6.11.3,!=6.12.0
 
 # Corrélation FFT du scanner hybride

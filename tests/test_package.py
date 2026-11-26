@@ -392,16 +392,23 @@ def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():
     with patch.object(package_mod, "_WIN_PYSIDE6_VER", "6.10.2"), \
          patch.object(package_mod, "_wine_pip") as mock_wine_pip, \
          patch.object(package_mod, "_ensure_wine_qt_icu_runtime") as mock_icu, \
-         patch.object(package_mod, "_verify_wine_pyside6_runtime") as mock_verify:
+         patch.object(package_mod, "_verify_wine_pyside6_runtime") as mock_verify, \
+         patch.object(package_mod, "python_inventory", return_value=[{"name": "PySide6", "version": "6.10.2"}]) \
+            as mock_inventory:
         package_mod._ensure_wine_deps()
 
+    # Dépendances lues dans requirements.txt et requirements-build.txt ; PySide6 figée du build croisé.
     mock_wine_pip.assert_called_once_with(
         "pyinstaller",
+        "pillow",
         "PySide6==6.10.2",
-        "pymediainfo>=6.1.0",
         "numpy>=1.24",
+        "pymediainfo>=6.1.0",
         "certifi",
     )
+    assert mock_inventory.call_args.args[0][0] == "wine"  # inventaire du préfixe Wine
+    assert package_mod.TOOL_MANIFEST.python == [{"name": "PySide6", "version": "6.10.2"}]
+    package_mod.TOOL_MANIFEST.python = None
     mock_icu.assert_called_once_with()
     mock_verify.assert_called_once_with()
 
@@ -428,7 +435,8 @@ def test_packaging_repairs_incompatible_pyside_even_when_importable(
     requirements = reqs.read_requirements(python_version=python_version)
     versions = {"PySide6": installed_pyside, "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"}
     monkeypatch.setattr(reqs, "installed_version", versions.get)
-    monkeypatch.setattr(module, "read_requirements", lambda: requirements)
+    monkeypatch.setattr(module, "read_requirements",
+                        lambda path=None, **_k: requirements if path is None else [])  # outils de build : à jour
     monkeypatch.setattr(module.importlib.util, "find_spec", lambda _name: object())
     monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tool")
     packages = []
@@ -1400,7 +1408,9 @@ def test_check_allinc_nvencc_variant(tmp_path, novidia):
     tools = tmp_path / "usr" / "bin" / "tools"
     tools.mkdir(parents=True)
     entries = [{"tool": "ffmpeg"}] + ([] if novidia else [{"tool": "nvencc"}])
-    (tools / "tools-manifest.json").write_text(json.dumps({"version": 1, "tools": entries}), encoding="utf-8")
+    (tools / "tools-manifest.json").write_text(json.dumps({"version": 1, "tools": entries,
+                                                           "python": [{"name": "PySide6", "version": "6.10.2"}]}),
+                                               encoding="utf-8")
     if novidia:
         (tmp_path / "usr" / "bin" / "_ALLINC_NOVIDIA").touch()
     else:

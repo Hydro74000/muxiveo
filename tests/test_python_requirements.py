@@ -32,9 +32,34 @@ def test_setup_installs_from_requirements():
 
 def test_unsupported_requirement_syntax_is_explicit(tmp_path: Path):
     path = tmp_path / "requirements.txt"
-    path.write_text("PySide6<7\n", encoding="utf-8")
+    path.write_text("PySide6~=6.6\n", encoding="utf-8")
     with pytest.raises(ValueError):
         read_requirements(path)
+
+
+def test_every_known_incompatibility_of_the_project_declares_its_reason():
+    """Décision DE : aucune version figée ; toute exclusion ou borne haute porte sa raison (commentaire)."""
+    for python_version in ((3, 10), (3, 12), (3, 14)):
+        for requirement in read_requirements(python_version=python_version):
+            assert reqs.undeclared_constraints(requirement) == [], requirement.distribution
+    pyside = {r.distribution: r for r in read_requirements()}["PySide6"]
+    assert pyside.reason_for("!=6.11.3") and pyside.reason_for("!=6.12.0")
+
+
+def test_upper_bound_and_reasons_are_parsed_and_enforced(tmp_path: Path, monkeypatch):
+    path = tmp_path / "requirements.txt"
+    path.write_text("# != 1.2 : régression de l'API\n# < 2 : interface retirée\nlib>=1.0,!=1.2,<2\n"
+                    "# raison libre sans contrainte\nautre<3\n", encoding="utf-8")
+    lib, autre = read_requirements(path)
+    assert lib.spec == "lib>=1.0,!=1.2,<2" and lib.upper == (2,) and lib.excluded == ((1, 2),)
+    assert lib.reason_for("<2") == "interface retirée" and reqs.undeclared_constraints(lib) == []
+    assert autre.spec == "autre<3" and reqs.undeclared_constraints(autre) == ["<3"]  # raison manquante
+    assert reqs.is_too_recent("2.0", lib) and reqs.is_too_recent("2.1.5", lib) and not reqs.is_too_recent("1.9", lib)
+    assert "too recent" in reqs.rejection_reason("2.0", lib) and "interface retirée" in reqs.rejection_reason("2.0", lib)
+    assert "régression" in reqs.rejection_reason("1.2", lib)
+    assert reqs.rejection_reason("0.9", lib) == "0.9 too old"
+    monkeypatch.setattr(reqs, "installed_version", lambda name: {"lib": "2.0", "autre": "1"}[name])
+    assert [r.distribution for r, _v in reqs.unsatisfied_requirements([lib, autre])] == ["lib"]
 
 
 @pytest.mark.parametrize(("text", "expected"), [("6.10.0", (6, 10, 0)), ("2.3.0rc1", (2, 3, 0)), ("1.24", (1, 24))])

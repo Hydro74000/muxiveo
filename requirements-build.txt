@@ -1,0 +1,8 @@
+# =============================================================================
+# requirements-build.txt — outils de build des paquets (PyInstaller, Pillow pour les icônes)
+# =============================================================================
+# Mêmes règles que requirements.txt (décision DE) : aucun verrouillage, versions supérieures admises ;
+# incompatibilité connue déclarée par une exclusion ou une borne haute, précédée de sa raison
+# (« # != x.y.z : raison » ou « # < x.y : raison »).
+pyinstaller
+pillow

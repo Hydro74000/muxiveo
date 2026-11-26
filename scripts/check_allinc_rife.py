@@ -92,10 +92,16 @@ def nvencc_errors(package_name: str, dest: Path) -> list[str]:
     if manifest_path is None:
         return ["tools-manifest.json absent"]
     try:
-        tools = {entry.get("tool") for entry in json.loads(manifest_path.read_text(encoding="utf-8")).get("tools", [])}
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tools = {entry.get("tool") for entry in document.get("tools", [])}
+        python = document.get("python")
     except (OSError, ValueError, AttributeError) as exc:
         return [f"tools-manifest.json illisible ({exc})"]
     errors: list[str] = []
+    # Inventaire Python du build (décision DE) : présent et non vide, PySide6 compris.
+    names = {str(item.get("name", "")).lower() for item in python} if isinstance(python, list) else set()
+    if "pyside6" not in names:
+        errors.append("inventaire Python absent de tools-manifest.json (PySide6 non listé)")
     if novidia:
         if binary or "nvencc" in tools:
             errors.append("NVEncC embarqué dans la variante NoVidia")

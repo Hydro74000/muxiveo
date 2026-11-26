@@ -50,7 +50,7 @@ from core.ui_language import system_ui_language
 from core import nvencc_install
 from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
 from core.version import APP_CONFIG_DIR_NAME
-from core.python_requirements import installed_version, is_excluded, read_requirements, unsatisfied_requirements
+from core.python_requirements import installed_version, read_requirements, rejection_reason, unsatisfied_requirements
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -992,10 +992,7 @@ def install_python_packages(dry_run: bool, force: bool = False) -> None:
         if requirement.distribution not in pending:
             ok(f"{requirement.distribution} {installed_version(requirement.distribution)} already installed")
     for requirement, version in unsatisfied:
-        state = "missing" if version is None else (
-            f"{version} excluded (known defect)" if is_excluded(version, requirement) else f"{version} too old"
-        )
-        warn(f"{requirement.spec}: {state}")
+        warn(f"{requirement.spec}: {rejection_reason(version, requirement)}")  # raison déclarée comprise
 
     if not unsatisfied:
         ok("All Python packages already satisfied")

@@ -67,13 +67,14 @@ from core.github_release import (
     release_asset,
     verify_download,
 )
-from core.python_requirements import read_requirements, unsatisfied_requirements
+from core.python_requirements import BUILD_REQUIREMENTS_FILE, read_requirements, unsatisfied_requirements
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
     PREEXISTING,
     RECORDED_ONLY,
     VERIFIED_GITHUB_DIGEST,
     ToolManifest,
+    python_inventory,
     ffmpeg_build_details,
     is_master_build,
 )
@@ -102,7 +103,8 @@ _WIN_PY_VER   = "3.11.9"
 _WIN_PY_URL   = f"https://www.python.org/ftp/python/{_WIN_PY_VER}/python-{_WIN_PY_VER}-amd64.exe"
 # Chemin de python.exe à l'intérieur du préfixe Wine
 _WIN_PY_EXE   = _WINE_PREFIX / "drive_c" / "Python311" / "python.exe"
-# Version PySide6 figée pour le build cross Wine.
+# Version PySide6 figée pour le build croisé Wine (fc8e9db : runtime Qt + ICU vérifié sous Wine par
+# _verify_wine_pyside6_runtime) — incompatibilité des versions suivantes sous Wine à confirmer (décision DE).
 # Un override ponctuel reste possible via l'environnement si besoin de tester
 # une autre release sans modifier le dépôt.
 _WIN_PYSIDE6_VER = os.environ.get("MUXIVEO_WINE_PYSIDE6_VERSION", "6.10.2").strip() or "6.10.2"
@@ -668,8 +670,14 @@ def _ensure_pyinstaller() -> None:
     requirements = read_requirements()
     unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}
     missing: list[str] = []
-    if importlib.util.find_spec("PyInstaller") is None:
-        missing.append("pyinstaller")
+    # Outils de build : requirements-build.txt (mêmes règles que requirements.txt, aucune version figée) ;
+    # PyInstaller non importable : toujours réinstallé.
+    build_requirements = read_requirements(BUILD_REQUIREMENTS_FILE)
+    build_unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(build_requirements)}
+    for requirement in build_requirements:
+        absent = requirement.distribution.lower() == "pyinstaller" and importlib.util.find_spec("PyInstaller") is None
+        if requirement.distribution in build_unsatisfied or absent:
+            missing.append(requirement.spec)
     for requirement in requirements:
         if requirement.distribution in unsatisfied or importlib.util.find_spec(requirement.module) is None:
             missing.append(requirement.spec)
@@ -2648,12 +2656,22 @@ def _setup_wine_vcruntime() -> None:
     _ok("vcrun2019 installé")
 
 
+def _wine_python_specs() -> list[str]:
+    """Dépendances du préfixe Wine : requirements.txt (Python 3.11 du préfixe) et requirements-build.txt, PySide6
+    remplacé par sa version figée du build croisé (``_WIN_PYSIDE6_VER``)."""
+    runtime = [r.spec for r in read_requirements(python_version=(3, 11)) if r.distribution != "PySide6"]
+    build = [r.spec for r in read_requirements(BUILD_REQUIREMENTS_FILE, python_version=(3, 11))]
+    return [*build, f"PySide6=={_WIN_PYSIDE6_VER}", *runtime]
+
+
 def _ensure_wine_deps() -> None:
-    """Installe PyInstaller + dépendances Python dans le préfixe Wine."""
+    """Installe PyInstaller + dépendances Python dans le préfixe Wine ; inventaire du préfixe au manifeste."""
     _info(f"Installation des dépendances Python dans Wine (PySide6=={_WIN_PYSIDE6_VER})…")
-    _wine_pip("pyinstaller", f"PySide6=={_WIN_PYSIDE6_VER}", "pymediainfo>=6.1.0", "numpy>=1.24", "certifi")
+    _wine_pip(*_wine_python_specs())
     _ensure_wine_qt_icu_runtime()
     _verify_wine_pyside6_runtime()
+    # Build croisé : inventaire des distributions du préfixe Wine (et non de l'interpréteur Linux du packaging).
+    TOOL_MANIFEST.python = python_inventory(["wine", str(_WIN_PY_EXE)], env=_wine_env("-all"))
     _ok("Dépendances Python Windows installées")
 
 
@@ -3539,6 +3557,10 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
         shutil.copy2(icns_path, resources / "icon.icns")
 
     _patch_macos_info_plist(app_final, version_tag=version_tag)
+    # Inventaire Python du build (tools-manifest.json) avant la signature : un ajout ensuite l'invaliderait.
+    resources = app_final / "Contents" / "Resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    TOOL_MANIFEST.write(resources)
     _sign_macos_bundle(app_final)
     _verify_macos_bundle(app_final)
 

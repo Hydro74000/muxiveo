@@ -81,9 +81,13 @@ def is_master_build(build: str) -> bool:
 
 @dataclass
 class ToolManifest:
-    """Entrées de provenance, écrites en JSON trié dans le dossier d'outils."""
+    """Entrées de provenance, écrites en JSON trié dans le dossier d'outils.
+
+    ``python`` : inventaire des distributions Python du build (nom, version) ; ``None`` : interpréteur courant,
+    relevé à l'écriture (build croisé Wine : inventaire du préfixe fourni par le packaging)."""
 
     entries: list[dict[str, Any]] = field(default_factory=list)
+    python: list[dict[str, str]] | None = None
 
     def add(
         self,
@@ -114,9 +118,34 @@ class ToolManifest:
 
     def write(self, directory: Path) -> Path:
         path = Path(directory) / MANIFEST_NAME
-        payload = {"version": 1, "tools": sorted(self.entries, key=lambda entry: entry["tool"])}
+        python = self.python if self.python is not None else python_inventory()
+        payload = {"version": 1, "tools": sorted(self.entries, key=lambda entry: entry["tool"]),
+                   "python": sorted(python, key=lambda item: item["name"].lower())}
         atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         return path
+
+
+def python_inventory(command: Sequence[str] | None = None,
+                     env: Mapping[str, str] | None = None) -> list[dict[str, str]]:
+    """Distributions Python installées (nom, version) : interpréteur courant (``importlib.metadata``) ou
+    ``command`` (autre interpréteur, ex. Python du préfixe Wine : ``pip list --format=json``). Traçabilité des
+    dépendances d'un build, sans verrouillage (décision DE)."""
+    if command is None:
+        from importlib import metadata
+
+        found: dict[str, str] = {}
+        for distribution in metadata.distributions():
+            name = distribution.metadata["Name"] or ""
+            if name and name.lower() not in found:
+                found[name.lower()] = f"{name}\0{distribution.version}"
+        return [{"name": value.split("\0")[0], "version": value.split("\0")[1]} for value in found.values()]
+    # Interpréteur du build et options fixes, sans shell ; ``env`` : environnement de cet interpréteur (préfixe Wine).
+    result = subprocess.run([*command, "-m", "pip", "list", "--format=json", "--disable-pip-version-check"],  # nosec B603
+                            capture_output=True, text=True, check=True, timeout=300,
+                            env=dict(env) if env is not None else None)
+    items = json.loads(result.stdout or "[]")
+    return [{"name": str(item["name"]), "version": str(item["version"])} for item in items
+            if isinstance(item, dict) and "name" in item and "version" in item]
 
 
 def bundled_tool_entry(binary: Path | str | None) -> dict[str, Any] | None:
