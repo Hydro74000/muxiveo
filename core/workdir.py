@@ -54,7 +54,7 @@ _TMDB_INSECURE_SSL_ENV = f"{APP_ENV_PREFIX}_TMDB_INSECURE_SSL"
 _PROCESS_NAME_MAX = 80
 
 
-def _urlopen_image(req: urllib.request.Request, timeout: int = 30):
+def _urlopen_image(req: urllib.request.Request, timeout: float = 30):
     """urlopen TLS vérifié pour les images TMDB (même opt-in explicite que l'API)."""
     return urlopen_tls(req, timeout, insecure_env=_TMDB_INSECURE_SSL_ENV)
 
@@ -570,26 +570,53 @@ def normalized_tmdb_cover_filename(filename: str) -> str:
     return name if name not in {"", ".", ".."} else "cover.jpg"
 
 
-def download_tmdb_cover(url: str, filename: str, target_dir: Path) -> Path:
-    """
-    Télécharge une cover depuis l'URL TMDB et la place dans target_dir.
+#: Taille maximale d'une image TMDB téléchargée (octets) : au-delà, refus (réponse anormale).
+TMDB_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_TMDB_IMAGE_CHUNK = 64 * 1024
 
-    Retourne le chemin du fichier téléchargé.
-    Lève une OSError ou urllib.error.URLError en cas d'échec réseau/disque.
+
+def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
+                     max_bytes: int = TMDB_IMAGE_MAX_BYTES) -> bytes:
+    """Octets d'une image TMDB : HTTPS vérifié (non vérifié seulement avec ``MUXIVEO_TMDB_INSECURE_SSL=1``,
+    jamais en repli), durée **totale** bornée par ``deadline`` (le délai socket ne borne qu'une lecture), taille
+    bornée par ``max_bytes``.
+
+    Lève :class:`~core.tls.TlsVerificationError` (certificat refusé), ``TimeoutError`` (échéance), ``ValueError``
+    (trop volumineuse) ou ``OSError`` / ``urllib.error.URLError`` (réseau).
     """
     from core.version import APP_USER_AGENT
 
+    req = urllib.request.Request(url, headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": APP_USER_AGENT})
+    limit = time.monotonic() + deadline
+    with _urlopen_image(req, timeout=timeout) as resp:
+        declared = resp.headers.get("Content-Length") if getattr(resp, "headers", None) is not None else None
+        if declared is not None and str(declared).isdigit() and int(declared) > max_bytes:
+            raise ValueError(f"image TMDB trop volumineuse ({int(declared)} octets, maximum {max_bytes})")
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            if time.monotonic() > limit:
+                raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
+            chunk = resp.read(_TMDB_IMAGE_CHUNK)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError(f"image TMDB trop volumineuse (plus de {max_bytes} octets)")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def download_tmdb_cover(url: str, filename: str, target_dir: Path) -> Path:
+    """
+    Télécharge une cover depuis l'URL TMDB et la place dans target_dir (:func:`fetch_tmdb_image`).
+
+    Retourne le chemin du fichier téléchargé.
+    Lève une OSError, urllib.error.URLError, TimeoutError ou ValueError en cas d'échec réseau/disque.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / normalized_tmdb_cover_filename(filename)
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "image/*,*/*;q=0.8",
-            "User-Agent": APP_USER_AGENT,
-        },
-    )
-    with _urlopen_image(req, timeout=30) as resp:
-        dest.write_bytes(resp.read())
+    dest.write_bytes(fetch_tmdb_image(url))
     return dest
 
 

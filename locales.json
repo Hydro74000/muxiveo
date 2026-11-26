@@ -12094,5 +12094,17 @@
   "Inspection annulée.": {
     "fra": "Inspection annulée.",
     "eng": "Inspection cancelled."
+  },
+  "Cover TMDB non téléchargée : certificat TLS refusé ({detail}). La vérification n'est jamais désactivée d'office ; MUXIVEO_TMDB_INSECURE_SSL=1 la désactive à vos risques.": {
+    "fra": "Cover TMDB non téléchargée : certificat TLS refusé ({detail}). La vérification n'est jamais désactivée d'office ; MUXIVEO_TMDB_INSECURE_SSL=1 la désactive à vos risques.",
+    "eng": "TMDB cover not downloaded: TLS certificate refused ({detail}). Verification is never disabled automatically; MUXIVEO_TMDB_INSECURE_SSL=1 disables it at your own risk."
+  },
+  "Impossible de télécharger la cover TMDB : {exc}": {
+    "fra": "Impossible de télécharger la cover TMDB : {exc}",
+    "eng": "Unable to download the TMDB cover: {exc}"
+  },
+  "Chargement de la cover TMDB…": {
+    "fra": "Chargement de la cover TMDB…",
+    "eng": "Loading the TMDB cover…"
   }
 }
