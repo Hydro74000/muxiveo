@@ -1654,3 +1654,81 @@ def test_removed_variant_drops_its_own_analysis(films, monkeypatch):
     assert panel.cadence_resolution_pending()
     panel.remove_audio_track_variant("variant")
     assert not panel.cadence_resolution_pending()
+
+
+# --- Quatrième relecture Gemini Neon (commit 789d3b0). ---
+
+
+def test_removing_the_variant_that_launched_a_source_analysis_keeps_it(films, monkeypatch):
+    panel, master, vf, _vo, _subtitle, _logs = films
+    panel.add_audio_track_variant(vf, entry_id="variant", codec="aac", bitrate_kbps=192)
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done("variant", master.entry_id, 300, .95, _pal_auto())
+    assert panel.cadence_resolution_pending()
+    panel.remove_audio_track_variant("variant")
+    assert panel.cadence_resolution_pending()
+    _run_pending(submitted)
+    assert panel._sync_links["B"].relative.cadence_audio_method == "asetrate"
+
+
+def _three_sources(qt_app, tmp_path, monkeypatch, *, entered: bool):
+    """A ; B calée sur A (PAL 25 → 23,976, asetrate) ; C calée sur VF de B (24 → 25, « auto »),
+    décalage saisi sur C avant le résultat si `entered`. Retourne la hauteur appliquée à C."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    panel = RemuxPanel(AppConfig())
+    master, vf, c1 = _track(1, "audio", file_id="A"), _track(1, "audio", file_id="B"), _track(1, "audio", file_id="C")
+    _add_source(panel, tmp_path, "A", [master])
+    _add_source(panel, tmp_path, "B", [vf])
+    _add_source(panel, tmp_path, "C", [c1])
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    film = detect_cadence_from_metadata("25/1", "24/1")
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 0, .95,
+                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method="asetrate"))
+    panel._on_audio_sync_done(c1.entry_id, vf.entry_id, 0, .95,
+                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=film, cadence_audio_method="auto"))
+    if entered:
+        submitted.clear()
+        c1.time_shift_ms = 500
+        panel._track_table.time_shift_edited.emit(c1)
+    _run_pending(submitted)
+    applied = panel._source_calibration("C")
+    panel.close()
+    return applied
+
+
+def test_source_analysis_without_link_is_composed_with_its_reference(qt_app, tmp_path, monkeypatch):
+    """Méthode tranchée après un décalage saisi (lien retiré) : même hauteur qu'avec le lien."""
+    linked = _three_sources(qt_app, tmp_path / "linked", monkeypatch, entered=False)
+    entered = _three_sources(qt_app, tmp_path / "entered", monkeypatch, entered=True)
+    assert linked.cadence_audio_method == entered.cadence_audio_method == "asetrate"
+    assert entered.audio_pitch_factor == pytest.approx(linked.audio_pitch_factor)
+
+
+def test_source_last_reference_is_an_audio_track(films, monkeypatch):
+    panel, master, vf, _vo, subtitle, _logs = films
+    sub_a = _track(2, "subtitle", codec="SRT", file_id="A")
+    panel._track_table.append_tracks(_COLOR_A, [sub_a])
+    panel._last_reference_ids[subtitle.entry_id] = sub_a.entry_id
+    panel._last_reference_ids[vf.entry_id] = master.entry_id
+    tracks = panel._track_table.current_tracks()
+    panel._replace_track_table_tracks([subtitle] + [track for track in tracks if track is not subtitle])
+    assert panel._source_last_reference("B") is master
+
+
+def test_track_detached_during_its_source_analysis_is_analysed_too(films, monkeypatch):
+    """B en cours d'analyse « auto » ; VO recalée sur VF puis décalage saisi (détachée, conversion
+    de B gardée) : VO analysée face à la référence de B, méthode tranchée pour les deux."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
+    _studio(panel, monkeypatch, vo, vf, 100)
+    vo.time_shift_ms = 420
+    panel._track_table.time_shift_edited.emit(vo)
+    assert vo.entry_id not in panel._track_sync_links
+    _run_pending(submitted)
+    assert panel._sync_links["B"].relative.cadence_audio_method == "asetrate"
+    assert panel._track_calibration(vo).cadence_audio_method == "asetrate"
+    assert not panel.cadence_resolution_pending()
