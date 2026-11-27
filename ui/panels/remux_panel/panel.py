@@ -1542,7 +1542,8 @@ class RemuxPanel(QWidget):
     def _track_sync_counts(self) -> dict[str, int]:
         counts = {"video": 0, "audio": 0, "subtitle": 0}
         for entry in self._track_table.current_tracks():
-            if entry.track_type in counts and track_sync_active(entry):
+            # Piste recalée dans son fichier : lien actif, même à 0 ms.
+            if entry.track_type in counts and (track_sync_active(entry) or entry.entry_id in self._track_sync_links):
                 counts[entry.track_type] += 1
         return counts
 

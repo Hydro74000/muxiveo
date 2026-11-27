@@ -12,7 +12,7 @@ from core.workflows.common.audio_timestamps import (
 
 from core.workflows.remux_models import RemuxError, SourceInput
 from core.workflows.remux_mapping import resolve_mapped_tracks, track_sync_payload
-from core.workflows.sync_calibration import SyncCalibration
+from core.workflows.sync_calibration import SyncCalibration, effective_calibration
 from core.workflows.common.sync_rewrite import (
     SYNC_AUDIO_ORIGIN_FILTER,
     audio_bitrate_kbps_from_display_info,
@@ -129,9 +129,13 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
         if sync_rewrite_forced_offset(track):
             continue
         payload = track_sync_payload(config, track, mapped.source_file_index)
-        # Hors audio, une hauteur seule se réduit au décalage : sans décalage, instants intacts.
-        calibrated = bool(payload) and (
-            track.track_type == "audio" or track_calibration(config, mapped) != SyncCalibration.linear(0)
+        # Calibration sans effet (décalage nul, ni coupure ni conversion : piste recalée ramenée à
+        # 0 ms) : piste non préparée, ses horodatages d'origine restent (la copie les remettrait à
+        # zéro). Hors audio, une hauteur seule se réduit au décalage.
+        calibration_now = track_calibration(config, mapped) if payload else None
+        calibrated = calibration_now is not None and (
+            effective_calibration(calibration_now, track.track_type) is not None
+            or bool(calibration_now.segments[0].shift_ms)
         )
         mirror_offset = 0
         # Sous-titre à synchro propre (recalé, même à 0 ms) : jamais de miroir.

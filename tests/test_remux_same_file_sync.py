@@ -785,3 +785,26 @@ def test_realignment_back_to_zero_stays_cancellable(films, monkeypatch):
     panel._on_auto_sync_cancel_requested(vo)
     assert vo.entry_id not in panel._track_sync_links
     assert not panel._track_table._has_cancelable_auto_sync(vo)
+
+
+# --- Cinquième relecture Codex (commit caa50cf). ---
+
+
+def test_physical_remux_leaves_a_track_realigned_back_to_zero_untouched(films, monkeypatch, tmp_path):
+    """Calibration explicite sans effet (0 ms) : pas de préparation, horodatages d'origine conservés."""
+    panel, _master, vf, vo, _subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    _studio(panel, monkeypatch, vo, vf, 300)
+    assert _prepared_shifts(panel, tmp_path)[vo.entry_id] == 300
+    _studio(panel, monkeypatch, vo, vf, -300)
+    assert vo.sync_calibration is not None and vo.entry_id in panel._track_sync_links
+    assert vo.entry_id not in _prepared_shifts(panel, tmp_path)
+
+
+def test_global_cancel_stays_offered_for_a_link_at_zero(films, monkeypatch):
+    panel, _master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 300)
+    _studio(panel, monkeypatch, vo, vf, -300)
+    assert not panel._global_sync_cancel_btn.isHidden()
+    panel._on_global_sync_cancel_requested()
+    assert panel._track_sync_links == {} and panel._global_sync_cancel_btn.isHidden()
