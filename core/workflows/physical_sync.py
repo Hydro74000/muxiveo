@@ -263,8 +263,6 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             payload = probe_timestamp_payload(output, ffprobe, cancel_cb=cancel_cb)
             fmt = payload.get("format")
             timestamp_offsets[output] = timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0
-        if mapped.track.track_type == "subtitle":
-            shift_file(output, output, calibration)
         restored_ms = 0
         if restore_matroska_origin and Path(mapped.source_path).suffix.lower() in _MATROSKA_SUFFIXES:
             source_path = Path(mapped.source_path)
@@ -274,6 +272,14 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             removed = (origins.get(source_path, 0.0) if mapped.track.track_type == "audio"
                        else timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0)
             restored_ms = round(removed * 1000)
+        if mapped.track.track_type == "subtitle":
+            applied = calibration
+            if restored_ms:
+                # Origine intégrée au recalage, avant l'écrêtage à zéro : une réplique avancée avant
+                # le départ extrait reste dans le fichier.
+                applied = calibration.with_start_offset(calibration.segments[0].shift_ms + restored_ms)
+                restored_ms = 0
+            shift_file(output, output, applied)
         # Origine rendue : décalage d'assemblage, jamais une synchro à réécrire une seconde fois.
         track = replace(mapped.track, mkv_tid=0, time_shift_ms=restored_ms, sync_rewrite_label="",
                         sync_rewrite_mode=SYNC_REWRITE_MODE_OFFSET if restored_ms else "",

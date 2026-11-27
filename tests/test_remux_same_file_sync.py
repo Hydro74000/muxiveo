@@ -2389,3 +2389,57 @@ def test_per_track_source_decision_without_conversion_keeps_each_offset(qt_app, 
     assert panel._autosave_dirty
     assert workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"] == []
     panel.close()
+
+
+# --- Relecture Codex (31be542). ---
+
+
+def test_resumed_source_analysis_keeps_the_saved_measured_track(qt_app, tmp_path, monkeypatch):
+    """Analyse sauvegardée sur la VO de C (piste mesurée) : reprise sur elle, même si l'étiquette de
+    langue de la référence a changé depuis (la mesure par la langue choisirait la VF)."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel, c_vf, c_vo, _logs, _measured = _per_track_offsets_source(qt_app, tmp_path, monkeypatch, "atempo")
+    b_vo = next(track for track in panel._track_table.current_tracks() if track.file_id == "B" and track.mkv_tid == 2)
+    # Étiquette de langue de la référence corrigée depuis : la mesure par la langue choisirait la VF.
+    monkeypatch.setattr(panel, "_audio_sync_measure_entry", lambda _target, _reference: c_vf)
+    relative = SyncCalibration((SyncSegment(0, 300.0),),
+                               cadence_mismatch=detect_cadence_from_metadata("25/1", "24000/1001"),
+                               cadence_audio_method="auto")
+    panel._restored_cadence_analyses = [(c_vo.entry_id, b_vo.entry_id, relative, "source")]
+    print("DBG", b_vo.language, [t.language for t in panel._track_table.current_tracks() if t.file_id == "B"],
+          panel._audio_sync_measure_entry(c_vo, b_vo).language, panel._cadence_pending)
+    panel._resume_cadence_analyses()
+    print("DBG2", panel._cadence_pending, c_vo.entry_id)
+    assert [(entry_id, scope) for entry_id, _r, scope in panel._cadence_pending.values()] == [(c_vo.entry_id, "C")]
+    panel.close()
+
+
+def test_cancelling_the_last_offset_of_a_source_drops_its_pitch_analysis(qt_app, tmp_path, monkeypatch):
+    """C (une piste audio) calée sur B au rapport inverse en Auto (simple décalage) : annulation de la
+    synchro de la piste pendant l'analyse → source libérée, analyse abandonnée ; son résultat ne
+    rétablit aucune correction de hauteur."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel = RemuxPanel(AppConfig())
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    master, b1, c1 = _track(1, "audio", file_id="A"), _track(1, "audio", file_id="B"), _track(1, "audio", file_id="C")
+    _add_source(panel, tmp_path, "A", [master])
+    _add_source(panel, tmp_path, "B", [b1])
+    _add_source(panel, tmp_path, "C", [c1])
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    panel._on_audio_sync_done(b1.entry_id, master.entry_id, 0, .95,
+                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method="atempo"))
+    panel._on_audio_sync_done(c1.entry_id, b1.entry_id, 300, .95, SyncCalibration(
+        (SyncSegment(0, 300.0),), cadence_mismatch=detect_cadence_from_metadata("25/1", "24000/1001"),
+        cadence_audio_method="auto"))
+    assert any(scope == "C" for _e, _r, scope in panel._cadence_pending.values())
+    panel._on_auto_sync_cancel_requested(c1)
+    assert int(c1.time_shift_ms or 0) == 0
+    assert not any(scope == "C" for _e, _r, scope in panel._cadence_pending.values())
+    _run_pending(submitted)
+    calibration = panel._track_calibration(c1)
+    assert calibration.audio_pitch_factor == pytest.approx(1.0) and effective_calibration(calibration) is None
+    assert int(c1.time_shift_ms or 0) == 0
+    panel.close()

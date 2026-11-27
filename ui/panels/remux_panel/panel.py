@@ -2608,8 +2608,10 @@ class RemuxPanel(QWidget):
             self._emit_signals()
 
     def _release_source_sync(self, file_id: str) -> None:
-        """Synchro de la source retirée : plus de lien, ses dépendantes suivent sa position d'origine."""
+        """Synchro de la source retirée : plus de lien, ses analyses de hauteur abandonnées, ses
+        dépendantes suivent sa position d'origine."""
         self._sync_links.pop(file_id, None)
+        self._forget_source_analyses(file_id)
         self._propagate_sync({file_id})
 
     def _relative_sync_calibration(self, entry: TrackEntry, reference: TrackEntry | None) -> SyncCalibration:
@@ -3631,9 +3633,11 @@ class RemuxPanel(QWidget):
 
 
     def _schedule_cadence_method(self, entry: TrackEntry, reference_entry: TrackEntry | None,
-                                 relative: SyncCalibration | None = None) -> bool:
+                                 relative: SyncCalibration | None = None, *,
+                                 measured: TrackEntry | None = None) -> bool:
         """Méthode « auto » restée non tranchée (studio validé avant son analyse) : hauteur analysée
         en arrière-plan sur la synchro face à la référence ; résultat périmé → analyse relancée.
+        `measured` : piste à analyser imposée (reprise de session : celle mesurée à la sauvegarde).
 
         Retourne vrai si une analyse est lancée.
         """
@@ -3646,7 +3650,7 @@ class RemuxPanel(QWidget):
             return False
         # Piste recalée seule (référence du même fichier, synchro propre) : analysée elle-même.
         alone = reference_entry.file_id == entry.file_id or not self._track_inherits_source_sync(entry)
-        measured_entry = ((entry if alone else self._audio_sync_measure_entry(entry, reference_entry))
+        measured_entry = ((entry if alone else measured or self._audio_sync_measure_entry(entry, reference_entry))
                           if entry.track_type == "audio" else None)
         if measured_entry is None:
             measured_entry = next((
@@ -3721,11 +3725,16 @@ class RemuxPanel(QWidget):
                     scope = "track" if self._track_calibration(entry).cadence_method_undecided else "source"
                 else:
                     scope = "source"
-            if entry is not None and scope == "source" and not self._track_inherits_source_sync(entry):
-                # Portée enregistrée : la synchro de la source, analysée sur une piste qui la suit.
-                entry = self._source_audio_track(entry.file_id)
+            measured = None
+            if entry is not None and scope == "source":
+                if self._track_inherits_source_sync(entry):
+                    # Piste mesurée à la sauvegarde : reprise telle quelle (son décalage porte la décision).
+                    measured = entry
+                else:
+                    # Portée enregistrée : la synchro de la source, analysée sur une piste qui la suit.
+                    entry = self._source_audio_track(entry.file_id)
             if entry is not None and reference is not None:
-                self._schedule_cadence_method(entry, reference, relative)
+                self._schedule_cadence_method(entry, reference, relative, measured=measured)
         for entry_id, track_link in list(self._track_sync_links.items()):
             # Recalage dans le fichier à méthode « auto » non tranchée : analysé à nouveau (sauf analyse
             # sauvegardée déjà reprise ci-dessus).

@@ -140,3 +140,39 @@ def test_native_physical_aac_is_encoded_once(tmp_path: Path, monkeypatch) -> Non
     video, reference, shifted = _first_timestamps(config.output)
     assert shifted == pytest.approx(reference, abs=30) and reference == pytest.approx(video, abs=30), \
         (video, reference, shifted)
+
+
+_EARLY_SRT = """1
+00:00:00,100 --> 00:00:00,350
+Tôt
+
+2
+00:00:02,000 --> 00:00:02,600
+Plus tard
+"""
+
+
+def test_native_physical_subtitle_advanced_before_the_extracted_start_is_kept(tmp_path: Path) -> None:
+    """MKV à +500 ms, réplique à 600–850 ms avancée de 400 ms : 200–450 ms dans la sortie native
+    (l'origine entre dans le recalage avant l'écrêtage à zéro, la réplique n'est pas perdue)."""
+    srt = tmp_path / "early.srt"
+    srt.write_text(_EARLY_SRT, encoding="utf-8")
+    path = tmp_path / "early.mkv"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=s=64x64:r=25:d=3", "-i", str(srt), "-i", str(srt),
+        "-map", "0:v", "-map", "1:s", "-map", "2:s", "-c:v", "ffv1", "-c:s", "srt",
+        "-output_ts_offset", "0.5", str(path),
+    ], check=True)
+    tracks = tracks_from_file_info(FileInspector().inspect(path), file_id="src")
+    target = [track for track in tracks if track.track_type == "subtitle"][1]
+    target.sync_calibration = SyncCalibration.linear(-400).to_dict()
+    target.time_shift_ms = -400
+    order = [(0, track.mkv_tid, track.entry_id) for track in tracks]
+    config = RemuxConfig(sources=[SourceInput(path, 0, tracks)], output=tmp_path / "out.mkv", track_order=order,
+                         keep_chapters=False, mux_backend="native", sync_mode="physical", sync_subtitles="none",
+                         work_dir=tmp_path / "work")
+    state = wait_task(RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe").run(config), timeout=120.0)
+    assert state["failed"] is None, state["failed"]
+    _video, reference, shifted = _first_timestamps(config.output)
+    assert reference == pytest.approx(600, abs=5) and shifted == pytest.approx(200, abs=5), (reference, shifted)
