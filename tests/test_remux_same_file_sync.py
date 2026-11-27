@@ -1058,6 +1058,34 @@ def test_profile_constant_variant_offset_is_not_a_mirror_ambiguity(qt_app, tmp_p
     panel.close()
 
 
+def _pal_auto(offset_ms: float = 300.0) -> SyncCalibration:
+    """Synchro à conversion de cadence PAL → cinéma, méthode « auto » non tranchée."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    return SyncCalibration((SyncSegment(0, offset_ms),),
+                           cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"),
+                           cadence_audio_method="auto")
+
+
+def _capture_pitch_analyses(panel, monkeypatch):
+    """Analyses de hauteur mémorisées (lancées par le test) ; méthode retenue : asetrate.
+    Retourne (tâches, pistes analysées)."""
+    from dataclasses import replace
+
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+
+    submitted: list = []
+    targets: list = []
+    monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: submitted.append(fn))
+
+    def resolve(_self, _reference, target, calibration, log=None):
+        targets.append(target.stream_index)
+        return replace(calibration, cadence_audio_method="asetrate", cadence_method_auto=True)
+
+    monkeypatch.setattr(AudioSyncScanner, "resolve_cadence_method", resolve)
+    return submitted, targets
+
+
 def test_auto_cadence_of_a_realignment_in_its_file_is_analysed(films, monkeypatch):
     """Recalage dans le fichier avec conversion de cadence « auto » non tranchée : analyse de hauteur
     planifiée sur la piste, résultat porté par son lien ; reprise de session : analyse relancée."""
@@ -1122,3 +1150,86 @@ def test_physical_variant_of_an_atmos_track_is_not_refused_for_its_title(films, 
     assert _prepared_shifts(panel, tmp_path)[variant.entry_id] == 200
     errors = RemuxWorkflow().validate(panel.collect_config())
     assert not any("incompatible" in error for error in errors), errors
+
+
+# --- Dixième relecture Codex (commit 8d7c5dd). ---
+
+
+def test_profile_keeps_the_constant_own_sync_of_an_independent_variant(qt_app, monkeypatch, tmp_path):
+    """Variante figée à +120 (constante) ; B reçoit ensuite des coupures ; profil rejoué sur la
+    variante existante : elle reste à +120 constants, sans les coupures de B."""
+    from core.profiles.decision import remux_config_to_decision_profile
+    from core.workflows.remux_mapping import track_sync_payload
+
+    panel, master, vf, vo, _sub = _distinct_panel(tmp_path)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _independent(panel, monkeypatch, variant, vf, 120)
+    profile = remux_config_to_decision_profile(panel.collect_config())
+    cuts = SyncCalibration((SyncSegment(0, 0), SyncSegment(60000, 200)))
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 0, .95, cuts)
+    panel._apply_decision_profile(profile)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    payload = track_sync_payload(panel.collect_config(), variant, 1)
+    assert SyncCalibration.from_dict(payload).segments == SyncCalibration.linear(120).segments
+    panel.close()
+
+
+def test_resumed_source_cadence_is_analysed_on_a_track_following_the_source(films, monkeypatch):
+    """VF recalée seule sur VO ; B synchronisée face à A avec cadence « auto » ; reprise : analyse
+    sur VO (qui suit B), résultat porté par le lien de B."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vf, vo, 200)
+    submitted, targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(vo.entry_id, master.entry_id, 300, .95, _pal_auto())
+    submitted.clear()
+    targets.clear()
+    panel._cadence_pending.clear()
+    panel._resume_cadence_analyses()
+    assert len(submitted) == 1
+    from PySide6.QtCore import QCoreApplication
+    submitted.pop()()
+    QCoreApplication.processEvents()
+    assert targets == [vo.mkv_tid]
+    assert panel._sync_links["B"].relative.cadence_audio_method == "asetrate"
+    assert not panel.cadence_resolution_pending()
+
+
+def test_physical_eac3_reencode_of_an_atmos_track(films, monkeypatch, tmp_path):
+    """Variante E-AC-3 384 kb/s d'une E-AC-3 Atmos 768 kb/s, recalée avec une coupure, original
+    décoché : réencodage demandé, accepté (préparation et validation)."""
+    from core.workflows.remux import RemuxWorkflow
+
+    panel, _master, vf, _vo, _subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    atmos = TrackEntry(5, "audio", "E-AC-3", "7.1  768 kbps", "eng", "VO Dolby Atmos", file_id="B")
+    panel._track_table.append_tracks(_COLOR_A, [atmos])
+    panel._find_source("B").tracks.append(atmos)
+    panel.add_audio_track_variant(atmos, entry_id="variant", codec="eac3", bitrate_kbps=384)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _cut_realign(panel, monkeypatch, variant, vf)
+    _uncheck(panel, atmos)
+    assert _prepared_shifts(panel, tmp_path)[variant.entry_id] == 200
+    errors = RemuxWorkflow().validate(panel.collect_config())
+    assert not any("incompatible" in error for error in errors), errors
+
+
+def test_cancelled_realignment_no_longer_holds_the_media_operation(films, monkeypatch):
+    panel, _master, vf, vo, _subtitle, _logs = films
+
+    class _CadenceStudio(_Studio):
+        def result_calibration(self):
+            return _pal_auto(), 300
+
+    _capture_pitch_analyses(panel, monkeypatch)
+    ready: list = []
+    panel.ready_changed.connect(ready.append)
+    monkeypatch.setattr(studio_module, "SyncStudioDialog", _CadenceStudio)
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog",
+                        lambda choices, **_k: SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted,
+                                                              selected_entry=lambda: vf))
+    panel._on_sync_studio_requested(vo)
+    assert panel.cadence_resolution_pending()
+    ready.clear()
+    panel._on_auto_sync_cancel_requested(vo)
+    assert not panel.cadence_resolution_pending() and ready

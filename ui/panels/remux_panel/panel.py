@@ -1145,10 +1145,12 @@ class RemuxPanel(QWidget):
             # Décalage propre rejoué par le profil (variante créée ou reprise) : synchro propre, sans
             # lien ni calibration commune de la source (qui imposerait un autre décalage).
             offset = int(variant_offsets[track.entry_id])
+            # Variante déjà à synchro propre : sa calibration (constante comprise) ; sinon celle de sa source.
             base = (effective_calibration(track.sync_calibration, track.track_type)
-                    or effective_calibration(self._source_calibration(track.file_id), track.track_type))
+                    if track.entry_id in self._own_sync_entry_ids
+                    else effective_calibration(self._source_calibration(track.file_id), track.track_type))
             self._own_sync_entry_ids.add(track.entry_id)
-            self._track_sync_links.pop(track.entry_id, None)
+            self._forget_track_link(track.entry_id)
             track.time_shift_ms = offset
             track.sync_calibration = (base.with_start_offset(offset) if base is not None
                                       else SyncCalibration.linear(offset)).to_dict()
@@ -2104,7 +2106,7 @@ class RemuxPanel(QWidget):
         """
         if reference is None or reference.file_id != entry.file_id:
             # Référence d'un autre fichier : la piste ne suit plus une piste de son fichier.
-            self._track_sync_links.pop(entry.entry_id, None)
+            self._forget_track_link(entry.entry_id)
         released = ""
         if (reference is not None and reference.file_id != entry.file_id
                 and self._track_depends_on(reference, entry_id=entry.entry_id)):
@@ -2166,6 +2168,16 @@ class RemuxPanel(QWidget):
             ))
         return applied
 
+    def _forget_track_link(self, entry_id: str) -> bool:
+        """Lien de recalage retiré : son analyse de hauteur éventuelle n'est plus attendue par le
+        traitement. Retourne vrai s'il existait."""
+        removed = self._track_sync_links.pop(entry_id, None) is not None
+        pending = len(self._cadence_pending)
+        self._drop_cadence_analyses(file_id=f"track:{entry_id}")
+        if len(self._cadence_pending) != pending:
+            self.ready_changed.emit(self._has_ready_files())
+        return removed
+
     def _track_follows_track(self, entry_id: str, other_entry_id: str) -> bool:
         """Le recalage de la piste `entry_id` découle-t-il, même indirectement, de la position de `other_entry_id` ?"""
         seen: set[str] = set()
@@ -2201,7 +2213,7 @@ class RemuxPanel(QWidget):
 
     def _release_track_sync(self, entry: TrackEntry) -> None:
         """Synchro propre de la piste retirée : une piste qui suivait sa source la suit de nouveau."""
-        self._track_sync_links.pop(entry.entry_id, None)
+        self._forget_track_link(entry.entry_id)
         entry.sync_calibration = None
         offset = 0
         if entry.entry_id in self._own_sync_entry_ids:
@@ -2236,7 +2248,7 @@ class RemuxPanel(QWidget):
         )
         for entry_id, link in list(self._track_sync_links.items()):
             if entry_id not in present or link.reference_entry_id not in present:
-                del self._track_sync_links[entry_id]
+                self._forget_track_link(entry_id)
         for file_id, link in list(self._sync_links.items()):
             if link.reference_entry_id in removed_own:
                 del self._sync_links[file_id]
@@ -2421,7 +2433,7 @@ class RemuxPanel(QWidget):
                 continue
             if not self._track_inherits_source_sync(entry):
                 own_moved.add(entry.entry_id)
-                if self._track_sync_links.pop(entry.entry_id, None) is not None:
+                if self._forget_track_link(entry.entry_id):
                     self.log_message.emit("INFO", translate_text(
                         "Décalage de la piste #{idx} saisi à la main : elle ne suit plus sa piste de référence.",
                         idx=entry.mkv_tid,
@@ -2926,7 +2938,7 @@ class RemuxPanel(QWidget):
             if rejoined:
                 # Synchro propre : la mesure vaut pour toute la source, que la piste rejoint.
                 self._own_sync_entry_ids.discard(entry_id)
-                self._track_sync_links.pop(entry_id, None)
+                self._forget_track_link(entry_id)
                 own = next((track for track in self._track_table.current_tracks() if track.entry_id == entry_id), None)
                 self.log_message.emit("INFO", translate_text(
                     "Nouvelle synchro audio de la piste #{idx} : sa synchro propre est remplacée, "
@@ -3514,6 +3526,7 @@ class RemuxPanel(QWidget):
             measured_entry = next((
                 track for track in self._track_table.current_tracks()
                 if track.file_id == entry.file_id and track.track_type == "audio"
+                and self._track_inherits_source_sync(track)
             ), None)
         reference = self._audio_sync_track(reference_entry)
         target = self._audio_sync_track(measured_entry) if measured_entry is not None else None
@@ -3567,9 +3580,11 @@ class RemuxPanel(QWidget):
             calibration = link.relative if link is not None else self._source_calibration(source.id)
             if not calibration.cadence_method_undecided:
                 continue
-            entry = next((t for t in tracks if t.file_id == source.id and t.track_type == "audio"), None)
+            # Piste qui suit la source (une piste recalée seule a sa propre chronologie).
+            entry = next((t for t in tracks if t.file_id == source.id and t.track_type == "audio"
+                          and self._track_inherits_source_sync(t)), None)
             if entry is None:
-                # Sans piste audio, la hauteur n'a pas d'objet.
+                # Sans piste audio qui suit la source, la hauteur n'a pas d'objet.
                 continue
             reference = by_id.get(link.reference_entry_id) if link is not None else None
             if not self._schedule_cadence_method(entry, reference):
