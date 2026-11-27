@@ -240,6 +240,9 @@ class RemuxPanel(QWidget):
         # Piste recalée dans le Synchro Studio face à une autre piste de son fichier (synchro propre) :
         # piste → lien ; elle suit la position de sa référence (`_follow_track_links`).
         self._track_sync_links: dict[str, SyncLink] = {}
+        # Dernière référence choisie pour une piste (Synchro Studio, synchro des sous-titres) :
+        # présélectionnée à la fenêtre de choix suivante.
+        self._last_reference_ids: dict[str, str] = {}
         # Dernière synchro audio automatique : piste → (référence, validée par la vérification rapide).
         self._audio_sync_results: dict[str, tuple[str, bool]] = {}
         self._chapter_sync_cancelled_source_ids: set[str] = set()
@@ -1123,6 +1126,11 @@ class RemuxPanel(QWidget):
         for source in self._source_files:
             if source.id in by_file_id:
                 source.tracks = by_file_id[source.id]
+        previous = {track.entry_id: track for track in self._track_table.current_tracks()}
+        for track in tracks:
+            if track.is_new and track.entry_id not in previous:
+                # Variante créée par le profil : synchro de son modèle.
+                self._adopt_variant_sync(track, previous.get(track.source_entry_id or ""))
         self._replace_track_table_tracks(tracks)
         # Décalages écrits par une règle du profil, même à valeur inchangée : comme une saisie à la main.
         self._take_entered_offsets([
@@ -1285,6 +1293,7 @@ class RemuxPanel(QWidget):
         self._auto_sync_entry_ids.clear()
         self._own_sync_entry_ids.clear()
         self._track_sync_links.clear()
+        self._last_reference_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
         self._cadence_declined_source_ids.clear()
@@ -1309,8 +1318,8 @@ class RemuxPanel(QWidget):
         self.log_message.emit("INFO", translate_text("Pistes, synchronisation et chapitres réinitialisés sur les sources."))
 
     def _replace_track_table_tracks(self, tracks: list[TrackEntry]) -> None:
-        self._own_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
         self._prune_track_sync_links({track.entry_id for track in tracks})
+        self._own_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
         self._sync_entry_calibrations(tracks)
         self._auto_sync_entry_ids.intersection_update({track.entry_id for track in tracks})
         self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
@@ -1448,6 +1457,7 @@ class RemuxPanel(QWidget):
 
         new_entry = clone_track_entry(template_entry, entry_id=entry_id or None)
         self._apply_audio_encoding_to_entry(new_entry, codec, bitrate_kbps)
+        self._adopt_variant_sync(new_entry, template_entry)
         source.tracks.append(new_entry)
         source_color = self._source_colors.get(template_entry.file_id, _C.BORDER)
         self._track_table.append_tracks(source_color, [new_entry])
@@ -1455,6 +1465,22 @@ class RemuxPanel(QWidget):
         self._track_table.refresh_filter()
         self._rebuild_preview()
         self._emit_audio_tracks()
+
+    def _adopt_variant_sync(self, variant: TrackEntry, template: TrackEntry | None) -> None:
+        """Variante créée d'une piste : même synchro que son modèle, synchro propre et recalage dans
+        le fichier compris (sinon elle suivrait sa source en direct, mais plus après une reprise)."""
+        if template is None or template.entry_id not in self._own_sync_entry_ids:
+            if self._track_type_inherits_source_sync(variant):
+                self._sync_entry_calibrations([variant])
+            return
+        self._own_sync_entry_ids.add(variant.entry_id)
+        link = self._track_sync_links.get(template.entry_id)
+        if link is not None:
+            self._track_sync_links[variant.entry_id] = link
+        variant.sync_calibration = copy.deepcopy(template.sync_calibration)
+        variant.time_shift_ms = template.time_shift_ms
+        if template.entry_id in self._auto_sync_entry_ids:
+            self._auto_sync_entry_ids.add(variant.entry_id)
 
     def remove_audio_track_variant(self, entry_id) -> None:
         entry_id_str = str(entry_id or "").strip()
@@ -1691,6 +1717,19 @@ class RemuxPanel(QWidget):
             and ref.entry_id != target.entry_id
         ]
 
+    def _preselected_reference(self, entry: TrackEntry, choices: list[tuple[str, TrackEntry]]) -> TrackEntry | None:
+        """Référence présélectionnée parmi `choices` : dernier choix validé pour la piste, sinon sa
+        référence liée (recalage, puis lien de sa source), sinon celle de sa dernière synchro audio."""
+        track_link = self._track_sync_links.get(entry.entry_id)
+        link = track_link or self._sync_links.get(entry.file_id)
+        candidates = [self._last_reference_ids.get(entry.entry_id), link.reference_entry_id if link else None]
+        for reference_id in candidates:
+            chosen = next((choice for _label, choice in choices if reference_id and choice.entry_id == reference_id), None)
+            if chosen is not None:
+                return chosen
+        last = self._last_audio_sync_reference(entry) if entry.track_type == "audio" else None
+        return last if any(choice is last for _label, choice in choices) else None
+
     def _audio_sync_track(self, entry: TrackEntry) -> AudioSyncTrack | None:
         source = self._find_source(entry.file_id)
         if source is None:
@@ -1882,6 +1921,43 @@ class RemuxPanel(QWidget):
         """La synchro de `file_id` découle-t-elle, même indirectement, de celle de `other_file_id` ?"""
         return depends_on(self._sync_links, file_id, other_file_id)
 
+    def _track_link_root(self, entry: TrackEntry, tracks: dict[str, TrackEntry]) -> TrackEntry:
+        """Piste qui fixe la position de `entry` : bout de la chaîne de ses recalages dans son fichier."""
+        seen: set[str] = set()
+        current = entry
+        while (link := self._track_sync_links.get(current.entry_id)) is not None and current.entry_id not in seen:
+            seen.add(current.entry_id)
+            reference = tracks.get(link.reference_entry_id)
+            if reference is None:
+                break
+            current = reference
+        return current
+
+    def _track_depends_on(self, entry: TrackEntry, file_id: str) -> bool:
+        """La position de la piste découle-t-elle, même indirectement, de la synchro de `file_id` ?
+
+        Recalages dans son fichier suivis jusqu'à la piste qui fixe sa position : synchro propre
+        indépendante → aucune dépendance ; sinon synchro de sa source, chaîne des liens suivie
+        piste par piste (une piste de référence retirée : position de sa source).
+        """
+        tracks = {track.entry_id: track for track in self._track_table.current_tracks()}
+        seen: set[str] = set()
+        current: TrackEntry | None = entry
+        while current is not None and current.entry_id not in seen:
+            seen.add(current.entry_id)
+            root = self._track_link_root(current, tracks)
+            if not self._track_inherits_source_sync(root):
+                return False
+            if root.file_id == file_id:
+                return True
+            link = self._sync_links.get(root.file_id)
+            if link is None:
+                return False
+            current = tracks.get(link.reference_entry_id)
+            if current is None:
+                return link.reference_file_id == file_id or self._sync_depends_on(link.reference_file_id, file_id)
+        return False
+
     def _sync_follows_track(self, file_id: str, entry: TrackEntry) -> bool:
         """La synchro de `file_id` découle-t-elle, même indirectement, de la position de la piste `entry` ?
 
@@ -2035,10 +2111,28 @@ class RemuxPanel(QWidget):
             self._auto_sync_entry_ids.discard(entry.entry_id)
 
     def _prune_track_sync_links(self, present: set[str]) -> None:
-        """Pistes retirées : leurs liens disparaissent ; une piste dont la référence a disparu garde sa synchro."""
+        """Pistes retirées : leurs liens disparaissent ; une piste dont la référence a disparu garde sa synchro.
+
+        Source liée à une piste à synchro propre retirée : sa position n'est plus celle de la source de
+        la référence ; le lien est abandonné, la source garde sa synchro (appelé avant la mise à jour
+        des synchros propres).
+        """
+        removed_own = {
+            entry_id for entry_id in self._own_sync_entry_ids | set(self._track_sync_links)
+            if entry_id not in present
+        }
         for entry_id, link in list(self._track_sync_links.items()):
             if entry_id not in present or link.reference_entry_id not in present:
                 del self._track_sync_links[entry_id]
+        for file_id, link in list(self._sync_links.items()):
+            if link.reference_entry_id in removed_own:
+                del self._sync_links[file_id]
+                self.log_message.emit("INFO", translate_text(
+                    "Piste de référence de « {source} » retirée : sa synchro est conservée, "
+                    "elle ne suit plus sa référence.",
+                    source=self._source_label(file_id),
+                ))
+        self._own_sync_entry_ids.intersection_update(present)
 
     def _follow_track_links(self, *, log: bool = True) -> set[str]:
         """Pistes recalées face à une piste de leur fichier : recalculées d'après la position de leur
@@ -2092,7 +2186,7 @@ class RemuxPanel(QWidget):
             self._sync_links.pop(target_file_id, None)
             return measured, ""
         released = ""
-        if self._sync_depends_on(reference.file_id, target_file_id):
+        if self._track_depends_on(reference, target_file_id):
             released = reference.file_id
             self._sync_links.pop(released, None)
             self._set_source_calibration(released, SyncCalibration.linear(0))
@@ -2241,7 +2335,11 @@ class RemuxPanel(QWidget):
                 ))
             elif offset and (calibration is None or calibration.cadence_mismatch is None):
                 self._warn_offset_without_cadence(entry)
-        return self._propagate_sync(set(changed) | own_files) or detached or moved
+        propagated = self._propagate_sync(set(changed))
+        # Pistes à synchro propre déplacées : leur source ne bouge pas (elle suit encore sa référence,
+        # recalculée ci-dessus) ; seules les sources liées à ces pistes suivent.
+        propagated = self._propagate_sync(own_files - set(changed)) or propagated
+        return propagated or detached or moved
 
     def _on_track_time_shift_edited(self, entry: TrackEntry) -> None:
         if self._take_entered_offsets([entry]):
@@ -2785,7 +2883,7 @@ class RemuxPanel(QWidget):
         position de la référence composée, sauf boucle (sa synchro sera retirée)."""
         if reference.file_id == target.file_id:
             return measured
-        if self._sync_depends_on(reference.file_id, target.file_id):
+        if self._track_depends_on(reference, target.file_id):
             position = self._released_track_position(reference)
             if effective_calibration(position) is None and not position.segments[0].shift_ms:
                 return measured
@@ -3011,6 +3109,7 @@ class RemuxPanel(QWidget):
                 choices,
                 title=translate_text("Choisir la référence pour les sous-titres"),
                 prompt=translate_text("Choisir la piste de sous-titres de référence."),
+                selected=self._preselected_reference(entry, choices),
                 parent=self,
             )
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -3021,6 +3120,7 @@ class RemuxPanel(QWidget):
 
         if reference_entry is None:
             return
+        self._last_reference_ids[entry.entry_id] = reference_entry.entry_id
 
         target_source = self._find_source(entry.file_id)
         reference_source = self._find_source(reference_entry.file_id)
@@ -3172,14 +3272,7 @@ class RemuxPanel(QWidget):
         # Pistes du même fichier ensuite : la piste y est recalée seule.
         choices = choices + self._same_source_reference_choices(entry)
 
-        track_link = self._track_sync_links.get(entry.entry_id)
-        link = track_link or self._sync_links.get(entry.file_id)
-        last_reference = next(
-            (choice for _label, choice in choices if link is not None and choice.entry_id == link.reference_entry_id),
-            None,
-        ) or (self._last_audio_sync_reference(entry) if entry.track_type == "audio" else None)
-        if not any(choice is last_reference for _label, choice in choices):
-            last_reference = None
+        last_reference = self._preselected_reference(entry, choices)
         if len(choices) > 1:
             # Toujours au choix (pistes du même fichier comprises), dernière référence présélectionnée.
             dialog_ref = _AudioSyncReferenceDialog(
@@ -3200,6 +3293,8 @@ class RemuxPanel(QWidget):
             quick_validated=self._audio_sync_results.get(entry.entry_id, ("", False))[1],
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            if reference_entry is not None:
+                self._last_reference_ids[entry.entry_id] = reference_entry.entry_id
             measured, _relative_offset = dialog.result_calibration()
             self._note_cadence_choice(entry.file_id, dialog, measured)
             # Validé sans modification : rien n'est appliqué (une référence à silences ajoutés

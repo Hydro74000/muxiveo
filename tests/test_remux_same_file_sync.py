@@ -410,9 +410,11 @@ def test_reloaded_session_keeps_the_link_on_an_imported_source_calibration(films
     assert mapped[vo.entry_id] == 300 and mapped[vf.entry_id] == -1000
 
 
-def test_reloaded_session_keeps_the_source_cuts(films, monkeypatch):
+@pytest.mark.parametrize("sync_mode", ["physical", "container"])
+def test_reloaded_session_keeps_the_source_cuts(films, monkeypatch, sync_mode):
+    """Coupures de la source 2 en mode container : job exact relu sans refus (point 2 de l'audit)."""
     panel, master, vf, vo, _subtitle, _logs = films
-    panel._workflow_options["sync_mode"] = "physical"
+    panel._workflow_options["sync_mode"] = sync_mode
     cuts = SyncCalibration((SyncSegment(0, -100), SyncSegment(60000, -300)))
     panel._on_audio_sync_done(vf.entry_id, master.entry_id, -100, .95, cuts)
     _studio(panel, monkeypatch, vo, vf, 200)
@@ -440,3 +442,140 @@ def test_studio_shows_the_real_gap_between_tracks_of_a_file(films, monkeypatch, 
     assert _shifts(vf, vo) == before
     _studio(panel, monkeypatch, vo, vf, -expected)
     assert vo.time_shift_ms == vf.time_shift_ms
+
+
+# --- Audit Codex du commit 904ffe4 : un test par point. ---
+
+
+def _prepared_shifts(panel, tmp_path):
+    """Pistes transformées par la synchro physique : piste → décalage de départ."""
+    from core.workflows.physical_sync import preparation_commands
+
+    config = panel.collect_config()
+    return {item.track.entry_id: calibration.segments[0].shift_ms
+            for item, _path, _command, calibration in preparation_commands(config, tmp_path, "ffmpeg")}
+
+
+@pytest.mark.parametrize("reference_enabled", [True, False])
+def test_physical_mirror_ignores_a_realigned_audio_track(films, monkeypatch, tmp_path, reference_enabled):
+    """Point 1 : VO recalée seule (+300) ; le sous-titre en miroir garde la synchro de la source."""
+    panel, _master, vf, vo, subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    _studio(panel, monkeypatch, vo, vf, 300)
+    vf.enabled = reference_enabled
+    shifts = _prepared_shifts(panel, tmp_path)
+    assert shifts[vo.entry_id] == 300
+    assert shifts.get(subtitle.entry_id, 0) == 0
+
+
+def test_physical_mirror_respects_a_subtitle_realigned_to_zero(films, monkeypatch, tmp_path):
+    """Point 1 : sous-titre recalé à 0 ms sur une source à +1000 ms : jamais remplacé par le miroir."""
+    panel, _master, _vf, _vo, subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    second_sub = _track(4, "subtitle", codec="SRT", file_id="B", language="eng")
+    panel._track_table.append_tracks(_COLOR_A, [second_sub])
+    panel._apply_source_sync_offset("B", 1000)
+    _studio(panel, monkeypatch, subtitle, second_sub, -1000)
+    assert subtitle.time_shift_ms == 0
+    assert _prepared_shifts(panel, tmp_path).get(subtitle.entry_id, 0) == 0
+
+
+def test_frozen_track_keeps_its_own_sync_after_reload(films, monkeypatch):
+    """Point 3 : référence (variante) retirée, piste figée égale à la synchro de sa source : reste
+    une synchro propre après relecture du job."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    cuts = SyncCalibration((SyncSegment(0, -100), SyncSegment(60000, -300)))
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, -100, .95, cuts)
+    panel.add_audio_track_variant(vf, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _studio(panel, monkeypatch, vo, variant, 200)
+    _studio(panel, monkeypatch, vo, variant, -200)
+    panel.remove_audio_track_variant("variant")
+    assert vo.entry_id in panel._own_sync_entry_ids and vo.entry_id not in panel._track_sync_links
+    _vf, vo, _sub = _reloaded(panel, monkeypatch)
+    assert vo.entry_id in panel._own_sync_entry_ids
+    assert panel._track_calibration(vo).segments == cuts.segments
+
+
+def test_profile_offsets_on_a_reference_and_an_own_track(films, monkeypatch):
+    """Point 4 : B suit A (+100) ; un profil règle la référence de A (+500) et VO de B (+800)."""
+    panel, master, vf, vo, subtitle, _logs = films
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 100, .95, None)
+    _studio(panel, monkeypatch, vo, vf, 200)
+    master.time_shift_ms, vo.time_shift_ms = 500, 800
+    panel._take_entered_offsets([master, vo])
+    assert _shifts(master, vf, vo, subtitle) == [500, 600, 800, 600]
+
+
+def test_independent_own_track_is_not_a_loop(films, monkeypatch):
+    """Point 5 : VO rendue indépendante (saisie) ; A synchronisée sur VO ne retire pas la synchro de B."""
+    panel, master, vf, vo, subtitle, _logs = films
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 100, .95, None)
+    _studio(panel, monkeypatch, vo, vf, 200)
+    vo.time_shift_ms = 700
+    panel._track_table.time_shift_edited.emit(vo)
+    assert not panel._track_depends_on(vo, "A")
+    panel._on_audio_sync_done(master.entry_id, vo.entry_id, 50, .95, None)
+    # Aucune boucle : A suit VO (+50), B garde son lien et suit A (+100) ; VO reste à sa saisie.
+    assert "B" in panel._sync_links
+    assert _shifts(master, vf, vo, subtitle) == [750, 850, 700, 850]
+    assert panel._track_depends_on(vf, "A")
+
+
+def test_removed_own_reference_drops_the_source_link(films, monkeypatch):
+    """Point 6 : A suit une variante de B recalée (+300) ; variante retirée → A garde sa synchro."""
+    panel, master, vf, _vo, _subtitle, logs = films
+    panel.add_audio_track_variant(vf, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _studio(panel, monkeypatch, variant, vf, 300)
+    panel._on_audio_sync_done(master.entry_id, "variant", 0, .95, None)
+    assert master.time_shift_ms == 300
+    panel.remove_audio_track_variant("variant")
+    assert "A" not in panel._sync_links
+    panel._apply_source_sync_offset("B", 50)
+    panel._propagate_sync({"B"})
+    assert master.time_shift_ms == 300
+    assert any("ne suit plus sa référence" in text or "no longer follows" in text for _level, text in logs)
+
+
+def test_variant_of_a_realigned_track_follows_like_it(films, monkeypatch):
+    """Point 7 : variante d'une piste recalée : même synchro propre et même lien, avant et après reprise."""
+    panel, _master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 300)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    assert variant.entry_id in panel._own_sync_entry_ids and variant.entry_id in panel._track_sync_links
+    panel._apply_source_sync_offset("B", 100)
+    panel._propagate_sync({"B"})
+    assert _shifts(vf, vo, variant) == [100, 400, 400]
+    vf, vo, _sub = _reloaded(panel, monkeypatch)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    panel._apply_source_sync_offset(vf.file_id, 0)
+    panel._propagate_sync({vf.file_id})
+    assert _shifts(vf, vo, variant) == [0, 300, 300]
+
+
+def test_last_chosen_reference_is_preselected(films, monkeypatch):
+    """Point 8 : référence choisie puis studio validé sans changement → présélectionnée ensuite ;
+    même chose pour la synchro automatique des sous-titres."""
+    panel, master, vf, vo, subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 0)
+    assert panel._track_sync_links == {}
+    offered = _studio(panel, monkeypatch, vo, master, 0)
+    assert offered == [([master, vf], vf)]
+
+    first_sub = _track(2, "subtitle", codec="SRT", file_id="A")
+    second_sub = _track(4, "subtitle", codec="SRT", file_id="A", language="eng")
+    panel._track_table.append_tracks(_COLOR_A, [first_sub, second_sub])
+    monkeypatch.setattr(panel._executor, "submit", lambda *_a, **_k: None)
+    selected: list = []
+
+    def _dialog(choices, **kwargs):
+        selected.append(kwargs.get("selected"))
+        return SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted, selected_entry=lambda: second_sub)
+
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog", _dialog)
+    panel._on_subtitle_sync_requested(subtitle)
+    panel._on_subtitle_sync_requested(subtitle)
+    assert selected == [None, second_sub]

@@ -1,6 +1,7 @@
 """Menu workflow, restauration transactionnelle et sauvegarde de session."""
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -154,6 +155,27 @@ def _restored_track_sync_links(panel, config, payload) -> dict[str, SyncLink]:
     return links
 
 
+def _restore_own_sync_tracks(panel, config, payload) -> None:
+    """Pistes à synchro propre de la session : statut rétabli ; calibration absente du job (égale à
+    celle de leur source) reprise de la source, sans quoi la piste perdrait ses coupures."""
+    if not isinstance(payload, list):
+        return
+    tracks_by_key = _session_tracks_by_key(config)
+    for key in payload:
+        try:
+            track = _session_track(tracks_by_key, key)
+            source_index = int(key["source"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if track is None or not panel._track_type_inherits_source_sync(track):
+            continue
+        panel._own_sync_entry_ids.add(track.entry_id)
+        if track.sync_calibration is None and 0 <= source_index < len(config.sources):
+            inherited = config.sync_calibrations.get(str(config.sources[source_index].file_index))
+            if inherited is not None:
+                track.sync_calibration = copy.deepcopy(inherited)
+
+
 def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
     """Liens de synchro d'une session (absents des sessions antérieures : synchros conservées telles quelles)."""
     if not isinstance(payload, dict):
@@ -295,6 +317,13 @@ def _session_job(panel, *, identity_selectors=True):
             for entry_id, link in panel._track_sync_links.items()
             if entry_id in tracks_by_id and link.reference_entry_id in tracks_by_id
             and link.reference_file_id in source_index
+        ],
+        # Pistes à synchro propre (recalées, importées) : statut gardé même quand leur calibration
+        # égale celle de leur source (alors absente du job).
+        "own_sync_tracks": [
+            _track_key(track, source_index[track.file_id])
+            for track in panel._track_table.current_tracks()
+            if track.entry_id in panel._own_sync_entry_ids and track.file_id in source_index
         ],
         "auto_sync_tracks": [
             _track_key(track, source_index[track.file_id])
@@ -501,6 +530,7 @@ def restore(panel, config, infos, session=None):
         track.entry_id for track in ordered
         if track.entry_id in panel._track_sync_links and panel._track_type_inherits_source_sync(track)
     )
+    _restore_own_sync_tracks(panel, config, session.get("own_sync_tracks"))
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):

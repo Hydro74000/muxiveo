@@ -90,6 +90,26 @@ def audio_filter(calibration: SyncCalibration, crossfade_ms=80, sample_rate: int
     return ";".join(parts)
 
 
+def _follows_source_sync(config, track, source_index) -> bool:
+    """Piste qui suit la synchro de sa source : aucune calibration propre (celle de la source au plus)."""
+    return track.sync_calibration is None or track.sync_calibration == config.sync_calibrations.get(str(source_index))
+
+
+def _mirror_offset(config, mapped_tracks, source_index: int) -> int:
+    """Décalage de la source porté par ses pistes audio qui la suivent (synchro propre exclue :
+    piste recalée seule). Pistes de sortie d'abord, sinon toutes celles de la source."""
+    candidates = [mapped.track for mapped in mapped_tracks if mapped.source_file_index == source_index]
+    if not any(track.track_type == "audio" and _follows_source_sync(config, track, source_index)
+               for track in candidates):
+        candidates = [track for source in config.sources if source.file_index == source_index
+                      for track in source.tracks]
+    offsets = {int(track.time_shift_ms or 0) for track in candidates
+               if track.track_type == "audio" and _follows_source_sync(config, track, source_index)}
+    if len(offsets) > 1:
+        raise RemuxError("Recalage miroir ambigu : plusieurs décalages audio dans la même source.")
+    return next(iter(offsets), 0)
+
+
 def track_calibration(config, mapped):
     payload = track_sync_payload(config, mapped.track, mapped.source_file_index)
     if not payload:
@@ -118,11 +138,11 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
             track.track_type == "audio" or track_calibration(config, mapped) != SyncCalibration.linear(0)
         )
         mirror_offset = 0
-        if track.track_type == "subtitle" and not track.time_shift_ms and not calibrated and config.sync_subtitles == "mirror":
-            offsets = {m.track.time_shift_ms for m in mapped_tracks if m.source_file_index == mapped.source_file_index and m.track.track_type == "audio"}
-            if len(offsets) > 1:
-                raise RemuxError("Recalage miroir ambigu : plusieurs décalages audio dans la même source.")
-            mirror_offset = next(iter(offsets), 0)
+        # Sous-titre à synchro propre (recalé, même à 0 ms) : jamais de miroir.
+        if (track.track_type == "subtitle" and not track.time_shift_ms and not calibrated
+                and config.sync_subtitles == "mirror"
+                and _follows_source_sync(config, track, mapped.source_file_index)):
+            mirror_offset = _mirror_offset(config, mapped_tracks, mapped.source_file_index)
         if track.track_type not in {"audio", "subtitle"} or not (track.time_shift_ms or calibrated or mirror_offset):
             continue
         if track.track_type == "subtitle" and config.sync_subtitles == "none" and not (track.time_shift_ms or calibrated):

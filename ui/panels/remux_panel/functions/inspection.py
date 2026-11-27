@@ -238,11 +238,11 @@ def on_remove_file(panel: "RemuxPanel", file_id: str) -> None:
         for track in sf.tracks
         if getattr(track, "track_type", "") in {"audio", "subtitle"}
     )
-    panel._own_sync_entry_ids.difference_update(track.entry_id for track in sf.tracks)
     removed_ids = {track.entry_id for track in sf.tracks}
     panel._prune_track_sync_links({
         track.entry_id for track in panel._track_table.current_tracks() if track.entry_id not in removed_ids
     })
+    panel._own_sync_entry_ids.difference_update(removed_ids)
     panel._file_list.remove_file(file_id)
     panel._track_table.remove_tracks_by_file_id(file_id)
     panel._refresh_audio_sync_buttons()

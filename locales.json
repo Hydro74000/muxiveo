@@ -12334,5 +12334,9 @@
   "Choisir la piste de sous-titres de référence.": {
     "fra": "Choisir la piste de sous-titres de référence.",
     "eng": "Choose the reference subtitle track."
+  },
+  "Piste de référence de « {source} » retirée : sa synchro est conservée, elle ne suit plus sa référence.": {
+    "fra": "Piste de référence de « {source} » retirée : sa synchro est conservée, elle ne suit plus sa référence.",
+    "eng": "Reference track of “{source}” removed: its sync is kept, it no longer follows its reference."
   }
 }

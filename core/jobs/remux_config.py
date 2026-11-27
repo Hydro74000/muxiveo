@@ -19,7 +19,7 @@ from core.media_info_fetcher import (
 )
 from core.version import APP_CONFIG_DIR_NAME, APP_ENV_PREFIX
 from core.workflows.preparation_cache import PreparationContext
-from core.workflows.sync_calibration import SyncCalibration
+from core.workflows.sync_calibration import SyncCalibration, effective_calibration
 from core.workflows.remux_models import (
     RemuxConfig, SourceInput, TrackEntry, clone_track_entry, normalize_mux_backend,
 )
@@ -528,6 +528,10 @@ def build_remux_config(
     elif job.get("sync_calibrations") and job.get("sync_mode", "container") == "container":
         calib_payload = job["sync_calibrations"].get("1")
         calib = SyncCalibration.from_dict(calib_payload) if calib_payload else None
+        if strict_selectors and effective_calibration(calib) is not None:
+            # Job exact (session, export) : coupures ou cadence déjà résolues, réécrites par le
+            # backend en mode container ; jamais converties en décalage ni basculées en physique.
+            calib = None
     if calib is not None:
         job["sync_mode"], job["sync_calibrations"] = apply_donor_calibration(
             calib, sync_mode=job.get("sync_mode", "container"), sources=sources,
