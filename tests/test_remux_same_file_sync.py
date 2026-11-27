@@ -2513,3 +2513,61 @@ def test_cancelled_measured_track_is_measured_again_on_resume(qt_app, tmp_path, 
     panel._resume_cadence_analyses()
     assert [(entry_id, scope) for entry_id, _r, scope in panel._cadence_pending.values()] == [(c_vo.entry_id, "C")]
     panel.close()
+
+
+# --- Relecture Codex (98e3b39). ---
+
+
+def test_copy_variant_of_an_atmos_track_stays_a_copy_after_reload():
+    """Variante en copie d'une E-AC-3 Atmos (libellé « 5.1  768 kbps  Atmos ») : sérialisée « copy » ;
+    un job antérieur (codec et débit écrits) relu replace le débit en fin de libellé sans demander de
+    réencodage (débit comparé en nombre) ; un débit réellement changé en demande un."""
+    from core.jobs.remux_config import apply_audio_variants
+    from core.profiles.selectors import remux_config_to_exact_job
+    from core.workflows.common.sync_rewrite import requested_audio_reencode
+    from core.workflows.remux_models import RemuxConfig, SourceInput, clone_track_entry
+
+    atmos = TrackEntry(1, "audio", "EAC3", "5.1  768 kbps  Atmos", "eng", "", file_id="src0",
+                       orig_display_info="5.1  768 kbps  Atmos", orig_codec="EAC3")
+    variant = clone_track_entry(atmos, entry_id="variant")
+    assert not requested_audio_reencode(variant)
+    config = RemuxConfig(sources=[SourceInput(Path("/films/b.mkv"), 0, [atmos, variant])],
+                         output=Path("/films/out.mkv"),
+                         track_order=[(0, 1, atmos.entry_id), (0, 1, "variant")])
+    job = remux_config_to_exact_job(config)
+    assert [item["codec"] for item in job["audio_variants"]] == ["copy"]
+
+    def reload(spec_update: dict) -> TrackEntry:
+        source_track = TrackEntry(1, "audio", "EAC3", "5.1  768 kbps  Atmos", "eng", "", file_id="src0",
+                                  orig_display_info="5.1  768 kbps  Atmos", orig_codec="EAC3")
+        sources = [SourceInput(Path("/films/b.mkv"), 0, [source_track])]
+        tracks = [source_track]
+        apply_audio_variants({"audio_variants": [{**job["audio_variants"][0], **spec_update}]}, sources, tracks)
+        return next(track for track in tracks if track.entry_id == "variant")
+
+    assert not requested_audio_reencode(reload({}))
+    legacy = reload({"codec": "EAC3", "bitrate_kbps": 768})
+    assert legacy.display_info != atmos.display_info  # libellé reconstruit, débit déplacé
+    assert not requested_audio_reencode(legacy)
+    assert requested_audio_reencode(reload({"codec": "EAC3", "bitrate_kbps": 640}))
+
+
+def test_cadence_conversion_stretches_ass_animation_times():
+    """Générique ASS d'un master PAL converti (25 → 23,976) : l'événement de 40 s dure 41,71 s, ses
+    temps internes (\\move, \\fad, \\t, karaoké) s'étirent d'autant ; sans conversion, texte intact."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.subtitle_sync import shift_text
+
+    ass = ("[Script Info]\nScriptType: v4.00+\n\n[Events]\n"
+           "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+           "Dialogue: 0,0:00:01.00,0:00:41.00,Default,,0,0,0,,"
+           "{\\move(0,1080,0,-200,0,40000)\\fad(200,300)\\t(0,500,\\clip(0,0,10,10))\\k50}Générique\n")
+    pal = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"))
+    ratio = pal.cadence_mismatch.time_stretch_ratio
+    assert ratio == pytest.approx(25 / (24000 / 1001))
+    shifted = shift_text(ass, pal, suffix=".ass")
+    assert f"\\move(0,1080,0,-200,0,{round(40000 * ratio)})" in shifted
+    assert f"\\fad({round(200 * ratio)},{round(300 * ratio)})" in shifted
+    assert f"\\t(0,{round(500 * ratio)},\\clip(0,0,10,10))" in shifted
+    assert f"\\k{round(50 * ratio)}" in shifted
+    assert "\\move(0,1080,0,-200,0,40000)" in shift_text(ass, SyncCalibration.linear(250), suffix=".ass")

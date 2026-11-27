@@ -10,6 +10,7 @@ from core.lang_tags import Rfc5646LanguageTags
 from core.workflows.common.sync_rewrite import (
     audio_bitrate_kbps_from_display_info,
     normalized_sync_rewrite_mode,
+    requested_audio_reencode,
 )
 from core.workflows.remux_models import RemuxConfig, TrackEntry
 
@@ -735,10 +736,15 @@ def remux_config_to_exact_job(
                 "entry_id": track.entry_id,
             }
             payload["entry_id"] = track.entry_id
-            payload["codec"] = track.codec
-            bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
-            if bitrate:
-                payload["bitrate_kbps"] = bitrate
+            if requested_audio_reencode(track):
+                payload["codec"] = track.codec
+                bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
+                if bitrate:
+                    payload["bitrate_kbps"] = bitrate
+            else:
+                # Variante en copie : explicite (le libellé reconstruit à la relecture ne doit rien
+                # demander, une copie Atmos garderait sinon ses objets au prix d'un réencodage).
+                payload["codec"] = "copy"
             source_track = next(
                 (candidate for candidate in all_tracks if candidate.entry_id == track.source_entry_id),
                 None,

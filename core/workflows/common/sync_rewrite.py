@@ -366,9 +366,13 @@ def requested_audio_reencode(track) -> bool:
         return False
     if codec != original:
         return True
+    if not getattr(track, "is_new", False):
+        return False
+    # Même codec : débit demandé différent (comparé en nombre, l'ordre des mentions du libellé change
+    # à la relecture d'un job sans rien demander).
     display = str(getattr(track, "display_info", "") or "")
     original_display = str(getattr(track, "orig_display_info", "") or display)
-    return bool(getattr(track, "is_new", False)) and display != original_display
+    return audio_bitrate_kbps_from_display_info(display) != audio_bitrate_kbps_from_display_info(original_display)
 
 
 def audio_bitrate_kbps_from_display_info(display_info: str) -> int | None:

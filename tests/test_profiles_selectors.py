@@ -539,7 +539,8 @@ def test_remux_config_to_exact_job_separates_new_audio_variants(tmp_path):
     assert "audio_variants" in job
     assert len(job["audio_variants"]) == 1
     variant_payload = job["audio_variants"][0]
-    assert variant_payload["codec"] == "EAC3"
+    # Même codec et même débit que sa source : variante en copie, sérialisée explicitement.
+    assert variant_payload["codec"] == "copy" and "bitrate_kbps" not in variant_payload
     assert "source_selector" in variant_payload
     # La piste source du variant pointe vers l'audio_fr (entry source)
     assert variant_payload["source_selector"]["type"] == "audio"
