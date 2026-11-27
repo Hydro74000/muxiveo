@@ -66,6 +66,7 @@ from ui.panels.remux_panel.models import SourceFile, SyncLink
 from core.workflows.sync_calibration import (
     NEGLIGIBLE_SYNC_MS,
     SyncCalibration,
+    cadence_method_pitch,
     compose_calibrations,
     effective_calibration,
     projected_calibration,
@@ -253,6 +254,10 @@ class RemuxPanel(QWidget):
         self._last_reference_ids: dict[str, str] = {}
         # Dernière référence d'une synchro de source (autre fichier) : reprise de ses analyses.
         self._source_reference_ids: dict[str, str] = {}
+        # Synchro relative de chaque analyse de hauteur en cours (jeton → calibration), et analyses
+        # sauvegardées à reprendre (restauration de session) : (piste, référence, calibration).
+        self._cadence_relatives: dict[object, SyncCalibration] = {}
+        self._restored_cadence_analyses: list[tuple[str, str, SyncCalibration]] = []
         # Dernière synchro audio automatique : piste → (référence, validée par la vérification rapide).
         self._audio_sync_results: dict[str, tuple[str, bool]] = {}
         self._chapter_sync_cancelled_source_ids: set[str] = set()
@@ -3661,6 +3666,8 @@ class RemuxPanel(QWidget):
                 del self._cadence_pending[previous]
         token = object()
         self._cadence_pending[token] = (entry_id, reference_entry_id, scope)
+        # Synchro relative analysée : sauvegardée en session (une synchro détachée ne la redonne pas).
+        self._cadence_relatives[token] = relative
         self.ready_changed.emit(self._has_ready_files())
 
         def _task() -> None:
@@ -3691,6 +3698,13 @@ class RemuxPanel(QWidget):
         à nouveau (appliquées telles quelles en atempo, elles garderaient une hauteur fausse)."""
         tracks = self._track_table.current_tracks()
         by_id = {track.entry_id: track for track in tracks}
+        # Analyses en cours à la sauvegarde : reprises sur leur synchro relative (conversions annulées
+        # entre elles comprises).
+        restored, self._restored_cadence_analyses = self._restored_cadence_analyses, []
+        for entry_id, reference_id, relative in restored:
+            entry, reference = by_id.get(entry_id), by_id.get(reference_id)
+            if entry is not None and reference is not None:
+                self._schedule_cadence_method(entry, reference, relative)
         for entry_id, track_link in list(self._track_sync_links.items()):
             # Recalage dans le fichier à méthode « auto » non tranchée : analysé à nouveau.
             entry, reference = by_id.get(entry_id), by_id.get(track_link.reference_entry_id)
@@ -3699,7 +3713,8 @@ class RemuxPanel(QWidget):
         for entry in tracks:
             # Synchro propre sans lien (calée face à une autre source) : face à sa dernière référence.
             if (entry.entry_id in self._track_sync_links or self._track_inherits_source_sync(entry)
-                    or not self._track_calibration(entry).cadence_method_undecided):
+                    or not self._track_calibration(entry).cadence_method_undecided
+                    or any(scope == f"track:{entry.entry_id}" for _e, _r, scope in self._cadence_pending.values())):
                 continue
             if not self._schedule_own_cadence(entry):
                 self.log_message.emit("WARN", translate_text(
@@ -3710,7 +3725,8 @@ class RemuxPanel(QWidget):
         for source in self._source_files:
             link = self._sync_links.get(source.id)
             calibration = link.relative if link is not None else self._source_calibration(source.id)
-            if not calibration.cadence_method_undecided:
+            if (not calibration.cadence_method_undecided
+                    or any(scope == source.id for _e, _r, scope in self._cadence_pending.values())):
                 continue
             # Piste qui suit la source (une piste recalée seule a sa propre chronologie).
             entry = next((t for t in tracks if t.file_id == source.id and t.track_type == "audio"
@@ -3813,9 +3829,12 @@ class RemuxPanel(QWidget):
         self._emit_signals()
 
     @staticmethod
-    def _keep_frozen_segments(fresh: SyncCalibration, frozen: SyncCalibration) -> SyncCalibration:
-        """Décision de hauteur recomposée (`fresh`) portée sur la calibration figée à la saisie : ses
-        segments (jonctions comprises) sont conservés si la vitesse est la même, sinon le départ."""
+    def _keep_frozen_segments(fresh: SyncCalibration, frozen: SyncCalibration,
+                              before: SyncCalibration, resolved: SyncCalibration) -> SyncCalibration:
+        """Décision de hauteur portée sur la calibration figée à la saisie (piste ou source détachée) :
+        segments et vitesse figés conservés. Vitesse inchangée depuis : hauteur de la recomposition
+        avec la référence (`fresh`) ; référence accélérée ou ralentie depuis : seule la hauteur de la
+        conversion propre (`before`, tranchée par `resolved`) est ajoutée à la calibration figée."""
         same_speed = (
             (fresh.active_cadence is None and frozen.active_cadence is None)
             or (fresh.active_cadence is not None and frozen.active_cadence is not None
@@ -3823,7 +3842,13 @@ class RemuxPanel(QWidget):
         )
         if same_speed:
             return replace(fresh, segments=frozen.segments)
-        return fresh.with_start_offset(frozen.segments[0].shift_ms)
+        method = resolved.cadence_audio_method
+        pitch = frozen.audio_pitch_factor * cadence_method_pitch(before.active_cadence, method)
+        return replace(
+            frozen, cadence_audio_method=method, cadence_pitch_analysis=resolved.cadence_pitch_analysis,
+            cadence_method_auto=True,
+            cadence_pitch_factor=pitch / cadence_method_pitch(frozen.active_cadence, method),
+        )
 
     def _decided_relative(self, resolved: SyncCalibration) -> SyncCalibration:
         """Synchro relative tranchée par l'analyse (face à l'audio d'origine de la référence) : sa hauteur
@@ -3842,6 +3867,7 @@ class RemuxPanel(QWidget):
             return
         calibration = self._keep_frozen_segments(
             compose_calibrations(self._decided_relative(resolved), self._track_calibration(reference)), applied,
+            before, resolved,
         )
         negligible = (effective_calibration(calibration) is None
                       and abs(round(calibration.segments[0].shift_ms)) <= NEGLIGIBLE_SYNC_MS)
@@ -3905,7 +3931,7 @@ class RemuxPanel(QWidget):
         else:
             calibration = self._keep_frozen_segments(
                 compose_calibrations(decided, self._track_calibration(reference)).for_track(entry.track_type),
-                self._track_calibration(entry),
+                self._track_calibration(entry), before, resolved,
             )
             stored = (effective_calibration(calibration, entry.track_type)
                       or SyncCalibration.linear(round(calibration.segments[0].shift_ms))).to_dict()

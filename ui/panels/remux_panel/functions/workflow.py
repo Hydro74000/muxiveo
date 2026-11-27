@@ -179,6 +179,24 @@ def _restore_own_sync_tracks(panel, config, payload) -> None:
                                       else SyncCalibration.linear(int(track.time_shift_ms or 0)).to_dict())
 
 
+def _restored_cadence_analyses(config, payload) -> list[tuple[str, str, SyncCalibration]]:
+    """Analyses de hauteur en cours à la sauvegarde : (piste, référence, synchro relative)."""
+    if not isinstance(payload, list):
+        return []
+    tracks_by_key = _session_tracks_by_key(config)
+    restored: list[tuple[str, str, SyncCalibration]] = []
+    for item in payload:
+        try:
+            target = _session_track(tracks_by_key, item["track"])
+            reference = _session_track(tracks_by_key, item["reference_track"])
+            relative = SyncCalibration.from_dict(item["calibration"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if target is not None and reference is not None:
+            restored.append((target.entry_id, reference.entry_id, relative))
+    return restored
+
+
 def _restored_source_references(panel, config, payload) -> dict[str, str]:
     """Dernière référence de la synchro de chaque source (absente des sessions antérieures)."""
     if not isinstance(payload, dict):
@@ -376,6 +394,18 @@ def _session_job(panel, *, identity_selectors=True):
             if file_id in source_index and reference_id in tracks_by_id
             and tracks_by_id[reference_id].file_id in source_index
         },
+        # Analyses de hauteur en cours : reprises à la restauration sur leur synchro relative.
+        "pending_cadence_analyses": [
+            {
+                "track": _track_key(tracks_by_id[entry_id], source_index[tracks_by_id[entry_id].file_id]),
+                "reference_track": _track_key(tracks_by_id[reference_id],
+                                              source_index[tracks_by_id[reference_id].file_id]),
+                "calibration": panel._cadence_relatives[token].to_dict(),
+            }
+            for token, (entry_id, reference_id, _scope) in panel._cadence_pending.items()
+            if token in panel._cadence_relatives and entry_id in tracks_by_id and reference_id in tracks_by_id
+            and tracks_by_id[entry_id].file_id in source_index and tracks_by_id[reference_id].file_id in source_index
+        ],
         "own_sync_tracks": [
             _track_key(track, source_index[track.file_id])
             for track in panel._track_table.current_tracks()
@@ -589,6 +619,7 @@ def restore(panel, config, infos, session=None):
     _restore_own_sync_tracks(panel, config, session.get("own_sync_tracks"))
     panel._last_reference_ids = _restored_last_references(config, session.get("last_references"))
     panel._source_reference_ids = _restored_source_references(panel, config, session.get("source_references"))
+    panel._restored_cadence_analyses = _restored_cadence_analyses(config, session.get("pending_cadence_analyses"))
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):

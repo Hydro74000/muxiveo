@@ -402,6 +402,12 @@ def _method_pitch(cadence: CadenceMismatch | None, method: str) -> float:
     return cadence.speed_factor if cadence is not None and method == "asetrate" else 1.0
 
 
+def cadence_method_pitch(cadence: CadenceMismatch | None, method: str) -> float:
+    """Hauteur produite par la seule conversion `cadence` selon la méthode (asetrate : celle de la
+    vitesse ; atempo et « auto » non tranchée : inchangée)."""
+    return _method_pitch(cadence, method)
+
+
 def _combined_cadence(inner: SyncCalibration, outer: SyncCalibration):
     """(conversion, méthode audio, analyse, mode « auto », hauteur ajoutée) de `inner` puis `outer`.
 

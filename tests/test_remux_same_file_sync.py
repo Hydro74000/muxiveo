@@ -1988,3 +1988,95 @@ def test_native_plan_copies_a_copy_variant(films):
     command = build_audio_variant_command(variants["copy"], Path("b.mkv"), 2, Path("out.mkv"), "ffmpeg")
     assert "-b:a" not in command and command[command.index("-c:a") + 1] == "copy"
     assert variants["lower"].encoder != "copy" and variants["lower"].bitrate_kbps == 384
+
+
+# --- Relecture Codex (998c22e). ---
+
+
+def test_studio_audio_sync_result_is_kept_with_an_active_cadence(qt_app, tmp_path, monkeypatch):
+    """« Synchro rapide / approfondie » avec une conversion cochée : résultat appliqué (le contrôle du
+    rapport ne vaut que pour « Synchro sous-titres »)."""
+    from core.workflows.cadence import manual_cadence_choices
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    vf = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="B")
+    vo = TrackEntry(2, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="B")
+    choices = manual_cadence_choices()
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=vf, target_source_path=tmp_path / "b.mkv", target_stream_index=1,
+        reference_entry=vo, reference_source_path=tmp_path / "b.mkv", reference_stream_index=2,
+        cadence_choices=choices,
+    )
+    dialog.cadence_check.setChecked(True)
+    measured = SyncCalibration((SyncSegment(0, 150.0),), cadence_mismatch=choices[0], cadence_audio_method="asetrate")
+    dialog._on_auto_sub_sync_ready(measured)
+    assert dialog.current_calibration.segments[0].shift_ms == 150
+    dialog.close()
+
+
+def test_late_result_never_changes_the_frozen_speed(films, monkeypatch):
+    """VO ralentie (25 → 23,976) sur VD ; VF calée sur VO au rapport inverse en « auto » (vitesse nulle),
+    décalage saisi sur VF, recalage de VO annulé avant le résultat : VF garde sa vitesse."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel, _master, vf, vo, _subtitle, _logs = films
+    vd = _track(4, "audio", file_id="B", language="ger", title="VD")
+    panel._track_table.append_tracks(_COLOR_A, [vd])
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    reverse = detect_cadence_from_metadata("25/1", "24000/1001")
+    _studio_with(panel, monkeypatch, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal,
+                                                     cadence_audio_method="asetrate"), vd)
+    panel._on_sync_studio_requested(vo)
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=reverse,
+                                                     cadence_audio_method="auto"), vo)
+    panel._on_sync_studio_requested(vf)
+    frozen_ratio = panel._track_calibration(vf)._stretch_ratio()
+    vf.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vf)
+    panel._on_auto_sync_cancel_requested(vo)
+    _run_pending(submitted)
+    calibration = panel._track_calibration(vf)
+    assert calibration._stretch_ratio() == pytest.approx(frozen_ratio)
+    assert calibration.cadence_audio_method != "auto" and round(calibration.segments[0].shift_ms) == 500
+
+
+def test_resumed_session_relaunches_an_analysis_whose_ratios_cancel(qt_app, tmp_path, monkeypatch):
+    """B convertie (asetrate) sur A ; C calée sur B au rapport inverse en « auto » (vitesses annulées),
+    décalage saisi sur C ; session rouverte avant le résultat : l'analyse de C reprend."""
+    from cli.logging import Logger
+    from core.jobs.options import CommonOptions
+    from core.jobs.remux_config import build_remux_config
+
+    panel = RemuxPanel(AppConfig())
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    master, b1, c1 = _track(1, "audio", file_id="A"), _track(1, "audio", file_id="B"), _track(1, "audio", file_id="C")
+    _add_source(panel, tmp_path, "A", [master])
+    _add_source(panel, tmp_path, "B", [b1])
+    _add_source(panel, tmp_path, "C", [c1])
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    reverse = detect_cadence_from_metadata("25/1", "24000/1001")
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(b1.entry_id, master.entry_id, 0, .95,
+                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method="asetrate"))
+    panel._on_audio_sync_done(c1.entry_id, b1.entry_id, 0, .95,
+                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=reverse, cadence_audio_method="auto"))
+    c1.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(c1)
+    assert panel.cadence_resolution_pending()
+    infos = {source.path: source.info for source in panel._source_files}
+    monkeypatch.setattr("core.inspector.FileInspector.inspect", lambda _self, path, *_a, **_k: infos[Path(path)])
+    job = workflow_functions._session_job(panel)
+    config = build_remux_config(job, panel._config, CommonOptions(), Logger())
+    submitted.clear()
+    workflow_functions.restore(panel, config, [source.info for source in panel._source_files], job["_muxiveo_session"])
+    assert panel.cadence_resolution_pending() and len(submitted) == 1
+    _run_pending(submitted)
+    resolved = panel._source_calibration(panel._source_files[2].id)
+    # asetrate tranché : les deux conversions s'annulent, vitesse et hauteur comprises.
+    assert resolved.cadence_audio_method != "auto" and resolved.audio_pitch_factor == pytest.approx(1.0)
+    assert not panel.cadence_resolution_pending()
+    panel.close()

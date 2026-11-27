@@ -1490,7 +1490,8 @@ class SyncStudioDialog(QDialog):
         # Conversion de cadence capturée au lancement : répliques comparées sur ses temps ; un rapport
         # changé pendant l'analyse écarte le résultat.
         cadence = self.current_calibration.active_cadence
-        self._sub_sync_launch_cadence = cadence
+        # Marqueur propre à cet alignement (le gestionnaire du résultat sert aussi la synchro audio).
+        self._sub_sync_launch = (cadence,)
         scale = cadence.time_stretch_ratio if cadence is not None else 1.0
 
         def _worker() -> None:
@@ -1524,16 +1525,19 @@ class SyncStudioDialog(QDialog):
         self._set_review_ranges(())
         self._is_sub_sync_running = False
         self._set_auto_sync_buttons_enabled(True)
-        launched = getattr(self, "_sub_sync_launch_cadence", None)
+        launch = self.__dict__.pop("_sub_sync_launch", None)
         current_cadence = self.current_calibration.active_cadence
-        if (launched is None) != (current_cadence is None) or (
-                launched is not None and current_cadence is not None
-                and not _same_ratio(launched.speed_ratio, current_cadence.speed_ratio)):
-            self.listen_status.setText(translate_text(
-                "Conversion de cadence changée pendant l'alignement : résultat écarté, relancer « Synchro sous-titres »."
-            ))
-            return
-        if current_cadence is not None:
+        if launch is not None:
+            # Alignement des sous-titres : rapport de cadence inchangé depuis son lancement.
+            launched = launch[0]
+            if (launched is None) != (current_cadence is None) or (
+                    launched is not None and current_cadence is not None
+                    and not _same_ratio(launched.speed_ratio, current_cadence.speed_ratio)):
+                self.listen_status.setText(translate_text(
+                    "Conversion de cadence changée pendant l'alignement : résultat écarté, relancer « Synchro sous-titres »."
+                ))
+                return
+        if launch is not None and current_cadence is not None:
             # Mesuré sur les temps convertis : la conversion retenue est conservée.
             current = self.current_calibration
             cal = replace(cal, cadence_mismatch=current.cadence_mismatch,

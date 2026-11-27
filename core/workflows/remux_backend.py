@@ -750,12 +750,12 @@ def run_native_remux(
                     )
                     _run_external(cmd, f"Variante audio {variant.target_codec} impossible")
                     materialized_track = replace(track, mkv_tid=0, orig_codec=track.codec, is_new=False)
-                    if track.rewrite_origin is not None:
-                        # Variante d'une piste réécrite : V issue de A, placée comme A (Δ(A) − Δ(V)).
-                        materialized_track = replace(materialized_track, time_shift_ms=int(track.time_shift_ms or 0) + round(
-                            (ffmpeg_input_origin(probe_origin_payload(source.path, ffprobe_bin))
-                             - ffmpeg_input_origin(probe_origin_payload(target_path, ffprobe_bin))) * 1000
-                        ))
+                    # Variante V matérialisée sans -copyts (FFmpeg retire l'origine de sa source A) :
+                    # placée comme A (Δ(A) − Δ(V)), piste réécrite ou non (source démarrant à 500 ms).
+                    materialized_track = replace(materialized_track, time_shift_ms=int(track.time_shift_ms or 0) + round(
+                        (ffmpeg_input_origin(probe_origin_payload(source.path, ffprobe_bin))
+                         - ffmpeg_input_origin(probe_origin_payload(target_path, ffprobe_bin))) * 1000
+                    ))
                     new_source = SourceInput(
                         target_path, next_source_index, [materialized_track],
                         origin_identity=f"{source.origin_identity}:audio:{variant.stream_index}:{variant.target_codec}",
