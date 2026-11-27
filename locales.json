@@ -12338,5 +12338,9 @@
   "Piste de référence de « {source} » retirée : sa synchro est conservée, elle ne suit plus sa référence.": {
     "fra": "Piste de référence de « {source} » retirée : sa synchro est conservée, elle ne suit plus sa référence.",
     "eng": "Reference track of “{source}” removed: its sync is kept, it no longer follows its reference."
+  },
+  "Synchro de « {source} » : sa référence suit désormais cette source (boucle) ; la synchro est conservée, elle ne suit plus sa référence.": {
+    "fra": "Synchro de « {source} » : sa référence suit désormais cette source (boucle) ; la synchro est conservée, elle ne suit plus sa référence.",
+    "eng": "Sync of “{source}”: its reference now follows this source (loop); the sync is kept, it no longer follows its reference."
   }
 }

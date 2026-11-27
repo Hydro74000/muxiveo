@@ -156,8 +156,10 @@ def _restored_track_sync_links(panel, config, payload) -> dict[str, SyncLink]:
 
 
 def _restore_own_sync_tracks(panel, config, payload) -> None:
-    """Pistes à synchro propre de la session : statut rétabli ; calibration absente du job (égale à
-    celle de leur source) reprise de la source, sans quoi la piste perdrait ses coupures."""
+    """Pistes à synchro propre de la session : statut rétabli, calibration toujours explicite. Absente
+    du job (égale à celle de leur source) : celle de la source, sinon son décalage (calibration
+    linéaire de la source convertie en décalages au chargement) ; sans elle, le remux lui
+    appliquerait les coupures que sa source recevrait ensuite."""
     if not isinstance(payload, list):
         return
     tracks_by_key = _session_tracks_by_key(config)
@@ -170,10 +172,28 @@ def _restore_own_sync_tracks(panel, config, payload) -> None:
         if track is None or not panel._track_type_inherits_source_sync(track):
             continue
         panel._own_sync_entry_ids.add(track.entry_id)
-        if track.sync_calibration is None and 0 <= source_index < len(config.sources):
-            inherited = config.sync_calibrations.get(str(config.sources[source_index].file_index))
-            if inherited is not None:
-                track.sync_calibration = copy.deepcopy(inherited)
+        if track.sync_calibration is None:
+            inherited = (config.sync_calibrations.get(str(config.sources[source_index].file_index))
+                         if 0 <= source_index < len(config.sources) else None)
+            track.sync_calibration = (copy.deepcopy(inherited) if inherited is not None
+                                      else SyncCalibration.linear(int(track.time_shift_ms or 0)).to_dict())
+
+
+def _restored_last_references(config, payload) -> dict[str, str]:
+    """Dernière référence choisie par piste (absente des sessions antérieures)."""
+    if not isinstance(payload, list):
+        return {}
+    tracks_by_key = _session_tracks_by_key(config)
+    restored: dict[str, str] = {}
+    for item in payload:
+        try:
+            target = _session_track(tracks_by_key, item["track"])
+            reference = _session_track(tracks_by_key, item["reference_track"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if target is not None and reference is not None and target is not reference:
+            restored[target.entry_id] = reference.entry_id
+    return restored
 
 
 def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
@@ -320,6 +340,17 @@ def _session_job(panel, *, identity_selectors=True):
         ],
         # Pistes à synchro propre (recalées, importées) : statut gardé même quand leur calibration
         # égale celle de leur source (alors absente du job).
+        # Dernière référence choisie par piste (présélection des fenêtres de choix).
+        "last_references": [
+            {
+                "track": _track_key(tracks_by_id[entry_id], source_index[tracks_by_id[entry_id].file_id]),
+                "reference_track": _track_key(tracks_by_id[reference_id],
+                                              source_index[tracks_by_id[reference_id].file_id]),
+            }
+            for entry_id, reference_id in panel._last_reference_ids.items()
+            if entry_id in tracks_by_id and reference_id in tracks_by_id
+            and tracks_by_id[entry_id].file_id in source_index and tracks_by_id[reference_id].file_id in source_index
+        ],
         "own_sync_tracks": [
             _track_key(track, source_index[track.file_id])
             for track in panel._track_table.current_tracks()
@@ -531,6 +562,7 @@ def restore(panel, config, infos, session=None):
         if track.entry_id in panel._track_sync_links and panel._track_type_inherits_source_sync(track)
     )
     _restore_own_sync_tracks(panel, config, session.get("own_sync_tracks"))
+    panel._last_reference_ids = _restored_last_references(config, session.get("last_references"))
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):

@@ -96,15 +96,11 @@ def _follows_source_sync(config, track, source_index) -> bool:
 
 
 def _mirror_offset(config, mapped_tracks, source_index: int) -> int:
-    """Décalage de la source porté par ses pistes audio qui la suivent (synchro propre exclue :
-    piste recalée seule). Pistes de sortie d'abord, sinon toutes celles de la source."""
-    candidates = [mapped.track for mapped in mapped_tracks if mapped.source_file_index == source_index]
-    if not any(track.track_type == "audio" and _follows_source_sync(config, track, source_index)
-               for track in candidates):
-        candidates = [track for source in config.sources if source.file_index == source_index
-                      for track in source.tracks]
-    offsets = {int(track.time_shift_ms or 0) for track in candidates
-               if track.track_type == "audio" and _follows_source_sync(config, track, source_index)}
+    """Décalage de la source porté par ses pistes audio de sortie qui la suivent (synchro propre
+    exclue : piste recalée seule) ; aucune : pas de miroir."""
+    offsets = {int(mapped.track.time_shift_ms or 0) for mapped in mapped_tracks
+               if mapped.source_file_index == source_index and mapped.track.track_type == "audio"
+               and _follows_source_sync(config, mapped.track, source_index)}
     if len(offsets) > 1:
         raise RemuxError("Recalage miroir ambigu : plusieurs décalages audio dans la même source.")
     return next(iter(offsets), 0)
