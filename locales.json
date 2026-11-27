@@ -12354,5 +12354,9 @@
   "Méthode de conversion de cadence de la piste #{idx} non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.": {
     "fra": "Méthode de conversion de cadence de la piste #{idx} non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.",
     "eng": "Cadence conversion method of track #{idx} undecided (reference track not found): atempo, track pitch kept."
+  },
+  "Conversion de cadence changée pendant l'alignement : résultat écarté, relancer « Synchro sous-titres ».": {
+    "fra": "Conversion de cadence changée pendant l'alignement : résultat écarté, relancer « Synchro sous-titres ».",
+    "eng": "Cadence conversion changed during the alignment: result discarded, run “Subtitle sync” again."
   }
 }

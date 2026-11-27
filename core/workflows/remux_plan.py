@@ -32,6 +32,7 @@ from core.workflows.common.metadata import matroska_video_tag_args
 from core.workflows.common.sync_rewrite import (
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
+    requested_audio_reencode,
 )
 from core.matroska.contract import (
     ExpectedMatroskaAttachment,
@@ -483,6 +484,9 @@ def plan_native_audio_variants(config: RemuxConfig) -> tuple[NativeAudioVariantP
         )
         if not needs_audio_encode:
             continue
+        # Variante demandée en copie (même codec, même description) : matérialisée par copie du flux,
+        # jamais réencodée (l'E-AC-3 Atmos perdrait ses objets) ; même règle que la commande FFmpeg.
+        copy = not requested_audio_reencode(track)
         bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
         channel_match = re.search(r"\b(\d)\.(\d)\b", str(track.display_info or ""))
         channel_count = sum(map(int, channel_match.groups())) if channel_match else 0
@@ -492,9 +496,9 @@ def plan_native_audio_variants(config: RemuxConfig) -> tuple[NativeAudioVariantP
             stream_index=mkv_tid,
             entry_id=track.entry_id,
             target_codec=target,
-            encoder=NATIVE_AUDIO_VARIANT_ENCODERS[target],
-            bitrate_kbps=int(bitrate) if (target != "flac" and bitrate) else None,
-            downmix_51=(target == "ac3" and channel_count > 6),
+            encoder="copy" if copy else NATIVE_AUDIO_VARIANT_ENCODERS[target],
+            bitrate_kbps=int(bitrate) if (not copy and target != "flac" and bitrate) else None,
+            downmix_51=(not copy and target == "ac3" and channel_count > 6),
             target_name=f"audio_variant_{order_index}.mkv",
         ))
     return tuple(variants)

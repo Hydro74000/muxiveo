@@ -179,6 +179,23 @@ def _restore_own_sync_tracks(panel, config, payload) -> None:
                                       else SyncCalibration.linear(int(track.time_shift_ms or 0)).to_dict())
 
 
+def _restored_source_references(panel, config, payload) -> dict[str, str]:
+    """Dernière référence de la synchro de chaque source (absente des sessions antérieures)."""
+    if not isinstance(payload, dict):
+        return {}
+    tracks_by_key = _session_tracks_by_key(config)
+    restored: dict[str, str] = {}
+    for index, key in payload.items():
+        try:
+            source = panel._source_files[int(index)]
+            reference = _session_track(tracks_by_key, key)
+        except (IndexError, KeyError, TypeError, ValueError):
+            continue
+        if reference is not None:
+            restored[source.id] = reference.entry_id
+    return restored
+
+
 def _restored_last_references(config, payload) -> dict[str, str]:
     """Dernière référence choisie par piste (absente des sessions antérieures)."""
     if not isinstance(payload, list):
@@ -351,6 +368,14 @@ def _session_job(panel, *, identity_selectors=True):
             if entry_id in tracks_by_id and reference_id in tracks_by_id
             and tracks_by_id[entry_id].file_id in source_index and tracks_by_id[reference_id].file_id in source_index
         ],
+        # Dernière référence de la synchro de chaque source (reprise des analyses de hauteur).
+        "source_references": {
+            str(source_index[file_id]): _track_key(tracks_by_id[reference_id],
+                                                   source_index[tracks_by_id[reference_id].file_id])
+            for file_id, reference_id in panel._source_reference_ids.items()
+            if file_id in source_index and reference_id in tracks_by_id
+            and tracks_by_id[reference_id].file_id in source_index
+        },
         "own_sync_tracks": [
             _track_key(track, source_index[track.file_id])
             for track in panel._track_table.current_tracks()
@@ -563,6 +588,7 @@ def restore(panel, config, infos, session=None):
     )
     _restore_own_sync_tracks(panel, config, session.get("own_sync_tracks"))
     panel._last_reference_ids = _restored_last_references(config, session.get("last_references"))
+    panel._source_reference_ids = _restored_source_references(panel, config, session.get("source_references"))
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):

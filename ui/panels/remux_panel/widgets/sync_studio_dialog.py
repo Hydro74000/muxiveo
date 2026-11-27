@@ -1487,6 +1487,11 @@ class SyncStudioDialog(QDialog):
         self._set_auto_sync_buttons_enabled(False)
         self.waveform.set_loading(translate_text("Synchronisation automatique des sous-titres en cours…"))
         self.listen_status.setText(translate_text("Synchronisation automatique des sous-titres en cours…"))
+        # Conversion de cadence capturée au lancement : répliques comparées sur ses temps ; un rapport
+        # changé pendant l'analyse écarte le résultat.
+        cadence = self.current_calibration.active_cadence
+        self._sub_sync_launch_cadence = cadence
+        scale = cadence.time_stretch_ratio if cadence is not None else 1.0
 
         def _worker() -> None:
             try:
@@ -1495,7 +1500,6 @@ class SyncStudioDialog(QDialog):
                 is_ref_sub = self.reference_entry is not None and self.reference_entry.is_subtitle
                 ref_src = self.reference_source_path or self.target_source_path
                 ref_idx = self.reference_stream_index if self.reference_stream_index is not None else 0
-                cadence = self.current_calibration.active_cadence
                 cal = scanner.scan(
                     reference_source=ref_src,
                     reference_stream_index=ref_idx,
@@ -1503,15 +1507,8 @@ class SyncStudioDialog(QDialog):
                     target_stream_index=self.target_stream_index,
                     is_ref_sub=is_ref_sub,
                     detect_cuts=True,
-                    # Conversion de cadence retenue : répliques comparées sur les temps convertis.
-                    target_time_scale=cadence.time_stretch_ratio if cadence is not None else 1.0,
+                    target_time_scale=scale,
                 )
-                if cadence is not None:
-                    current = self.current_calibration
-                    cal = replace(cal, cadence_mismatch=current.cadence_mismatch,
-                                  cadence_audio_method=current.cadence_audio_method,
-                                  cadence_method_auto=current.cadence_method_auto,
-                                  cadence_pitch_analysis=current.cadence_pitch_analysis)
                 if not self._closing:
                     self._auto_sub_sync_ready.emit(cal)
             except Exception as exc:
@@ -1527,6 +1524,22 @@ class SyncStudioDialog(QDialog):
         self._set_review_ranges(())
         self._is_sub_sync_running = False
         self._set_auto_sync_buttons_enabled(True)
+        launched = getattr(self, "_sub_sync_launch_cadence", None)
+        current_cadence = self.current_calibration.active_cadence
+        if (launched is None) != (current_cadence is None) or (
+                launched is not None and current_cadence is not None
+                and not _same_ratio(launched.speed_ratio, current_cadence.speed_ratio)):
+            self.listen_status.setText(translate_text(
+                "Conversion de cadence changée pendant l'alignement : résultat écarté, relancer « Synchro sous-titres »."
+            ))
+            return
+        if current_cadence is not None:
+            # Mesuré sur les temps convertis : la conversion retenue est conservée.
+            current = self.current_calibration
+            cal = replace(cal, cadence_mismatch=current.cadence_mismatch,
+                          cadence_audio_method=current.cadence_audio_method,
+                          cadence_method_auto=current.cadence_method_auto,
+                          cadence_pitch_analysis=current.cadence_pitch_analysis)
 
         measured_ms = cal.segments[0].shift_ms
         # Décalage constant seul : une conversion de cadence reste à appliquer, quel que soit le départ.

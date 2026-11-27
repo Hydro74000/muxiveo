@@ -251,6 +251,8 @@ class RemuxPanel(QWidget):
         # Dernière référence choisie pour une piste (Synchro Studio, synchro des sous-titres) :
         # présélectionnée à la fenêtre de choix suivante.
         self._last_reference_ids: dict[str, str] = {}
+        # Dernière référence d'une synchro de source (autre fichier) : reprise de ses analyses.
+        self._source_reference_ids: dict[str, str] = {}
         # Dernière synchro audio automatique : piste → (référence, validée par la vérification rapide).
         self._audio_sync_results: dict[str, tuple[str, bool]] = {}
         self._chapter_sync_cancelled_source_ids: set[str] = set()
@@ -1324,6 +1326,7 @@ class RemuxPanel(QWidget):
         self._own_sync_entry_ids.clear()
         self._track_sync_links.clear()
         self._last_reference_ids.clear()
+        self._source_reference_ids.clear()
         self._audio_sync_results.clear()
         self._chapter_sync_cancelled_source_ids.clear()
         self._cadence_declined_source_ids.clear()
@@ -1778,6 +1781,8 @@ class RemuxPanel(QWidget):
 
     def _remember_reference(self, entry: TrackEntry, reference: TrackEntry) -> None:
         """Référence choisie pour la piste : présélectionnée ensuite ; session à sauvegarder si elle change."""
+        if self._track_inherits_source_sync(entry) and reference.file_id != entry.file_id:
+            self._source_reference_ids[entry.file_id] = reference.entry_id
         if self._last_reference_ids.get(entry.entry_id) == reference.entry_id:
             return
         self._last_reference_ids[entry.entry_id] = reference.entry_id
@@ -2064,6 +2069,7 @@ class RemuxPanel(QWidget):
             reference = tracks.get(link.reference_entry_id)
             if reference is not None and self._track_depends_on(reference, file_id):
                 del self._sync_links[file_id]
+                self._forget_source_analyses(file_id)
                 self.log_message.emit("INFO", translate_text(
                     "Synchro de « {source} » : sa référence suit désormais cette source (boucle) ; "
                     "la synchro est conservée, elle ne suit plus sa référence.",
@@ -2194,8 +2200,12 @@ class RemuxPanel(QWidget):
                      and self._track_inherits_source_sync(track)), None)
 
     def _source_last_reference(self, file_id: str) -> TrackEntry | None:
-        """Dernière référence choisie pour une piste qui suit la source (synchro sans lien)."""
+        """Dernière référence de la synchro de la source (synchro sans lien), sinon celle choisie pour
+        une piste qui la suit."""
         tracks = {track.entry_id: track for track in self._track_table.current_tracks()}
+        remembered = tracks.get(self._source_reference_ids.get(file_id, ""))
+        if remembered is not None and remembered.file_id != file_id and remembered.track_type == "audio":
+            return remembered
         for track in tracks.values():
             if track.file_id == file_id and track.track_type == "audio" and self._track_inherits_source_sync(track):
                 reference = tracks.get(self._last_reference_ids.get(track.entry_id, ""))
@@ -2414,6 +2424,7 @@ class RemuxPanel(QWidget):
             ))
         link = SyncLink(reference.file_id, reference.entry_id, measured)
         self._sync_links[target_file_id] = link
+        self._source_reference_ids[target_file_id] = reference.entry_id
         position = self._reference_calibration(link)
         if effective_calibration(position) is not None or position.segments[0].shift_ms:
             self.log_message.emit("INFO", translate_text(
@@ -3571,7 +3582,8 @@ class RemuxPanel(QWidget):
                 return
             if not self._track_inherits_source_sync(entry):
                 self._apply_track_only_sync(entry, reference_entry, measured, "Synchro Studio", manual=True)
-                self._schedule_cadence_method(entry, reference_entry)
+                # Synchro relative validée : les vitesses d'une référence convertie s'y annuleraient.
+                self._schedule_cadence_method(entry, reference_entry, measured)
                 return
             # Synchro réglée face à l'audio d'origine de la référence : même application que les mesures.
             new_calibration, released = self._link_measured_sync(entry.file_id, reference_entry, measured)
@@ -3613,7 +3625,8 @@ class RemuxPanel(QWidget):
                 self._log_sync_reviewed(reviewed)
 
 
-    def _schedule_cadence_method(self, entry: TrackEntry, reference_entry: TrackEntry | None) -> bool:
+    def _schedule_cadence_method(self, entry: TrackEntry, reference_entry: TrackEntry | None,
+                                 relative: SyncCalibration | None = None) -> bool:
         """Méthode « auto » restée non tranchée (studio validé avant son analyse) : hauteur analysée
         en arrière-plan sur la synchro face à la référence ; résultat périmé → analyse relancée.
 
@@ -3621,7 +3634,9 @@ class RemuxPanel(QWidget):
         """
         if reference_entry is None or reference_entry.track_type != "audio":
             return False
-        relative = self._relative_sync_calibration(entry, reference_entry)
+        # `relative` : synchro relative validée (Studio) ; sinon déduite des positions.
+        if relative is None:
+            relative = self._relative_sync_calibration(entry, reference_entry)
         if not relative.cadence_method_undecided:
             return False
         # Piste recalée seule (référence du même fichier, synchro propre) : analysée elle-même.
@@ -3797,6 +3812,19 @@ class RemuxPanel(QWidget):
         self._rebuild_preview()
         self._emit_signals()
 
+    @staticmethod
+    def _keep_frozen_segments(fresh: SyncCalibration, frozen: SyncCalibration) -> SyncCalibration:
+        """Décision de hauteur recomposée (`fresh`) portée sur la calibration figée à la saisie : ses
+        segments (jonctions comprises) sont conservés si la vitesse est la même, sinon le départ."""
+        same_speed = (
+            (fresh.active_cadence is None and frozen.active_cadence is None)
+            or (fresh.active_cadence is not None and frozen.active_cadence is not None
+                and abs(fresh.active_cadence.time_stretch_ratio - frozen.active_cadence.time_stretch_ratio) < 1e-9)
+        )
+        if same_speed:
+            return replace(fresh, segments=frozen.segments)
+        return fresh.with_start_offset(frozen.segments[0].shift_ms)
+
     def _decided_relative(self, resolved: SyncCalibration) -> SyncCalibration:
         """Synchro relative tranchée par l'analyse (face à l'audio d'origine de la référence) : sa hauteur
         est celle de la méthode retenue, sans reste d'une position recomposée."""
@@ -3812,8 +3840,9 @@ class RemuxPanel(QWidget):
             return
         if resolved.cadence_audio_method == before.cadence_audio_method:
             return
-        calibration = compose_calibrations(self._decided_relative(resolved), self._track_calibration(reference))
-        calibration = calibration.with_start_offset(applied.segments[0].shift_ms)
+        calibration = self._keep_frozen_segments(
+            compose_calibrations(self._decided_relative(resolved), self._track_calibration(reference)), applied,
+        )
         negligible = (effective_calibration(calibration) is None
                       and abs(round(calibration.segments[0].shift_ms)) <= NEGLIGIBLE_SYNC_MS)
         self._set_source_calibration(file_id, calibration, negligible=negligible)
@@ -3874,8 +3903,10 @@ class RemuxPanel(QWidget):
                     self._track_sync_links[linked_id] = replace(link, relative=decided)
                     moved.add(linked_id)
         else:
-            calibration = compose_calibrations(decided, self._track_calibration(reference)).for_track(entry.track_type)
-            calibration = calibration.with_start_offset(self._track_calibration(entry).segments[0].shift_ms)
+            calibration = self._keep_frozen_segments(
+                compose_calibrations(decided, self._track_calibration(reference)).for_track(entry.track_type),
+                self._track_calibration(entry),
+            )
             stored = (effective_calibration(calibration, entry.track_type)
                       or SyncCalibration.linear(round(calibration.segments[0].shift_ms))).to_dict()
             offset = round(calibration.segments[0].shift_ms)

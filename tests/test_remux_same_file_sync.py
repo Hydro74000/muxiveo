@@ -1872,3 +1872,119 @@ def test_studio_subtitle_alignment_keeps_the_chosen_cadence(qt_app, tmp_path, mo
     assert dialog.current_calibration.cadence_mismatch == choices[1]
     assert dialog.current_calibration.segments[0].shift_ms == 150
     dialog.close()
+
+
+# --- Relecture Codex (e07857a..7011e19). ---
+
+
+def test_detached_track_realigned_on_a_converted_source_gets_its_analysis(qt_app, tmp_path, monkeypatch):
+    """C/c1 détachée, calée dans le Studio sur B (PAL, convertie en asetrate vers A) avec 23,976 → 25 en
+    « auto » : vitesses annulées dans sa synchro, analyse planifiée sur la synchro relative validée."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel = RemuxPanel(AppConfig())
+    master, b1 = _track(1, "audio", file_id="A"), _track(1, "audio", file_id="B")
+    c1, c2 = _track(1, "audio", file_id="C"), _track(2, "audio", file_id="C", language="eng")
+    _add_source(panel, tmp_path, "A", [master])
+    _add_source(panel, tmp_path, "B", [b1])
+    _add_source(panel, tmp_path, "C", [c1, c2])
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    panel._on_audio_sync_done(b1.entry_id, master.entry_id, 0, .95,
+                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method="asetrate"))
+    _independent(panel, monkeypatch, c1, c2, 300)
+    submitted, targets = _capture_pitch_analyses(panel, monkeypatch)
+    reverse = detect_cadence_from_metadata("25/1", "24000/1001")
+    _studio_with(panel, monkeypatch, SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=reverse,
+                                                     cadence_audio_method="auto"), b1)
+    panel._on_sync_studio_requested(c1)
+    assert len(submitted) == 1
+    _run_pending(submitted)
+    assert targets == [c1.mkv_tid]
+    assert not panel.cadence_resolution_pending()
+    panel.close()
+
+
+def test_loop_broken_by_a_rejoining_track_drops_the_released_analysis(films, monkeypatch):
+    panel, master, vf, vo, _subtitle, _logs = films
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 100, .95, None)
+    _independent(panel, monkeypatch, vo, vf, 700)
+    _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(master.entry_id, vo.entry_id, 50, .95, _pal_auto(50.0))
+    assert panel.cadence_resolution_pending()
+    panel._on_auto_sync_cancel_requested(vo)
+    assert "A" not in panel._sync_links and not panel.cadence_resolution_pending()
+
+
+def test_late_result_keeps_the_junction_frozen_at_the_entry(films, monkeypatch):
+    """VF recalée en « auto » sur VO (corrigée à une jonction), décalage saisi sur VF, correction de VO
+    annulée avant le résultat : VF garde la jonction figée à la saisie."""
+    panel, _master, vf, vo, _subtitle, _logs = films
+    vd = _track(4, "audio", file_id="B", language="ger", title="VD")
+    panel._track_table.append_tracks(_COLOR_A, [vd])
+    _cut_realign(panel, monkeypatch, vo, vd)
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(0.0), vo)
+    panel._on_sync_studio_requested(vf)
+    assert len(panel._track_calibration(vf).segments) == 2
+    vf.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vf)
+    panel._on_auto_sync_cancel_requested(vo)
+    _run_pending(submitted)
+    calibration = panel._track_calibration(vf)
+    assert calibration.cadence_audio_method == "asetrate"
+    assert len(calibration.segments) == 2 and round(calibration.segments[0].shift_ms) == 500
+
+
+def test_resumed_source_analysis_finds_the_source_reference(films, monkeypatch):
+    """Synchro de B lancée depuis une variante retirée ensuite, décalage saisi, session rouverte : la
+    référence de la source est retrouvée, l'analyse reprise."""
+    panel, master, vf, _vo, _subtitle, _logs = films
+    panel.add_audio_track_variant(vf, entry_id="variant", codec="aac", bitrate_kbps=192)
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done("variant", master.entry_id, 300, .95, _pal_auto())
+    panel.remove_audio_track_variant("variant")
+    vf.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vf)
+    assert panel._source_reference_ids["B"] == master.entry_id
+    submitted.clear()
+    _reloaded(panel, monkeypatch)
+    assert len(submitted) == 1
+
+
+def test_studio_discards_a_subtitle_alignment_made_with_another_ratio(qt_app, tmp_path, monkeypatch):
+    from core.workflows.cadence import manual_cadence_choices
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    sub = TrackEntry(3, "subtitle", "SubRip", "", "fre", "VF", file_id="B")
+    ref = TrackEntry(4, "subtitle", "SubRip", "", "eng", "VO", file_id="B")
+    choices = manual_cadence_choices()
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=sub, target_source_path=tmp_path / "b.mkv", target_stream_index=3,
+        reference_entry=ref, reference_source_path=tmp_path / "b.mkv", reference_stream_index=4,
+        cadence_choices=choices,
+    )
+    dialog.cadence_combo.setCurrentIndex(1)
+    dialog.cadence_check.setChecked(True)
+    submitted: list = []
+    dialog._executor = SimpleNamespace(submit=submitted.append, shutdown=lambda **_k: None)
+    dialog._run_auto_subtitle_sync()
+    dialog.cadence_combo.setCurrentIndex(0)
+    dialog._on_auto_sub_sync_ready(SyncCalibration.linear(150))
+    assert dialog.current_calibration.cadence_mismatch == choices[0]
+    assert dialog.current_calibration.segments[0].shift_ms == 0
+    dialog.close()
+
+
+def test_native_plan_copies_a_copy_variant(films):
+    from core.workflows.remux_plan import build_audio_variant_command, plan_native_audio_variants
+
+    panel, _master, _vf, vo, _subtitle, _logs = films
+    vo.display_info = vo.orig_display_info = "5.1  768 kbps"
+    panel.add_audio_track_variant(vo, entry_id="copy", codec="copy")
+    panel.add_audio_track_variant(vo, entry_id="lower", codec="eac3", bitrate_kbps=384)
+    variants = {variant.entry_id: variant for variant in plan_native_audio_variants(panel.collect_config())}
+    assert variants["copy"].encoder == "copy" and variants["copy"].bitrate_kbps is None
+    command = build_audio_variant_command(variants["copy"], Path("b.mkv"), 2, Path("out.mkv"), "ffmpeg")
+    assert "-b:a" not in command and command[command.index("-c:a") + 1] == "copy"
+    assert variants["lower"].encoder != "copy" and variants["lower"].bitrate_kbps == 384
