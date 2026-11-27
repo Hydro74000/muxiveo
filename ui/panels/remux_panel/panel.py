@@ -257,7 +257,7 @@ class RemuxPanel(QWidget):
         # Synchro relative de chaque analyse de hauteur en cours (jeton → calibration), et analyses
         # sauvegardées à reprendre (restauration de session) : (piste, référence, calibration).
         self._cadence_relatives: dict[object, SyncCalibration] = {}
-        self._restored_cadence_analyses: list[tuple[str, str, SyncCalibration]] = []
+        self._restored_cadence_analyses: list[tuple[str, str, SyncCalibration, str]] = []
         # Dernière synchro audio automatique : piste → (référence, validée par la vérification rapide).
         self._audio_sync_results: dict[str, tuple[str, bool]] = {}
         self._chapter_sync_cancelled_source_ids: set[str] = set()
@@ -3701,8 +3701,11 @@ class RemuxPanel(QWidget):
         # Analyses en cours à la sauvegarde : reprises sur leur synchro relative (conversions annulées
         # entre elles comprises).
         restored, self._restored_cadence_analyses = self._restored_cadence_analyses, []
-        for entry_id, reference_id, relative in restored:
+        for entry_id, reference_id, relative, scope in restored:
             entry, reference = by_id.get(entry_id), by_id.get(reference_id)
+            if entry is not None and scope == "source" and not self._track_inherits_source_sync(entry):
+                # Portée enregistrée : la synchro de la source, analysée sur une piste qui la suit.
+                entry = self._source_audio_track(entry.file_id)
             if entry is not None and reference is not None:
                 self._schedule_cadence_method(entry, reference, relative)
         for entry_id, track_link in list(self._track_sync_links.items()):

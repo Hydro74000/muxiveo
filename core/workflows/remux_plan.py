@@ -767,6 +767,8 @@ def _audio_variant_actions(
             variant.stream_index,
             Path(f"{PREVIEW_TEMPORARY_DIR}/{variant.target_name}"),
             ffmpeg_bin,
+            # Même règle qu'à l'exécution : source lue en flux rebasée sur son départ.
+            copyts=not is_streamable_source(source.path),
         )
         actions.append(RemuxPreparationAction(
             kind="audio_variant",

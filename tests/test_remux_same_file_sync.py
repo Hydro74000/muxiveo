@@ -2122,3 +2122,44 @@ def test_studio_discards_an_audio_result_after_the_conversion_was_unchecked(qt_a
     assert dialog.current_calibration.cadence_mismatch is None
     assert dialog.current_calibration.segments[0].shift_ms == 0
     dialog.close()
+
+
+# --- Relecture Codex (5ed1d5f). ---
+
+
+def test_studio_shows_review_ranges_when_the_analysis_finds_a_cadence(qt_app, tmp_path, monkeypatch):
+    from core.workflows.cadence import manual_cadence_choices
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    vf = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="B")
+    master = TrackEntry(1, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="A")
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=vf, target_source_path=tmp_path / "b.mkv", target_stream_index=1,
+        reference_entry=master, reference_source_path=tmp_path / "a.mkv", reference_stream_index=1,
+    )
+    dialog._executor = SimpleNamespace(submit=lambda *_a, **_k: None, shutdown=lambda **_k: None)
+    dialog._run_auto_audio_sync(deep=True)
+    proposal = SyncCalibration((SyncSegment(0, 150.0),), cadence_mismatch=manual_cadence_choices()[0],
+                               cadence_audio_method="asetrate")
+    dialog._on_auto_sync_review(proposal, ((10_000.0, 40_000.0),))
+    assert dialog.current_calibration.cadence_mismatch is not None
+    assert dialog.review_ranges_ms == ((10_000.0, 40_000.0),)
+    dialog.close()
+
+
+def test_saved_source_analysis_keeps_its_scope_when_its_track_is_realigned(films, monkeypatch):
+    """Analyse de B lancée sur VF, VF recalée seule ensuite : sauvegardée et reprise comme l'analyse
+    de la synchro de B (sur une piste qui la suit), jamais comme celle de VF seule."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
+    _studio(panel, monkeypatch, vf, vo, 50)
+    pending = workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"]
+    source_pending = [item for item in pending if item["scope"] == "source"]
+    assert len(source_pending) == 1 and source_pending[0]["track"]["id"] == vo.mkv_tid
+    panel._cadence_pending.clear()
+    submitted.clear()
+    panel._restored_cadence_analyses = [(vf.entry_id, master.entry_id, panel._sync_links["B"].relative, "source")]
+    panel._resume_cadence_analyses()
+    assert any(scope == "B" for _e, _r, scope in panel._cadence_pending.values())

@@ -746,10 +746,13 @@ def run_native_remux(
                         )
                     target_path = root / variant.target_name
                     rewritten = track.rewrite_origin is not None
-                    # Variante d'une piste ordinaire : horodatages de la source conservés (-copyts),
-                    # elle démarre comme sa piste d'origine (audio en retard sur la vidéo compris).
+                    # Variante d'une piste ordinaire : chronologie de sa piste d'origine telle que
+                    # l'assemblage la lit (audio en retard sur la vidéo compris) : horodatages bruts
+                    # d'un Matroska (-copyts), rebasés sur le départ du conteneur pour une source
+                    # lue en flux (MP4/MOV, comme le lecteur en flux).
                     cmd = build_audio_variant_command(
-                        variant, source.path, mkv_tid, target_path, ffmpeg_bin, copyts=not rewritten,
+                        variant, source.path, mkv_tid, target_path, ffmpeg_bin,
+                        copyts=not rewritten and not is_streamable_source(source.path),
                     )
                     _run_external(cmd, f"Variante audio {variant.target_codec} impossible")
                     materialized_track = replace(track, mkv_tid=0, orig_codec=track.codec, is_new=False)

@@ -185,7 +185,8 @@ def _pending_cadence_payload(panel, tracks_by_id, source_index) -> list[dict]:
     payload: list[dict] = []
     for token, (entry_id, reference_id, scope) in panel._cadence_pending.items():
         entry = tracks_by_id.get(entry_id)
-        if entry is None and not scope.startswith("track:"):
+        if not scope.startswith("track:") and (entry is None or not panel._track_inherits_source_sync(entry)):
+            # Analyse de la synchro de la source : portée par une piste qui la suit encore.
             entry = panel._source_audio_track(scope)
         reference = tracks_by_id.get(reference_id)
         relative = panel._cadence_relatives.get(token)
@@ -193,6 +194,7 @@ def _pending_cadence_payload(panel, tracks_by_id, source_index) -> list[dict]:
                 or entry.file_id not in source_index or reference.file_id not in source_index):
             continue
         payload.append({
+            "scope": "track" if scope.startswith("track:") else "source",
             "track": _track_key(entry, source_index[entry.file_id]),
             "reference_track": _track_key(reference, source_index[reference.file_id]),
             "calibration": relative.to_dict(),
@@ -200,12 +202,12 @@ def _pending_cadence_payload(panel, tracks_by_id, source_index) -> list[dict]:
     return payload
 
 
-def _restored_cadence_analyses(config, payload) -> list[tuple[str, str, SyncCalibration]]:
-    """Analyses de hauteur en cours à la sauvegarde : (piste, référence, synchro relative)."""
+def _restored_cadence_analyses(config, payload) -> list[tuple[str, str, SyncCalibration, str]]:
+    """Analyses de hauteur en cours à la sauvegarde : (piste, référence, synchro relative, portée)."""
     if not isinstance(payload, list):
         return []
     tracks_by_key = _session_tracks_by_key(config)
-    restored: list[tuple[str, str, SyncCalibration]] = []
+    restored: list[tuple[str, str, SyncCalibration, str]] = []
     for item in payload:
         try:
             target = _session_track(tracks_by_key, item["track"])
@@ -214,7 +216,8 @@ def _restored_cadence_analyses(config, payload) -> list[tuple[str, str, SyncCali
         except (KeyError, TypeError, ValueError):
             continue
         if target is not None and reference is not None:
-            restored.append((target.entry_id, reference.entry_id, relative))
+            scope = "track" if item.get("scope") == "track" else "source"
+            restored.append((target.entry_id, reference.entry_id, relative, scope))
     return restored
 
 

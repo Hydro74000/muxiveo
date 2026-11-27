@@ -1528,9 +1528,10 @@ class SyncStudioDialog(QDialog):
 
         self._executor.submit(_worker)
 
-    def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> None:
+    def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> bool:
+        """Résultat d'une synchro automatique appliqué ; faux s'il est écarté."""
         if getattr(self, "_closing", False):
-            return
+            return False
         # Nouveau résultat : les zones d'une proposition précédente ne valent plus.
         self._set_review_ranges(())
         self._is_sub_sync_running = False
@@ -1543,7 +1544,7 @@ class SyncStudioDialog(QDialog):
             self.listen_status.setText(translate_text(
                 "Conversion de cadence changée pendant l'analyse : résultat écarté, relancer la synchro."
             ))
-            return
+            return False
         if launch is not None and current_cadence is not None:
             # Mesuré sur les temps convertis : la conversion retenue est conservée.
             current = self.current_calibration
@@ -1588,14 +1589,14 @@ class SyncStudioDialog(QDialog):
                 )
             )
         self.calibration_changed.emit(self.current_calibration)
+        return True
 
     def _on_auto_sync_review(self, cal: SyncCalibration, ranges_ms) -> None:
-        """Synchro cohérente proposée : chargée comme un résultat, zones à relire affichées."""
+        """Synchro cohérente proposée : chargée comme un résultat, zones à relire affichées (une
+        cadence découverte par l'analyse comprise)."""
         if getattr(self, "_closing", False):
             return
-        settings = self.__dict__.get("_auto_sync_launch")
-        self._on_auto_sub_sync_ready(cal)
-        if settings is not None and settings != self._cadence_settings():
+        if not self._on_auto_sub_sync_ready(cal):
             return
         self._set_review_ranges(ranges_ms)
         self._goto_review_range(0)
