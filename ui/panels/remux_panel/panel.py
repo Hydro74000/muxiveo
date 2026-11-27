@@ -1518,6 +1518,13 @@ class RemuxPanel(QWidget):
             variant.sync_calibration = copy.deepcopy(template.sync_calibration)
         if offset or effective_calibration(variant.sync_calibration, variant.track_type) is not None:
             self._auto_sync_entry_ids.add(variant.entry_id)
+        variant_link = self._track_sync_links.get(variant.entry_id)
+        reference_id = variant_link.reference_entry_id if variant_link else self._last_reference_ids.get(variant.entry_id, "")
+        reference = next((track for track in self._track_table.current_tracks() if track.entry_id == reference_id), None)
+        if reference is not None:
+            # Conversion « auto » non tranchée : analyse propre à la variante (celle de son modèle
+            # peut être abandonnée avant son résultat).
+            self._schedule_cadence_method(variant, reference)
 
     def remove_audio_track_variant(self, entry_id) -> None:
         entry_id_str = str(entry_id or "").strip()
@@ -2110,6 +2117,7 @@ class RemuxPanel(QWidget):
             # Référence synchronisée à partir de cette piste (boucle) : sa synchro est retirée, la mesure prime.
             released = reference.file_id
             self._sync_links.pop(released, None)
+            self._forget_source_analyses(released)
             self._set_source_calibration(released, SyncCalibration.linear(0))
             # Pistes recalées de la source libérée : à jour avant de lire la position de la référence.
             self._follow_track_links()
@@ -2171,6 +2179,22 @@ class RemuxPanel(QWidget):
         removed = self._track_sync_links.pop(entry_id, None) is not None
         self._forget_track_analyses(entry_id)
         return removed
+
+    def _source_audio_track(self, file_id: str) -> TrackEntry | None:
+        """Première piste audio qui suit la synchro de la source (porte ses analyses de hauteur)."""
+        return next((track for track in self._track_table.current_tracks()
+                     if track.file_id == file_id and track.track_type == "audio"
+                     and self._track_inherits_source_sync(track)), None)
+
+    def _source_last_reference(self, file_id: str) -> TrackEntry | None:
+        """Dernière référence choisie pour une piste qui suit la source (synchro sans lien)."""
+        tracks = {track.entry_id: track for track in self._track_table.current_tracks()}
+        for track in tracks.values():
+            if track.file_id == file_id and self._track_inherits_source_sync(track):
+                reference = tracks.get(self._last_reference_ids.get(track.entry_id, ""))
+                if reference is not None and reference.file_id != file_id:
+                    return reference
+        return None
 
     def _forget_source_analyses(self, file_id: str) -> None:
         """Synchro de la source refaite ou retirée : ses analyses de hauteur en cours abandonnées."""
@@ -2258,6 +2282,12 @@ class RemuxPanel(QWidget):
         for entry_id, link in list(self._track_sync_links.items()):
             if entry_id not in present or link.reference_entry_id not in present:
                 self._forget_track_link(entry_id)
+        removed_ids = {track.entry_id for track in self._track_table.current_tracks() if track.entry_id not in present}
+        if removed_ids:
+            pending = len(self._cadence_pending)
+            self._drop_cadence_analyses(removed_ids)
+            if len(self._cadence_pending) != pending:
+                self.ready_changed.emit(self._has_ready_files())
         for file_id, link in list(self._sync_links.items()):
             if link.reference_entry_id in removed_own:
                 del self._sync_links[file_id]
@@ -2348,6 +2378,7 @@ class RemuxPanel(QWidget):
         if self._track_depends_on(reference, target_file_id):
             released = reference.file_id
             self._sync_links.pop(released, None)
+            self._forget_source_analyses(released)
             self._set_source_calibration(released, SyncCalibration.linear(0))
             # Pistes recalées de la source libérée : à jour avant de lire la position de la référence.
             self._follow_track_links()
@@ -2445,9 +2476,11 @@ class RemuxPanel(QWidget):
                 continue
             if not self._track_inherits_source_sync(entry):
                 own_moved.add(entry.entry_id)
+                # Lien éventuel retiré et analyse abandonnée (faite sur l'ancien décalage) : relancée
+                # ci-dessous si la conversion « auto » reste à trancher.
+                undecided_after_entry.append(entry)
                 if self._forget_track_link(entry.entry_id):
                     links_removed = True
-                    undecided_after_entry.append(entry)
                     self.log_message.emit("INFO", translate_text(
                         "Décalage de la piste #{idx} saisi à la main : elle ne suit plus sa piste de référence.",
                         idx=entry.mkv_tid,
@@ -2471,9 +2504,12 @@ class RemuxPanel(QWidget):
             file_id: next((entry for entry in group if entry.track_type == "audio"), group[0])
             for file_id, group in grouped.items()
         }
+        released_references: dict[str, str] = {}
         for file_id, entry in changed.items():
-            if self._sync_links.pop(file_id, None) is not None:
+            released_link = self._sync_links.pop(file_id, None)
+            if released_link is not None:
                 links_removed = True
+                released_references[file_id] = released_link.reference_entry_id
                 self._forget_source_analyses(file_id)
                 self.log_message.emit("INFO", translate_text(
                     "Décalage de la piste #{idx} saisi à la main : la source « {source} » ne suit plus sa référence.",
@@ -2506,6 +2542,14 @@ class RemuxPanel(QWidget):
                 self._warn_offset_without_cadence(entry)
         propagated = self._propagate_sync(set(changed), own_moved)
         tracks_by_id = {track.entry_id: track for track in self._track_table.current_tracks()}
+        for file_id in changed:
+            # Source à conversion « auto » non tranchée : analyse sur son nouveau décalage.
+            if (self._source_calibration(file_id).cadence_method_undecided
+                    and not any(scope == file_id for _e, _r, scope in self._cadence_pending.values())):
+                reference = tracks_by_id.get(released_references.get(file_id, "")) or self._source_last_reference(file_id)
+                target = self._source_audio_track(file_id)
+                if reference is not None and target is not None:
+                    self._schedule_cadence_method(target, reference)
         for entry in undecided_after_entry:
             # Lien retiré, conversion « auto » non tranchée : analyse face à la dernière référence.
             reference = tracks_by_id.get(self._last_reference_ids.get(entry.entry_id, ""))
@@ -3634,7 +3678,8 @@ class RemuxPanel(QWidget):
             if entry is None:
                 # Sans piste audio qui suit la source, la hauteur n'a pas d'objet.
                 continue
-            reference = by_id.get(link.reference_entry_id) if link is not None else None
+            reference = (by_id.get(link.reference_entry_id) if link is not None
+                         else self._source_last_reference(source.id))
             if not self._schedule_cadence_method(entry, reference):
                 self.log_message.emit("WARN", translate_text(
                     "Méthode de conversion de cadence de « {source} » non tranchée (piste de référence "
@@ -3682,12 +3727,17 @@ class RemuxPanel(QWidget):
         if reference is None or self._find_source(file_id) is None:
             return
         link = self._sync_links.get(file_id)
-        analysed_reference = (link.reference_entry_id == reference_entry_id if link is not None
-                              else reference.file_id == file_id)
-        if not analysed_reference:
+        if link is not None and link.reference_entry_id != reference_entry_id:
             # Synchro désormais faite face à une autre référence : cette analyse ne la concerne plus.
             return
-        current = link.relative if link is not None else self._source_calibration(file_id)
+        if link is not None:
+            current = link.relative
+        else:
+            # Sans lien (décalage saisi après la mesure) : synchro face à la référence analysée, comme au lancement.
+            audio = self._source_audio_track(file_id)
+            if audio is None:
+                return
+            current = self._relative_sync_calibration(audio, reference)
         if not current.cadence_method_undecided:
             return
         if current.to_dict() != before.to_dict():

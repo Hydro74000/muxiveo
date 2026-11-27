@@ -1579,3 +1579,78 @@ def test_entered_offset_on_a_realignment_keeps_its_pitch_analysis(films, monkeyp
     _run_pending(submitted)
     assert panel._track_calibration(vo).cadence_audio_method == "asetrate"
     assert vo.time_shift_ms == 500 and not panel.cadence_resolution_pending()
+
+
+# --- Troisième relecture Gemini Neon (commit b09d020). ---
+
+
+def test_entered_offset_on_an_own_track_relaunches_its_analysis(films, monkeypatch):
+    """VO indépendante calée sur le master en « auto », décalage saisi avant le résultat : analyse
+    relancée sur le nouveau décalage, résultat posé."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    _independent(panel, monkeypatch, vo, vf, 700)
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(), master)
+    panel._on_sync_studio_requested(vo)
+    submitted.clear()
+    vo.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vo)
+    assert panel.cadence_resolution_pending() and len(submitted) == 1
+    _run_pending(submitted)
+    assert panel._track_calibration(vo).cadence_audio_method == "asetrate" and vo.time_shift_ms == 500
+
+
+def test_entered_offset_on_a_source_relaunches_its_analysis(films, monkeypatch):
+    """B calée sur le master en « auto », décalage saisi sur VF avant le résultat (lien retiré) :
+    analyse relancée face à l'ancienne référence ; reprise de session sans lien : dernière référence."""
+    from dataclasses import replace
+
+    panel, master, vf, _vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
+    submitted.clear()
+    vf.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vf)
+    assert "B" not in panel._sync_links and panel.cadence_resolution_pending() and len(submitted) == 1
+    _run_pending(submitted)
+    assert panel._source_calibration("B").cadence_audio_method == "asetrate"
+    assert not panel.cadence_resolution_pending()
+    panel._set_source_calibration("B", replace(panel._source_calibration("B"), cadence_audio_method="auto"))
+    panel._last_reference_ids[vf.entry_id] = master.entry_id
+    panel._resume_cadence_analyses()
+    assert len(submitted) == 1
+
+
+def test_variant_keeps_its_own_analysis_when_the_model_is_cancelled(films, monkeypatch):
+    panel, _master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(), vf)
+    panel._on_sync_studio_requested(vo)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    assert len(submitted) == 2
+    panel._on_auto_sync_cancel_requested(vo)
+    _run_pending(submitted)
+    assert panel._track_sync_links["variant"].relative.cadence_audio_method == "asetrate"
+    assert not panel.cadence_resolution_pending()
+
+
+def test_loop_release_drops_the_analysis_of_the_released_source(films, monkeypatch):
+    panel, master, vf, _vo, _subtitle, _logs = films
+    _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
+    assert panel.cadence_resolution_pending()
+    panel._on_audio_sync_done(master.entry_id, vf.entry_id, 50, .95, None)
+    assert "B" not in panel._sync_links and not panel.cadence_resolution_pending()
+
+
+def test_removed_variant_drops_its_own_analysis(films, monkeypatch):
+    panel, master, vf, vo, _subtitle, _logs = films
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _independent(panel, monkeypatch, variant, vf, 300)
+    _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(), master)
+    panel._on_sync_studio_requested(variant)
+    assert panel.cadence_resolution_pending()
+    panel.remove_audio_track_variant("variant")
+    assert not panel.cadence_resolution_pending()
