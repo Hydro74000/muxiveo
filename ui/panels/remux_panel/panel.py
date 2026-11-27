@@ -1481,12 +1481,19 @@ class RemuxPanel(QWidget):
                 self._sync_entry_calibrations([variant])
             return
         self._own_sync_entry_ids.add(variant.entry_id)
-        link = self._track_sync_links.get(template.entry_id)
-        if link is not None:
-            self._track_sync_links[variant.entry_id] = link
-        variant.sync_calibration = copy.deepcopy(template.sync_calibration)
-        variant.time_shift_ms = template.time_shift_ms
-        if template.entry_id in self._auto_sync_entry_ids:
+        offset = int(variant.time_shift_ms or 0)
+        if offset != int(template.time_shift_ms or 0):
+            # Décalage propre à la variante (règle d'un profil) : synchro propre à ce décalage, sans
+            # suivre la référence de son modèle (elle imposerait une autre valeur).
+            own = effective_calibration(template.sync_calibration, variant.track_type)
+            calibration = own.with_start_offset(offset) if own is not None else SyncCalibration.linear(offset)
+            variant.sync_calibration = calibration.to_dict()
+        else:
+            link = self._track_sync_links.get(template.entry_id)
+            if link is not None:
+                self._track_sync_links[variant.entry_id] = link
+            variant.sync_calibration = copy.deepcopy(template.sync_calibration)
+        if offset or effective_calibration(variant.sync_calibration, variant.track_type) is not None:
             self._auto_sync_entry_ids.add(variant.entry_id)
 
     def remove_audio_track_variant(self, entry_id) -> None:
@@ -1495,8 +1502,12 @@ class RemuxPanel(QWidget):
             return
         for source in self._source_files:
             source.tracks = [track for track in source.tracks if track.entry_id != entry_id_str]
+        if self._track_table.has_entry_id(entry_id_str):
+            # Avant le retrait : la position de la piste retirée décide du sort des liens vers elle.
+            self._prune_track_sync_links({
+                track.entry_id for track in self._track_table.current_tracks() if track.entry_id != entry_id_str
+            })
         if self._track_table.remove_track_by_entry_id(entry_id_str):
-            self._prune_track_sync_links({track.entry_id for track in self._track_table.current_tracks()})
             self._refresh_audio_sync_buttons()
             self._track_table.refresh_filter()
             self._rebuild_preview()
@@ -1598,7 +1609,8 @@ class RemuxPanel(QWidget):
 
         counts = self._track_sync_counts() if hasattr(self, "_track_table") else {"video": 0, "audio": 0, "subtitle": 0}
         chapter_active = self._any_chapter_sync_active()
-        active = any(counts.values()) or chapter_active
+        # Liens actifs (entre sources, recalages) même à 0 ms : déplacer la référence déplacerait la cible.
+        active = any(counts.values()) or chapter_active or bool(self._sync_links) or bool(self._track_sync_links)
         if hasattr(self, "_global_sync_cancel_btn"):
             self._global_sync_cancel_btn.setVisible(active)
             self._global_sync_cancel_btn.setToolTip(self._global_sync_tooltip(counts, chapter_active))
@@ -2183,14 +2195,21 @@ class RemuxPanel(QWidget):
     def _prune_track_sync_links(self, present: set[str]) -> None:
         """Pistes retirées : leurs liens disparaissent ; une piste dont la référence a disparu garde sa synchro.
 
-        Source liée à une piste à synchro propre retirée : sa position n'est plus celle de la source de
-        la référence ; le lien est abandonné, la source garde sa synchro (appelé avant la mise à jour
-        des synchros propres).
+        Source liée à une piste retirée dont la position n'était pas celle de sa source (synchro
+        propre, recalage, décalage saisi sur elle seule) : le lien est abandonné, la source garde sa
+        synchro au lieu de sauter plus tard vers la position de la source de la référence. Appelé
+        avant le retrait des pistes de la table et la mise à jour des synchros propres.
         """
         removed_own = {
             entry_id for entry_id in self._own_sync_entry_ids | set(self._track_sync_links)
             if entry_id not in present
         }
+        removed_own.update(
+            track.entry_id for track in self._track_table.current_tracks()
+            if track.entry_id not in present and track.track_type in {"audio", "subtitle"}
+            and not same_applied_sync(self._track_calibration(track),
+                                      self._source_calibration(track.file_id).for_track(track.track_type))
+        )
         for entry_id, link in list(self._track_sync_links.items()):
             if entry_id not in present or link.reference_entry_id not in present:
                 del self._track_sync_links[entry_id]

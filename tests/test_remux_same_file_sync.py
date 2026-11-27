@@ -808,3 +808,60 @@ def test_global_cancel_stays_offered_for_a_link_at_zero(films, monkeypatch):
     assert not panel._global_sync_cancel_btn.isHidden()
     panel._on_global_sync_cancel_requested()
     assert panel._track_sync_links == {} and panel._global_sync_cancel_btn.isHidden()
+
+
+# --- Sixième relecture Codex (commit f97b457). ---
+
+
+def test_profile_variant_keeps_the_offset_written_by_the_profile(films, monkeypatch):
+    """VO recalée (+300) ; un profil la règle à +120 et recrée sa variante à +120 : les deux à +120."""
+    import copy
+
+    from core.workflows.remux_models import clone_track_entry
+
+    panel, _master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 300)
+    tracks = [copy.deepcopy(track) for track in panel._track_table.current_tracks()]
+    new_vo = next(track for track in tracks if track.entry_id == vo.entry_id)
+    variant = clone_track_entry(new_vo, entry_id="variant")
+    new_vo.time_shift_ms = variant.time_shift_ms = 120
+    tracks.append(variant)
+    panel._commit_decision_profile_result(tracks, {"written_fields": {
+        vo.entry_id: ("time_shift_ms",), "variant": ("time_shift_ms",),
+    }})
+    assert (new_vo.time_shift_ms, variant.time_shift_ms) == (120, 120)
+    assert variant.entry_id in panel._own_sync_entry_ids and variant.entry_id not in panel._track_sync_links
+    panel._apply_source_sync_offset(vf.file_id, 50)
+    panel._propagate_sync({vf.file_id})
+    assert (new_vo.time_shift_ms, variant.time_shift_ms) == (120, 120)
+
+
+def test_global_cancel_offered_while_a_link_between_files_exists(films, monkeypatch):
+    """A suit VO (recalée sur VF) ; VO ramenée à 0 puis annulée : A suit encore VO à 0 ms."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 300)
+    panel._on_audio_sync_done(master.entry_id, vo.entry_id, 0, .95, None)
+    assert master.time_shift_ms == 300
+    _studio(panel, monkeypatch, vo, vf, -300)
+    panel._on_auto_sync_cancel_requested(vo)
+    assert _shifts(master, vf, vo) == [0, 0, 0] and "A" in panel._sync_links
+    assert not panel._global_sync_cancel_btn.isHidden()
+    panel._on_global_sync_cancel_requested()
+    assert panel._sync_links == {} and panel._global_sync_cancel_btn.isHidden()
+
+
+def test_removed_variant_with_its_own_offset_freezes_its_dependents(films, monkeypatch):
+    """Variante de B décalée seule (+300) ; A calée dessus (+100). Variante retirée : A reste à +400,
+    même quand VF bouge ensuite."""
+    panel, master, vf, _vo, _subtitle, _logs = films
+    panel.add_audio_track_variant(vf, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    variant.time_shift_ms = 300
+    panel._track_table.time_shift_edited.emit(variant)
+    panel._on_audio_sync_done(master.entry_id, "variant", 100, .95, None)
+    assert master.time_shift_ms == 400
+    panel.remove_audio_track_variant("variant")
+    assert "A" not in panel._sync_links
+    vf.time_shift_ms = 50
+    panel._track_table.time_shift_edited.emit(vf)
+    assert master.time_shift_ms == 400
