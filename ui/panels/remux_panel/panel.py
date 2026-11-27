@@ -1583,7 +1583,9 @@ class RemuxPanel(QWidget):
         if hasattr(self, "_track_table"):
             for entry_id in set(self._audio_sync_results) - self._auto_sync_entry_ids:
                 self._audio_sync_results.pop(entry_id, None)
-            self._track_table.set_auto_sync_cancelable_entries(self._auto_sync_entry_ids)
+            self._track_table.set_auto_sync_cancelable_entries(
+                self._auto_sync_entry_ids, set(self._track_sync_links),
+            )
         selected_source_index = (
             self._chapter_panel.selected_source_index()
             if hasattr(self, "_chapter_panel")
@@ -1938,48 +1940,74 @@ class RemuxPanel(QWidget):
 
     def _track_depends_on(self, entry: TrackEntry, file_id: str = "", *, entry_id: str = "") -> bool:
         """La position de la piste découle-t-elle, même indirectement, de la synchro de la source
-        `file_id`, ou de la position de la piste `entry_id` ?
+        `file_id`, ou de la position de la piste `entry_id` ?"""
+        return self._dependency_hops(entry, file_id, entry_id=entry_id) is not None
+
+    def _dependency_hops(self, entry: TrackEntry, file_id: str = "", *, entry_id: str = "") -> int | None:
+        """Nombre de liens entre sources traversés pour que la position de la piste dépende de la
+        source `file_id` ou de la piste `entry_id` ; `None` : aucune dépendance.
 
         Recalages dans son fichier suivis jusqu'à la piste qui fixe sa position : synchro propre
         indépendante → aucune dépendance ; sinon synchro de sa source, chaîne des liens suivie
-        piste par piste (piste de référence retirée : position de sa source).
+        piste par piste (piste de référence retirée : position de sa source, parcours repris de là).
         """
         tracks = {track.entry_id: track for track in self._track_table.current_tracks()}
         seen: set[str] = set()
         current: TrackEntry | None = entry
-        while current is not None and current.entry_id not in seen:
-            seen.add(current.entry_id)
-            root = current
-            inner: set[str] = set()
-            while (link := self._track_sync_links.get(root.entry_id)) is not None and root.entry_id not in inner:
-                if entry_id and link.reference_entry_id == entry_id:
-                    return True
-                inner.add(root.entry_id)
-                reference = tracks.get(link.reference_entry_id)
-                if reference is None:
-                    break
-                root = reference
-            if not self._track_inherits_source_sync(root):
-                return False
-            if file_id and root.file_id == file_id:
-                return True
-            source_link = self._sync_links.get(root.file_id)
+        current_file = ""
+        hops = 0
+        while True:
+            if current is not None:
+                if current.entry_id in seen:
+                    return None
+                seen.add(current.entry_id)
+                root = current
+                inner: set[str] = set()
+                while (link := self._track_sync_links.get(root.entry_id)) is not None and root.entry_id not in inner:
+                    if entry_id and link.reference_entry_id == entry_id:
+                        return hops
+                    inner.add(root.entry_id)
+                    reference = tracks.get(link.reference_entry_id)
+                    if reference is None:
+                        break
+                    root = reference
+                if not self._track_inherits_source_sync(root):
+                    return None
+                current_file = root.file_id
+            elif f"file:{current_file}" in seen:
+                return None
+            else:
+                seen.add(f"file:{current_file}")
+            if file_id and current_file == file_id:
+                return hops
+            source_link = self._sync_links.get(current_file)
             if source_link is None:
-                return False
+                return None
+            hops += 1
             if entry_id and source_link.reference_entry_id == entry_id:
-                return True
+                return hops
             current = tracks.get(source_link.reference_entry_id)
             if current is None:
-                return bool(file_id) and (source_link.reference_file_id == file_id
-                                          or self._sync_depends_on(source_link.reference_file_id, file_id))
-        return False
+                current_file = source_link.reference_file_id
 
     def _break_sync_loops(self, rejoined: str = "") -> None:
         """Liens de sources devenus circulaires (piste de référence revenue à la synchro de sa source,
-        elle-même liée à la cible) : abandonnés, la source garde sa synchro. Les liens vers la piste
-        `rejoined` (celle qui a fermé la boucle) sont examinés d'abord."""
+        elle-même liée à la cible) : abandonnés, la source garde sa synchro. Les liens les plus proches
+        de la piste `rejoined` (celle qui a fermé la boucle) sont examinés d'abord."""
         tracks = {track.entry_id: track for track in self._track_table.current_tracks()}
-        links = sorted(self._sync_links.items(), key=lambda item: item[1].reference_entry_id != rejoined)
+
+        def distance(link: SyncLink) -> float:
+            """Liens entre sources séparant la référence du lien de la piste modifiée : le plus proche,
+            celui qui ferme la boucle, est examiné d'abord."""
+            if not rejoined:
+                return 0
+            if link.reference_entry_id == rejoined:
+                return 0
+            reference = tracks.get(link.reference_entry_id)
+            hops = self._dependency_hops(reference, entry_id=rejoined) if reference is not None else None
+            return float("inf") if hops is None else hops
+
+        links = sorted(self._sync_links.items(), key=lambda item: distance(item[1]))
         for file_id, link in links:
             if file_id not in self._sync_links:
                 continue

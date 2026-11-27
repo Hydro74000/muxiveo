@@ -319,6 +319,8 @@ class _TrackTable(QTableWidget):
         super().__init__(0, len(self._HEADERS), parent)
         self._filter_selected = False
         self._audio_sync_available = False
+        # Pistes recalées face à une piste de leur fichier : annulables même à 0 ms (lien actif).
+        self._linked_sync_entry_ids: set[str] = set()
         # Couches extractibles d'une piste vidéo [(couche, libellé)], fournies par le panneau.
         self._extract_layers: Callable[[TrackEntry], list[tuple[str, str]]] = lambda _entry: []
         self._auto_sync_cancelable_entry_ids: set[str] = set()
@@ -828,6 +830,8 @@ class _TrackTable(QTableWidget):
     def _has_cancelable_auto_sync(self, entry: TrackEntry) -> bool:
         if entry.track_type not in {"audio", "subtitle"}:
             return False
+        if entry.entry_id in self._linked_sync_entry_ids:
+            return True
         if entry.entry_id not in self._auto_sync_cancelable_entry_ids:
             return False
         # Coupures sans décalage de départ : la synchro reste annulable.
@@ -1169,11 +1173,16 @@ class _TrackTable(QTableWidget):
     def set_auto_sync_cancelable_entries(
         self,
         entry_ids: set[str] | list[str] | tuple[str, ...],
+        linked_entry_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> None:
+        """`linked_entry_ids` : pistes recalées dans leur fichier, annulables même sans décalage."""
         normalized = {str(entry_id) for entry_id in entry_ids if str(entry_id or "").strip()}
-        if self._auto_sync_cancelable_entry_ids == normalized:
+        linked = (self._linked_sync_entry_ids if linked_entry_ids is None
+                  else {str(entry_id) for entry_id in linked_entry_ids if str(entry_id or "").strip()})
+        if self._auto_sync_cancelable_entry_ids == normalized and self._linked_sync_entry_ids == linked:
             return
         self._auto_sync_cancelable_entry_ids = normalized
+        self._linked_sync_entry_ids = linked
         for row in range(self.rowCount()):
             item0 = self.item(row, self.COL_CHECK)
             if item0 is None:

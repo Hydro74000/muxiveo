@@ -735,3 +735,53 @@ def test_new_reference_choice_triggers_the_autosave(films, monkeypatch):
     panel._autosave_dirty = False
     _studio(panel, monkeypatch, vo, vf, 0)
     assert panel._autosave_dirty is False
+
+
+# --- Quatrième relecture Codex (commit eb4eeff). ---
+
+
+def test_indirect_loop_breaks_the_link_closest_to_the_modified_track(films, monkeypatch):
+    """B suit A ; le commentaire de B suit VO (indépendante) ; A suit le commentaire. Recaler VO sur
+    VF ferme la boucle : le lien de A (le plus proche de VO) est abandonné, B suit toujours A."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    comm = _track(5, "audio", file_id="B", language="eng", title="Commentaire")
+    panel._track_table.append_tracks(_COLOR_A, [comm])
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 100, .95, None)
+    _independent(panel, monkeypatch, vo, vf, 700)
+    _studio(panel, monkeypatch, comm, vo, 50)
+    assert comm.time_shift_ms == 150 and panel._track_sync_links[comm.entry_id].reference_entry_id == vo.entry_id
+    panel._on_audio_sync_done(master.entry_id, comm.entry_id, 50, .95, None)
+    # A suit le commentaire (150 + 50) ; B suit A (+100).
+    assert _shifts(master, vf, vo, comm) == [200, 300, 700, 150]
+    _studio(panel, monkeypatch, vo, vf, 10)
+    assert "A" not in panel._sync_links and "B" in panel._sync_links
+    assert _shifts(master, vf, vo, comm) == [200, 300, 710, 160]
+
+
+def test_removed_reference_is_followed_through_its_source(films, monkeypatch, tmp_path):
+    """A suit c2 (indépendante, C) ; B suit une variante de A ; C suit VF. Variante retirée puis VO
+    recalée sur VF : la chaîne passe par c2, indépendante, aucune boucle (C garde son lien)."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    c1, c2 = _track(1, "audio", file_id="C"), _track(2, "audio", file_id="C", language="eng")
+    _add_source(panel, tmp_path, "C", [c1, c2])
+    panel.add_audio_track_variant(master, entry_id="variant", codec="aac", bitrate_kbps=192)
+    _independent(panel, monkeypatch, c2, c1, 300)
+    panel._on_audio_sync_done(master.entry_id, c2.entry_id, 50, .95, None)
+    panel._on_audio_sync_done(vf.entry_id, "variant", 100, .95, None)
+    panel._on_audio_sync_done(c1.entry_id, vf.entry_id, 20, .95, None)
+    assert _shifts(master, vf, c1, c2) == [350, 450, 470, 300]
+    panel.remove_audio_track_variant("variant")
+    _studio(panel, monkeypatch, vo, vf, 10)
+    assert set(panel._sync_links) == {"A", "B", "C"}
+    assert _shifts(master, vf, c1, c2) == [350, 450, 470, 300]
+
+
+def test_realignment_back_to_zero_stays_cancellable(films, monkeypatch):
+    panel, _master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 300)
+    _studio(panel, monkeypatch, vo, vf, -300)
+    assert vo.time_shift_ms == 0 and vo.entry_id in panel._track_sync_links
+    assert panel._track_table._has_cancelable_auto_sync(vo)
+    panel._on_auto_sync_cancel_requested(vo)
+    assert vo.entry_id not in panel._track_sync_links
+    assert not panel._track_table._has_cancelable_auto_sync(vo)
