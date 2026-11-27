@@ -243,3 +243,43 @@ def test_physical_subtitle_emptied_by_its_shift(tmp_path: Path, backend: str) ->
     assert len([track for track in reader.tracks() if track.track_type == 17]) == 2  # 17 : sous-titres
     bounds = _block_bounds(config.output)
     assert len(bounds) == 2  # vidéo et sous-titre de référence : la piste vidée n'a aucun bloc
+
+
+def _late_flac_source(tmp_path: Path) -> Path:
+    """Vidéo FFV1 à +500 ms, deux FLAC à +700 ms (retard propre de 200 ms)."""
+    path = tmp_path / "late_flac.mkv"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=s=64x64:r=25:d=3",
+        "-itsoffset", "0.2", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+        "-itsoffset", "0.2", "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "ffv1", "-c:a", "flac",
+        "-output_ts_offset", "0.5", str(path),
+    ], check=True)
+    return path
+
+
+@pytest.mark.parametrize("codec", ["FLAC", "AC3"])
+def test_native_physical_advanced_audio_keeps_its_own_delay_and_codec(tmp_path: Path, codec: str) -> None:
+    """FLAC à +700 ms (vidéo à +500 ms) avancé de 400 ms : son à +300 ms (retard propre gardé, comblé
+    de silence par la réécriture comme toute piste physique, jamais une copie remise à zéro qui le
+    placerait à +100 ms) ; variante AC-3 demandée : sortie en AC-3."""
+    source = _late_flac_source(tmp_path)
+    tracks = tracks_from_file_info(FileInspector().inspect(source), file_id="src")
+    target = [track for track in tracks if track.track_type == "audio"][1]
+    target.orig_codec = target.orig_codec or target.codec
+    target.codec = codec if codec != "FLAC" else target.codec
+    target.sync_calibration = SyncCalibration.linear(-400).to_dict()
+    target.time_shift_ms = -400
+    order = [(0, track.mkv_tid, track.entry_id) for track in tracks]
+    config = RemuxConfig(sources=[SourceInput(source, 0, tracks)], output=tmp_path / "out.mkv", track_order=order,
+                         keep_chapters=False, mux_backend="native", sync_mode="physical", work_dir=tmp_path / "work")
+    state = wait_task(RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe").run(config), timeout=120.0)
+    assert state["failed"] is None, state["failed"]
+    bounds = _block_bounds(config.output)
+    (_v, _vl), (ref_first, ref_last), (_first, last) = [bounds[n] for n in sorted(bounds)]
+    assert ref_first == pytest.approx(700, abs=30), ref_first
+    # Fin du son avancée de 400 ms comme son début : rien de coupé, retard propre conservé.
+    assert last == pytest.approx(ref_last - 400, abs=60), (ref_last, last)
+    codec_ids = [track.codec_id for track in MatroskaReader(config.output).tracks()]
+    assert codec_ids[2] == ("A_AC3" if codec == "AC3" else "A_FLAC"), codec_ids

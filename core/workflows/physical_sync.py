@@ -168,6 +168,12 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
         if track.track_type == "subtitle" and config.sync_subtitles == "none" and not (track.time_shift_ms or calibrated):
             continue
         calibration = SyncCalibration.linear(mirror_offset) if mirror_offset else track_calibration(config, mapped)
+        # Copie décidée sur le recalage demandé : la part d'origine intégrée ne la rend jamais possible
+        # (la copie remettrait le premier paquet à zéro, retard propre de la piste perdu) ; jamais
+        # pour une variante réencodée.
+        copy = (track.track_type == "audio" and not requested_audio_reencode(track)
+                and not calibration.converts_audio and len(calibration.segments) == 1
+                and calibration.segments[0].shift_ms == 0)
         origin_ms = float((restore_origins or {}).get(Path(mapped.source_path), {}).get(track.track_type, 0.0))
         restored_ms = 0
         if origin_ms:
@@ -184,7 +190,6 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
         output = root / f"sync_{index}.mka"
         if track.track_type == "audio":
             codec = normalized_rewrite_codec(track.codec)
-            copy = (not calibration.converts_audio) and len(calibration.segments) == 1 and calibration.segments[0].shift_ms == 0
             if copy:
                 # Les codecs à pré-roll doivent conserver leur CodecDelay.
                 if codec in {"aac", "opus", "mp3"}:

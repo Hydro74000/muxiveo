@@ -180,12 +180,13 @@ def _restore_own_sync_tracks(panel, config, payload) -> None:
 
 
 def _pending_cadence_payload(panel, tracks_by_id, source_index) -> list[dict]:
-    """Analyses de hauteur en cours : piste, référence et synchro relative. Analyse d'une source lancée
-    depuis une piste retirée depuis : rattachée à une piste qui suit encore la source."""
+    """Analyses de hauteur en cours : piste, référence et synchro relative. Analyse d'une source : sa
+    piste mesurée tant qu'elle existe (même détachée depuis : la reprise mesure la même piste) ;
+    retirée depuis, rattachée à une piste qui suit encore la source."""
     payload: list[dict] = []
     for token, (entry_id, reference_id, scope) in panel._cadence_pending.items():
         entry = tracks_by_id.get(entry_id)
-        if not scope.startswith("track:") and (entry is None or not panel._track_inherits_source_sync(entry)):
+        if not scope.startswith("track:") and entry is None:
             # Analyse de la synchro de la source : portée par une piste qui la suit encore.
             entry = panel._source_audio_track(scope)
         reference = tracks_by_id.get(reference_id)

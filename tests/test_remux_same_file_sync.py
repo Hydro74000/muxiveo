@@ -2152,14 +2152,15 @@ def test_studio_shows_review_ranges_when_the_analysis_finds_a_cadence(qt_app, tm
 
 def test_saved_source_analysis_keeps_its_scope_when_its_track_is_realigned(films, monkeypatch):
     """Analyse de B lancée sur VF, VF recalée seule ensuite : sauvegardée et reprise comme l'analyse
-    de la synchro de B (sur une piste qui la suit), jamais comme celle de VF seule."""
+    de la synchro de B, jamais comme celle de VF seule ; la VF reste la piste mesurée (relecture
+    Codex de 05bb636 : une autre piste pourrait trancher autrement)."""
     panel, master, vf, vo, _subtitle, _logs = films
     submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
     panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
     _studio(panel, monkeypatch, vf, vo, 50)
     pending = workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"]
     source_pending = [item for item in pending if item["scope"] == "source"]
-    assert len(source_pending) == 1 and source_pending[0]["track"]["id"] == vo.mkv_tid
+    assert len(source_pending) == 1 and source_pending[0]["track"]["id"] == vf.mkv_tid
     panel._cadence_pending.clear()
     submitted.clear()
     panel._restored_cadence_analyses = [(vf.entry_id, master.entry_id, panel._sync_links["B"].relative, "source")]
@@ -2213,7 +2214,7 @@ def test_studio_reveals_the_cadence_card_when_an_analysis_finds_a_conversion(qt_
 def test_resume_infers_a_source_scope_from_the_saved_reference(films, monkeypatch):
     """Analyse de B (VF face au master) sauvegardée sans portée, VF recalée ensuite sur la VO : la
     référence sauvegardée n'est pas celle du lien de VF, l'analyse reste celle de la synchro de B,
-    reprise sur une piste qui la suit."""
+    mesurée de nouveau sur la VF (résultat porté par une piste qui suit la source)."""
     panel, master, vf, vo, _subtitle, _logs = films
     submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
     panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
@@ -2224,7 +2225,7 @@ def test_resume_infers_a_source_scope_from_the_saved_reference(films, monkeypatc
     panel._restored_cadence_analyses = [(vf.entry_id, master.entry_id, relative, "")]
     panel._resume_cadence_analyses()
     pending = list(panel._cadence_pending.values())
-    assert [(entry_id, scope) for entry_id, _r, scope in pending if scope == "B"] == [(vo.entry_id, "B")]
+    assert [(entry_id, scope) for entry_id, _r, scope in pending if scope == "B"] == [(vf.entry_id, "B")]
     assert not any(scope == f"track:{vf.entry_id}" for _e, reference_id, scope in pending
                    if reference_id == master.entry_id)
 
@@ -2485,4 +2486,30 @@ def test_track_cancelled_during_a_source_analysis_stays_out_of_its_sync(qt_app, 
     assert panel._track_calibration(vo_after).audio_pitch_factor == pytest.approx(25 / (24000 / 1001))
     assert int(vf_after.time_shift_ms or 0) == 0
     assert panel._track_calibration(vf_after).audio_pitch_factor == pytest.approx(1.0)
+    panel.close()
+
+
+# --- Relecture Codex (05bb636). ---
+
+
+def test_cancelled_measured_track_is_measured_again_on_resume(qt_app, tmp_path, monkeypatch):
+    """VO de C mesurée pour la synchro de C, annulée pendant l'analyse (détachée) : la session garde la
+    VO comme piste mesurée, la reprise la mesure de nouveau (jamais la VF), le résultat étant porté
+    par la VF qui suit encore la source."""
+    captured: dict = {}
+
+    def cancel_vo(panel, c_vf, c_vo):
+        panel._on_auto_sync_cancel_requested(c_vo)
+        pending = workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"]
+        captured["saved"] = [(item["scope"], item["track"]["id"]) for item in pending]
+        captured["restored"] = [
+            (c_vo.entry_id, reference_id, panel._cadence_relatives[token], "source")
+            for token, (_e, reference_id, _s) in panel._cadence_pending.items()]
+
+    panel, _c_vf, c_vo, _logs, _measured = _per_track_offsets_source(
+        qt_app, tmp_path, monkeypatch, "atempo", before_result=cancel_vo)
+    assert captured["saved"] == [("source", c_vo.mkv_tid)]
+    panel._restored_cadence_analyses = captured["restored"]
+    panel._resume_cadence_analyses()
+    assert [(entry_id, scope) for entry_id, _r, scope in panel._cadence_pending.values()] == [(c_vo.entry_id, "C")]
     panel.close()

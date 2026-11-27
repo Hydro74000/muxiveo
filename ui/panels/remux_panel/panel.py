@@ -3733,11 +3733,11 @@ class RemuxPanel(QWidget):
                     scope = "source"
             measured = None
             if entry is not None and scope == "source":
-                if self._track_inherits_source_sync(entry):
-                    # Piste mesurée à la sauvegarde : reprise telle quelle (son décalage porte la décision).
-                    measured = entry
-                else:
-                    # Portée enregistrée : la synchro de la source, analysée sur une piste qui la suit.
+                # Piste mesurée à la sauvegarde : mesurée de nouveau telle quelle, même détachée depuis
+                # (une autre piste pourrait trancher autrement) ; le résultat est porté par une piste qui
+                # suit la source (la mesurée si elle la suit encore).
+                measured = entry
+                if not self._track_inherits_source_sync(entry):
                     entry = self._source_audio_track(entry.file_id)
             if entry is not None and reference is not None:
                 self._schedule_cadence_method(entry, reference, relative, measured=measured)
