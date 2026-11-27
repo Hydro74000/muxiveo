@@ -176,10 +176,15 @@ def validate_remux_config(
             selected_track.track_type,
         )
         if calibration is not None and selected_track.track_type in {"audio", "subtitle"}:
-            codec = normalized_rewrite_codec(selected_track.orig_codec or selected_track.codec)
+            # Mode physique : la préparation encode l'audio dans le codec de sortie de la piste (variante
+            # AAC d'un DTS comprise, `physical_sync.preparation_commands`) ; critères identiques ici.
+            physical_audio = config.sync_mode == "physical" and selected_track.track_type == "audio"
+            source_codec = selected_track.codec if physical_audio else (selected_track.orig_codec or selected_track.codec)
+            codec = normalized_rewrite_codec(source_codec)
             object_audio = track_has_object_audio_metadata(
-                codec=selected_track.orig_codec or selected_track.codec, title=selected_track.title,
-                display_info=selected_track.orig_display_info or selected_track.display_info,
+                codec=source_codec, title=selected_track.title,
+                display_info=(selected_track.display_info if physical_audio
+                              else selected_track.orig_display_info or selected_track.display_info),
             )
             audio_codecs = REWRITE_AUDIO_CODECS | ({"flac"} if config.sync_mode == "physical" else set())
             unsupported = (

@@ -1297,8 +1297,14 @@ def _write_variant(
     variant: TrackEntry,
     temporary_tags_by_entry_id: dict[str, set[str]],
     order_priorities: dict[str, int] | None = None,
+    written_fields: set[tuple[str, str]] | None = None,
 ) -> None:
-    """Écritures d'une demande sur sa variante (sélection, drapeau par drapeau, titre, langue, débit, rang)."""
+    """Écritures d'une demande sur sa variante (sélection, drapeau par drapeau, titre, langue, débit, rang,
+    décalage propre de la variante ; `written_fields` reçoit les champs écrits hors règles)."""
+    if "time_shift_ms" in request.action:
+        variant.time_shift_ms = int(request.action.get("time_shift_ms") or 0)
+        if written_fields is not None:
+            written_fields.add((variant.entry_id, "time_shift_ms"))
     order = request.action.get("order_priority")
     if order_priorities is not None and isinstance(order, int) and not isinstance(order, bool) and order > 0:
         order_priorities[variant.entry_id] = order
@@ -1323,7 +1329,8 @@ def _variant_is_fixed_point(requests: list[_VariantRequest], track: TrackEntry) 
     probe = copy.deepcopy(track)
     for request in requests:
         _write_variant(request, probe, {})
-    fields = ("codec", "display_info", "title", "language", "enabled", *(f"flag_{name}" for name in FLAG_NAMES))
+    fields = ("codec", "display_info", "title", "language", "enabled", "time_shift_ms",
+              *(f"flag_{name}" for name in FLAG_NAMES))
     return all(getattr(probe, name) == getattr(track, name) for name in fields)
 
 
@@ -1386,6 +1393,7 @@ def _materialize_variant_requests(
     report: dict[str, Any],
     source_index_by_file_id: Mapping[str, int] | None,
     order_priorities: dict[str, int] | None = None,
+    written_fields: set[tuple[str, str]] | None = None,
 ) -> None:
     """Affecte les demandes de variantes après les règles.
 
@@ -1429,7 +1437,7 @@ def _materialize_variant_requests(
             for position, index in enumerate(clearing[key]):
                 kind = "created_variants" if created and position == 0 else "reused_variants"
                 entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
-                _write_variant(requests[index], variant, temporary_tags_by_entry_id, order_priorities)
+                _write_variant(requests[index], variant, temporary_tags_by_entry_id, order_priorities, written_fields)
     twin_claimed: set[str] = set()  # variantes servies par une jumelle capturée (``twin``) : propres à elle
     for index, request in enumerate(requests):
         if request.clear_title or request.clear_language:
@@ -1464,7 +1472,7 @@ def _materialize_variant_requests(
         if request.twin is not None:
             twin_claimed.add(variant.entry_id)
         entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
-        _write_variant(request, variant, temporary_tags_by_entry_id, order_priorities)
+        _write_variant(request, variant, temporary_tags_by_entry_id, order_priorities, written_fields)
     for _index, kind, summary in sorted(entries, key=lambda entry: entry[0]):
         report[kind].append(summary)
 
@@ -1606,6 +1614,7 @@ def _apply_decision_profile_rules(
                 )
             report["applied_rules"] += 1
 
+    variant_written: set[tuple[str, str]] = set()
     _materialize_variant_requests(
         variant_requests,
         working,
@@ -1613,6 +1622,7 @@ def _apply_decision_profile_rules(
         report=report,
         source_index_by_file_id=source_index_by_file_id,
         order_priorities=order_priorities,
+        written_fields=variant_written,
     )
 
     selection_policy = profile.get("selection_policy", {})
@@ -1644,7 +1654,7 @@ def _apply_decision_profile_rules(
     }
     # Champs écrits par une règle, même à valeur inchangée (piste → champs).
     written: dict[str, list[str]] = {}
-    for entry_id, field in proposed:
+    for entry_id, field in [*proposed, *sorted(variant_written - set(proposed))]:
         written.setdefault(entry_id, []).append(field)
     report["written_fields"] = {entry_id: sorted(fields) for entry_id, fields in written.items()}
     report["valid"] = not report["conflicts"] and not report["ambiguous_matches"]
@@ -1867,6 +1877,9 @@ def remux_config_to_decision_profile(
             ]
             if clear:
                 action["clear"] = clear
+            if int(track.time_shift_ms or 0) != int(source_track.time_shift_ms or 0):
+                # Décalage propre à la variante (recalage, saisie) : rejoué sur la variante créée ou reprise.
+                action["time_shift_ms"] = int(track.time_shift_ms or 0)
             twin_key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
             if bitrate:
                 action["bitrate_kbps"] = bitrate

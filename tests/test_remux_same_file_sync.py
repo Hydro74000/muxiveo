@@ -865,3 +865,64 @@ def test_removed_variant_with_its_own_offset_freezes_its_dependents(films, monke
     vf.time_shift_ms = 50
     panel._track_table.time_shift_edited.emit(vf)
     assert master.time_shift_ms == 400
+
+
+# --- Septième relecture Codex (commit 7f92b36). ---
+
+
+def test_profile_replays_the_own_offset_of_a_variant(qt_app, monkeypatch, tmp_path):
+    """VO recalée (+300), sa variante AAC décalée seule (+120) ; profil capturé, variante retirée,
+    profil réappliqué : la variante recréée sort à +120."""
+    from core.profiles.decision import remux_config_to_decision_profile
+
+    panel = RemuxPanel(AppConfig())
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    vf = _track(1, "audio", file_id="B", title="VF")
+    vo = _track(2, "audio", file_id="B", title="VO", language="eng", orig_language="eng", orig_title="VO")
+    _add_source(panel, tmp_path, "B", [vf, vo])
+    _studio(panel, monkeypatch, vo, vf, 300)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    variant.time_shift_ms = 120
+    panel._track_table.time_shift_edited.emit(variant)
+    profile = remux_config_to_decision_profile(panel.collect_config())
+    variant_actions = [action for rule in profile["rules"] for action in rule["actions"]
+                       if action["type"] == "create_audio_variant"]
+    assert [action.get("time_shift_ms") for action in variant_actions] == [120]
+    panel.remove_audio_track_variant("variant")
+    panel._apply_decision_profile(profile)
+    tracks = panel._track_table.current_tracks()
+    recreated = next(track for track in tracks if track.is_new)
+    vo = next(track for track in tracks if track.entry_id == vo.entry_id)
+    assert (vo.time_shift_ms, recreated.time_shift_ms) == (300, 120)
+    mapped = {item.track.entry_id: item.track.time_shift_ms for item in resolve_mapped_tracks(panel.collect_config())}
+    assert mapped[recreated.entry_id] == 120
+    panel.close()
+
+
+def test_physical_validation_accepts_an_aac_variant_of_a_dts_track(films, monkeypatch):
+    """Variante AAC d'une VO DTS recalée avec une coupure, VO décochée : la préparation encode l'AAC,
+    la validation l'accepte."""
+    from core.workflows.remux import RemuxWorkflow
+
+    class _CutStudio(_Studio):
+        def result_calibration(self):
+            changed = SyncCalibration((SyncSegment(0, 200), SyncSegment(60000, 400)))
+            return changed, 200
+
+    panel, _master, vf, _vo, _subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    dts = TrackEntry(5, "audio", "DTS", "5.1  1509 kbps", "eng", "VO DTS", file_id="B")
+    panel._track_table.append_tracks(_COLOR_A, [dts])
+    panel._find_source("B").tracks.append(dts)
+    panel.add_audio_track_variant(dts, entry_id="variant", codec="aac", bitrate_kbps=384)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    monkeypatch.setattr(studio_module, "SyncStudioDialog", _CutStudio)
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog",
+                        lambda choices, **_k: SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted,
+                                                              selected_entry=lambda: vf))
+    panel._on_sync_studio_requested(variant)
+    assert variant.entry_id in panel._track_sync_links
+    _uncheck(panel, dts)
+    errors = RemuxWorkflow().validate(panel.collect_config())
+    assert not any("incompatible" in error for error in errors), errors

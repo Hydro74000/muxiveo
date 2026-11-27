@@ -430,6 +430,7 @@ def build_decision_profile_schema_v1() -> dict[str, Any]:
             "order_priority": {"type": "integer", "minimum": 1},
             "match_bitrate": {"type": "boolean"},
             "twin": {"type": "integer", "minimum": 1},
+            "time_shift_ms": {"type": "integer", "description": "create_audio_variant : décalage propre de la variante."},
         },
     }
     rule_schema: dict[str, Any] = {
