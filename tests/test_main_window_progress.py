@@ -16,6 +16,7 @@ from core.workflows.encode.progress_tracking import (
     select_multi_encode_label as _select_multi_encode_label,
 )
 from ui.main_window import (
+    _is_libvmaf_noise,
     MainWindow,
     _is_encode_stage_message,
     _parse_sync_rewrite_stage_progress,
@@ -207,7 +208,6 @@ def test_capture_verbose_progress_line_records_wrapped_tool_output(tmp_path) -> 
     dummy._verbose_log_session_stamp = None
     dummy._verbose_log_file_index = 1
     dummy._verbose_log_file_error_reported = False
-    dummy._NOISE_RE = MainWindow._NOISE_RE
     dummy._encode_panel = SimpleNamespace(get_total_frames=lambda: None)
 
     dummy._verbose_log_part_path = MethodType(MainWindow._verbose_log_part_path, dummy)
@@ -243,7 +243,6 @@ def test_capture_verbose_progress_line_records_remux_ffmpeg_progress(tmp_path) -
     dummy._verbose_log_session_stamp = None
     dummy._verbose_log_file_index = 1
     dummy._verbose_log_file_error_reported = False
-    dummy._NOISE_RE = MainWindow._NOISE_RE
 
     dummy._verbose_log_part_path = MethodType(MainWindow._verbose_log_part_path, dummy)
     dummy._verbose_log_session_path = MethodType(MainWindow._verbose_log_session_path, dummy)
@@ -274,7 +273,6 @@ def test_capture_verbose_progress_line_records_all_nvencc_lines(tmp_path) -> Non
     dummy._verbose_log_session_stamp = None
     dummy._verbose_log_file_index = 1
     dummy._verbose_log_file_error_reported = False
-    dummy._NOISE_RE = MainWindow._NOISE_RE
     dummy._encode_panel = SimpleNamespace(get_total_frames=lambda: None)
 
     dummy._verbose_log_part_path = MethodType(MainWindow._verbose_log_part_path, dummy)
@@ -329,7 +327,6 @@ def test_standard_file_logging_skips_verbose_tool_lines(tmp_path) -> None:
     )
     dummy._op_mode = "encode"
     dummy._log_panel = SimpleNamespace(log=MagicMock())
-    dummy._NOISE_RE = MainWindow._NOISE_RE
     dummy._encode_panel = SimpleNamespace(get_total_frames=lambda: None)
 
     dummy._append_verbose_tool_output = MethodType(MainWindow._append_verbose_tool_output, dummy)
@@ -436,7 +433,6 @@ def _debug_routing_dummy(tmp_path) -> SimpleNamespace:
     dummy._op_encode_config = SimpleNamespace(video=SimpleNamespace(codec="nvencc_hevc"))
     dummy._op_stage_label = ""
     dummy._op_encode_progress = EncodeProgressTracker()
-    dummy._NOISE_RE = MainWindow._NOISE_RE
     dummy._capture_verbose_progress_line = MagicMock()
     dummy._handle_encode_internal_progress = MagicMock(return_value=False)
     dummy._stop_prep_progress = MagicMock()
@@ -484,3 +480,49 @@ def test_rife_progress_drives_bar_without_logging(tmp_path) -> None:
     assert dummy._prog_bar.value == 42
     assert "42.4%" in dummy._prog_lbl.text and "25.0 fps" in dummy._prog_lbl.text
     dummy.log_requested.emit.assert_not_called()
+
+
+_LIBVMAF_SPAM = [
+    "son",
+    'problem loadlibvmaf ERROR could not read model from path: "/usr/local/share/model/vmaf_v0.6.1.json"',
+    "ing model file: /usr/local/share/model/vmaf_v0.6.1.json",
+    'problem loading model file: libvmaf ERROR could not read model from path: "/usr/local/share/model/vmaf_v0.6.1.json"',
+    'libvmaf ERROR could not read model from path: "/usr/local/share/model/vmaf_v0.6.1.json"',
+]
+
+
+def test_libvmaf_noise_is_recognized_even_when_torn() -> None:
+    """libx265 avec libvmaf sans modèles : messages et fragments déchirés reconnus, vraies lignes gardées."""
+    assert all(_is_libvmaf_noise(line) for line in _LIBVMAF_SPAM)
+    for kept in ("Encodage vidéo", "x265 [warning]: --vbv-bufsize ignored", "Error while decoding stream #0:1",
+                 "[aac @ 0x5600] Too many bits", ""):
+        assert not _is_libvmaf_noise(kept)
+
+
+def test_parallel_encode_lines_hide_libvmaf_noise() -> None:
+    """Encodages vidéo parallèles (lignes internes) : le bruit libvmaf n'atteint pas le journal."""
+    dummy = SimpleNamespace()
+    dummy._running = True
+    dummy._op_mode = "encode"
+    dummy._op_encode_progress = EncodeProgressTracker(targets={
+        1: {"duration_s": 600.0, "total_frames": None, "source_name": "a.mkv"},
+    })
+    dummy._op_encode_multi_reselect_timer = _FakeTimer()
+    dummy._prog_bar = _FakeProgressBar()
+    dummy._prog_lbl = _FakeLabel()
+    dummy.log_requested = SimpleNamespace(emit=MagicMock())
+    dummy._stop_prep_progress = MagicMock()
+    dummy._op_stage_label = ""
+    dummy._tool_json_depth = 0
+    dummy._multi_encode_progress_parts = MethodType(MainWindow._multi_encode_progress_parts, dummy)
+    dummy._reevaluate_multi_encode_progress = MethodType(MainWindow._reevaluate_multi_encode_progress, dummy)
+    dummy._handle_encode_internal_progress = MethodType(MainWindow._handle_encode_internal_progress, dummy)
+    dummy._format_progress_label = MethodType(MainWindow._format_progress_label, dummy)
+    dummy._is_debug_tool_line = MethodType(MainWindow._is_debug_tool_line, dummy)
+    for line in [*_LIBVMAF_SPAM, "x265 [warning]: --vbv-bufsize ignored"]:
+        wrapped = _ENCODE_INTERNAL_PROGRESS_PREFIX + json.dumps(
+            {"kind": "encode_ffmpeg", "label": "ffmpeg-video-1", "event": "line", "line": line}, ensure_ascii=False)
+        with patch("ui.main_window.time.monotonic", return_value=10.0):
+            assert dummy._handle_encode_internal_progress(wrapped) is True
+    logged = [call.args[1] for call in dummy.log_requested.emit.call_args_list]
+    assert logged == ["[MEDIA] x265 [warning]: --vbv-bufsize ignored"]

@@ -270,6 +270,24 @@ def _is_ffmpeg_info_noise(line: str) -> bool:
     sont laissées passer au LogPanel pour visibilité utilisateur).
     """
     return any(line.startswith(prefix) for prefix in _FFMPEG_INFO_PREFIXES)
+
+
+# libx265 compilé avec libvmaf sans ses modèles (hôte sans libvmaf) : deux messages par image, sans
+# effet sur l'encodage, écrits par plusieurs fils à la fois (lignes déchirées : « son »,
+# « ing model file: … », « problem loadlibvmaf ERROR … »).
+_LIBVMAF_NOISE_RE = re.compile(r"libvmaf|vmaf_v\d|model file:|read model from path|problem load", re.IGNORECASE)
+_LIBVMAF_NOISE_TEMPLATE = (
+    'problem loading model file: libvmaf ERROR could not read model from path: '
+    '"/usr/local/share/model/vmaf_v0.6.1.json"'
+)
+
+
+def _is_libvmaf_noise(line: str) -> bool:
+    """Bruit libvmaf de libx265, fragments de lignes déchirées compris (morceau court du message)."""
+    text = line.strip()
+    if not text:
+        return False
+    return bool(_LIBVMAF_NOISE_RE.search(text)) or (len(text) <= 16 and text in _LIBVMAF_NOISE_TEMPLATE)
 # Hauteur réservée au cadre/titre de fenêtre dans la zone utile de l'écran.
 _WINDOW_FRAME_MARGIN_PX = 40
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
@@ -2400,8 +2418,6 @@ class MainWindow(QMainWindow):
     # Bouton "Exécuter l'opération" — logique hybride remux / encode
     # ------------------------------------------------------------------
 
-    _NOISE_RE = re.compile(r"libvmaf\s+ERROR|could not read model from path")
-
     def _request_operation_refresh(self, *_args) -> None:
         if hasattr(self, "_shutdown"):
             return
@@ -2824,7 +2840,7 @@ class MainWindow(QMainWindow):
         tracker.internal_line(label, raw_line, now)
         self._reevaluate_multi_encode_progress()
 
-        if _is_encode_progress_noise(raw_line):
+        if _is_encode_progress_noise(raw_line) or _is_libvmaf_noise(raw_line):
             return True
         if _is_ffmpeg_info_noise(raw_line):
             return True
@@ -2944,7 +2960,7 @@ class MainWindow(QMainWindow):
                     parts = [f"{pct}%"]
                     self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
-            if self._NOISE_RE.search(line):
+            if _is_libvmaf_noise(line):
                 return
             tracker = self._op_encode_progress
             if line.startswith("$ "):
@@ -3478,7 +3494,7 @@ class MainWindow(QMainWindow):
                 self._append_verbose_tool_output(line)
             return
 
-        if self._NOISE_RE.search(line):
+        if _is_libvmaf_noise(line):
             self._append_verbose_tool_output(line)
             return
         if ffmpeg_progress_seconds(line) is not None:
