@@ -349,6 +349,7 @@ def _choice_panel(tracks):
         _source_files=[SimpleNamespace(id="A", path=Path("a.mkv")), SimpleNamespace(id="B", path=Path("b.mkv"))],
         _track_table=SimpleNamespace(current_tracks=lambda: tracks),
         _audio_sync_family=panel.RemuxPanel._audio_sync_family,
+        _track_inherits_source_sync=lambda _track: True,
     )
 
 

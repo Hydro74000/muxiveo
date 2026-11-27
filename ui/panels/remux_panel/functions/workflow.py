@@ -120,16 +120,46 @@ def _track_key(track, source_index):
     return key
 
 
+def _session_tracks_by_key(config) -> dict:
+    """Pistes du job restauré par clé de session (`_track_key`)."""
+    return {
+        (index, int(track.mkv_tid), track.entry_id if track.is_new else None): track
+        for index, source in enumerate(config.sources)
+        for track in source.tracks
+    }
+
+
+def _session_track(tracks_by_key: dict, key):
+    if not isinstance(key, dict):
+        return None
+    return tracks_by_key.get((int(key["source"]), int(key["id"]), key.get("entry_id")))
+
+
+def _restored_track_sync_links(panel, config, payload) -> dict[str, SyncLink]:
+    """Pistes recalées face à une piste de leur fichier (absentes des sessions antérieures)."""
+    if not isinstance(payload, list):
+        return {}
+    tracks_by_key = _session_tracks_by_key(config)
+    links: dict[str, SyncLink] = {}
+    for item in payload:
+        try:
+            target = _session_track(tracks_by_key, item["track"])
+            reference = _session_track(tracks_by_key, item["reference_track"])
+            relative = SyncCalibration.from_dict(item["calibration"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if target is None or reference is None or target is reference or target.file_id != reference.file_id:
+            continue
+        links[target.entry_id] = SyncLink(target.file_id, reference.entry_id, relative)
+    return links
+
+
 def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
     """Liens de synchro d'une session (absents des sessions antérieures : synchros conservées telles quelles)."""
     if not isinstance(payload, dict):
         return {}
     count = len(panel._source_files)
-    tracks_by_key = {
-        (index, int(track.mkv_tid), track.entry_id if track.is_new else None): track
-        for index, source in enumerate(config.sources)
-        for track in source.tracks
-    }
+    tracks_by_key = _session_tracks_by_key(config)
     links: dict[str, SyncLink] = {}
     for target_index, item in payload.items():
         try:
@@ -137,9 +167,7 @@ def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
             if not (0 <= target < count and 0 <= reference < count) or target == reference:
                 continue
             relative = SyncCalibration.from_dict(item["calibration"])
-            key = item.get("reference_track")
-            track = tracks_by_key.get((int(key["source"]), int(key["id"]), key.get("entry_id"))) \
-                if isinstance(key, dict) else None
+            track = _session_track(tracks_by_key, item.get("reference_track"))
         except (KeyError, TypeError, ValueError):
             continue
         links[panel._source_files[target].id] = SyncLink(
@@ -228,6 +256,7 @@ def _session_job(panel, *, identity_selectors=True):
             {"path": str(source.path), "attachments": "none", "copy_tags": False}
             for source in panel._source_files
         ]
+    tracks_by_id = {track.entry_id: track for track in panel._track_table.current_tracks()}
     job["_muxiveo_session"] = {
         "version": 2,
         "pending_source_indices": pending_indices,
@@ -255,6 +284,18 @@ def _session_job(panel, *, identity_selectors=True):
             for file_id, link in panel._sync_links.items()
             if file_id in source_index and link.reference_file_id in source_index
         },
+        # Piste recalée face à une piste de son fichier : elle suit sa référence.
+        "track_sync_links": [
+            {
+                "track": _track_key(tracks_by_id[entry_id], source_index[link.reference_file_id]),
+                "reference_track": _track_key(tracks_by_id[link.reference_entry_id],
+                                              source_index[link.reference_file_id]),
+                "calibration": link.relative.to_dict(),
+            }
+            for entry_id, link in panel._track_sync_links.items()
+            if entry_id in tracks_by_id and link.reference_entry_id in tracks_by_id
+            and link.reference_file_id in source_index
+        ],
         "auto_sync_tracks": [
             _track_key(track, source_index[track.file_id])
             for track in panel._track_table.current_tracks()
@@ -455,6 +496,11 @@ def restore(panel, config, infos, session=None):
     panel._sync_links = _restored_sync_links(panel, config, session.get("sync_links"))
     panel._own_sync_entry_ids = set()
     panel._adopt_own_sync_calibrations(ordered)
+    panel._track_sync_links = _restored_track_sync_links(panel, config, session.get("track_sync_links"))
+    panel._own_sync_entry_ids.update(
+        track.entry_id for track in ordered
+        if track.entry_id in panel._track_sync_links and panel._track_type_inherits_source_sync(track)
+    )
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):
@@ -479,6 +525,8 @@ def restore(panel, config, infos, session=None):
         panel._chapter_panel.reset_chapters(config.chapter_overrides)
         panel._chapter_panel._modified = True
     panel._sync_entry_calibrations()
+    # Pistes recalées dans leur fichier : synchro égale à celle de leur source non écrite dans le job.
+    panel._follow_track_links(log=False)
     for track in panel._track_table.current_tracks():
         # Le dialogue d'édition doit partir du décalage réellement appliqué, y compris pour
         # détecter une remise à zéro d'une calibration linéaire importée avec un champ à zéro.

@@ -697,7 +697,7 @@ class SyncStudioDialog(QDialog):
 
         ctrl_row.addStretch()
 
-        if self.target_entry.is_subtitle:
+        if self.target_entry.is_subtitle and self.reference_entry is not None:
             self.btn_auto_sub_sync = _secondary_button(translate_text("Synchro sous-titres"), padding_h=10)
             self.btn_auto_sub_sync.setIcon(_bolt_icon())
             self.btn_auto_sub_sync.setToolTip(translate_text("Lancer l'alignement automatique des sous-titres"))
@@ -1421,7 +1421,7 @@ class SyncStudioDialog(QDialog):
         self._executor.submit(_worker)
 
     def _run_auto_subtitle_sync(self) -> None:
-        if self._closing or self._is_sub_sync_running:
+        if self._closing or self._is_sub_sync_running or self.reference_entry is None:
             return
         self._is_sub_sync_running = True
         self._set_auto_sync_buttons_enabled(False)

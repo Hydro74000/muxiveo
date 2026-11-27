@@ -4859,10 +4859,6 @@
     "fra": "Choisir la référence pour les sous-titres",
     "eng": "Choose reference for subtitles"
   },
-  "Choisir la piste de référence (sous-titres ou audio).": {
-    "fra": "Choisir la piste de référence (sous-titres ou audio).",
-    "eng": "Choose reference track (subtitles or audio)."
-  },
   "Aucune piste de référence compatible trouvée pour la synchronisation des sous-titres.": {
     "fra": "Aucune piste de référence compatible trouvée pour la synchronisation des sous-titres.",
     "eng": "No compatible reference track found for subtitle synchronization."
@@ -9359,9 +9355,9 @@
     "fra": "{origin} : décalage {offset} ms appliqué à la piste #{idx} seule (synchro propre).",
     "eng": "{origin}: {offset} ms offset applied to track #{idx} only (own sync)."
   },
-  "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.": {
-    "fra": "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, elle suit de nouveau sa source.",
-    "eng": "New audio sync for track #{idx}: its imported own sync is replaced, it follows its source again."
+  "Nouvelle synchro audio de la piste #{idx} : sa synchro propre est remplacée, elle suit de nouveau sa source.": {
+    "fra": "Nouvelle synchro audio de la piste #{idx} : sa synchro propre est remplacée, elle suit de nouveau sa source.",
+    "eng": "New audio sync for track #{idx}: its own sync is replaced, it follows its source again."
   },
   "Analyse continue sans conclusion (autre langue ou mixages différents) : décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms). Appliquer directement, ou vérifier à l'écoute dans le Synchro Studio avant de valider.": {
     "fra": "Analyse continue sans conclusion (autre langue ou mixages différents) : décalage tiré de {measured}/{total} mesures ponctuelles concordantes (écart {spread} ms). Appliquer directement, ou vérifier à l'écoute dans le Synchro Studio avant de valider.",
@@ -12314,5 +12310,29 @@
   "{n} pistes audio réencodées": {
     "fra": "{n} pistes audio réencodées",
     "eng": "{n} audio tracks re-encoded"
+  },
+  "même fichier": {
+    "fra": "même fichier",
+    "eng": "same file"
+  },
+  "Choisir la piste audio qui servira de référence.": {
+    "fra": "Choisir la piste audio qui servira de référence.",
+    "eng": "Choose the audio track to use as reference."
+  },
+  "La piste de référence #{reference} était recalée à partir de la piste #{target} : son recalage est retiré, le nouveau prime.": {
+    "fra": "La piste de référence #{reference} était recalée à partir de la piste #{target} : son recalage est retiré, le nouveau prime.",
+    "eng": "Reference track #{reference} was realigned from track #{target}: its realignment is removed, the new one prevails."
+  },
+  "Recalage de la piste #{idx} recalculé : elle suit la piste #{reference} ({offset} ms).": {
+    "fra": "Recalage de la piste #{idx} recalculé : elle suit la piste #{reference} ({offset} ms).",
+    "eng": "Realignment of track #{idx} recomputed: it follows track #{reference} ({offset} ms)."
+  },
+  "Décalage de la piste #{idx} saisi à la main : elle ne suit plus sa piste de référence.": {
+    "fra": "Décalage de la piste #{idx} saisi à la main : elle ne suit plus sa piste de référence.",
+    "eng": "Offset of track #{idx} entered manually: it no longer follows its reference track."
+  },
+  "Choisir la piste de sous-titres de référence.": {
+    "fra": "Choisir la piste de sous-titres de référence.",
+    "eng": "Choose the reference subtitle track."
   }
 }

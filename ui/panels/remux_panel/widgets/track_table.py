@@ -727,6 +727,16 @@ class _TrackTable(QTableWidget):
             )
             sync_btn.clicked.connect(lambda _=None, e=entry: self.subtitle_sync_requested.emit(e))
             layout.addWidget(sync_btn)
+        elif entry.track_type in {"audio", "subtitle"} and not (entry.cuts_count > 0 and entry.sync_calibration):
+            # Fichier seul : pas de synchro automatique, recalage dans le Synchro Studio.
+            studio_btn = self._make_action_button(
+                tooltip=translate_text("Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)")
+                if entry.track_type == "subtitle"
+                else translate_text("Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)"),
+                icon=_waveform_icon(_C.ACCENT, 13),
+            )
+            studio_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
+            layout.addWidget(studio_btn)
 
         edit_btn = self._make_action_button(
             tooltip="Éditer les métadonnées de cette piste",
@@ -1264,8 +1274,10 @@ class _TrackTable(QTableWidget):
             if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
                 action_cancel = menu.addAction(translate_text("Annuler la synchro"))
-            elif self._audio_sync_available:
-                action_sync = menu.addAction(translate_text("Synchroniser cette piste de sous-titres…"))
+            else:
+                if self._audio_sync_available:
+                    action_sync = menu.addAction(translate_text("Synchroniser cette piste de sous-titres…"))
+                # Studio toujours proposé : recalage face à une autre piste, du même fichier compris.
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
 
             chosen = menu.exec(self.viewport().mapToGlobal(pos))
@@ -1288,9 +1300,11 @@ class _TrackTable(QTableWidget):
             if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
                 action_cancel = menu.addAction(translate_text("Annuler la synchro"))
-            elif self._audio_sync_available:
-                action_sync = menu.addAction(translate_text("Synchronisation automatique…"))
-                action_deep = menu.addAction(translate_text("Synchronisation approfondie…"))
+            else:
+                if self._audio_sync_available:
+                    action_sync = menu.addAction(translate_text("Synchronisation automatique…"))
+                    action_deep = menu.addAction(translate_text("Synchronisation approfondie…"))
+                # Studio toujours proposé : recalage face à une autre piste, du même fichier compris.
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
 
             if not menu.isEmpty():
