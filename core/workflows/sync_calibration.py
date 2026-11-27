@@ -370,6 +370,12 @@ class SyncCalibration:
 
     def intervals(self, start_ms: float, end_ms: float):
         """Découpe aux jonctions et retire les parties écrasées par un saut négatif."""
+        for a, b, _source in self.source_intervals(start_ms, end_ms):
+            yield a, b
+
+    def source_intervals(self, start_ms: float, end_ms: float):
+        """Comme `intervals`, avec le temps source (ms) où commence chaque morceau de sortie (morceau
+        suivant une coupe, ou début rogné à zéro : une partie de l'événement est déjà écoulée)."""
         ratio = self.cadence_mismatch.time_stretch_ratio if self.cadence_mismatch else 1.0
         scaled_start = start_ms * ratio
         scaled_end = end_ms * ratio
@@ -382,7 +388,7 @@ class SyncCalibration:
             if right > left:
                 a, b = max(0, left + segment.shift_ms), max(0, right + segment.shift_ms)
                 if b > a:
-                    yield a, b
+                    yield a, b, (a - segment.shift_ms) / ratio
             previous_end = max(previous_end, seg_stop + segment.shift_ms)
 
 

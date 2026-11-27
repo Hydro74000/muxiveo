@@ -2571,3 +2571,59 @@ def test_cadence_conversion_stretches_ass_animation_times():
     assert f"\\t(0,{round(500 * ratio)},\\clip(0,0,10,10))" in shifted
     assert f"\\k{round(50 * ratio)}" in shifted
     assert "\\move(0,1080,0,-200,0,40000)" in shift_text(ass, SyncCalibration.linear(250), suffix=".ass")
+
+
+# --- Relecture Codex (e11aa03). ---
+
+
+def test_removed_measured_variant_hands_the_analysis_to_its_stream(qt_app, tmp_path, monkeypatch):
+    """Synchro de B lancée en Auto depuis une variante AAC de la VO (VO mesurée, référence anglaise),
+    variante retirée pendant l'analyse : l'analyse reste sur le flux de la VO (piste d'origine), la
+    session sauvegardée aussi, jamais sur la VF."""
+    panel = RemuxPanel(AppConfig())
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    master = _track(1, "audio", file_id="A", language="eng")
+    vf, vo = _track(1, "audio", file_id="B"), _track(2, "audio", file_id="B", language="eng")
+    _add_source(panel, tmp_path, "A", [master])
+    _add_source(panel, tmp_path, "B", [vf, vo])
+    _submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel.add_audio_track_variant(vo, entry_id="vo_aac", codec="aac", bitrate_kbps=256)
+    panel._on_audio_sync_done("vo_aac", master.entry_id, 300, .95, _pal_auto())
+    assert [entry_id for entry_id, _r, _s in panel._cadence_pending.values()] == ["vo_aac"]
+    panel.remove_audio_track_variant("vo_aac")
+    assert [(entry_id, scope) for entry_id, _r, scope in panel._cadence_pending.values()] == [(vo.entry_id, "B")]
+    pending = workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"]
+    assert [item["track"]["id"] for item in pending] == [vo.mkv_tid]
+    assert all("entry_id" not in item["track"] for item in pending)  # piste d'origine, pas une variante
+    panel.close()
+
+
+def test_cadence_conversion_keeps_ass_karaoke_cumulative():
+    """60 syllabes de 100 ms converties 25 → 23,976 : 6,26 s au total (bornes cumulées étirées), jamais
+    6,00 s par arrondi de chaque syllabe."""
+    import re
+
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.subtitle_sync import shift_text
+
+    ass = ("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+           "Dialogue: 0,0:00:01.00,0:00:07.00,Default,,0,0,0,,{" + "\\k10" * 60 + "}chant\n")
+    pal = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"))
+    durations = [int(value) for value in re.findall(r"\\k(\d+)", shift_text(ass, pal, suffix=".ass"))]
+    assert len(durations) == 60
+    assert sum(durations) == round(600 * pal.cadence_mismatch.time_stretch_ratio)
+
+
+def test_ass_animation_resumes_where_it_was_after_a_cut():
+    """Générique défilant de 10 s coupé à 5 s (+1 s ensuite) : le second morceau reprend le \\move à
+    mi-course (x=300) au lieu de repartir de x=100 ; le premier garde l'animation sur toute la durée de
+    l'événement, sans fondu de sortie (réservé au dernier morceau)."""
+    from core.workflows.subtitle_sync import shift_text
+
+    ass = ("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+           "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\move(100,0,500,0,0,10000)\\fad(0,400)}Défilant\n")
+    cut = SyncCalibration((SyncSegment(0, 0.0), SyncSegment(5000, 1000.0)))
+    events = [line for line in shift_text(ass, cut, suffix=".ass").splitlines() if line.startswith("Dialogue:")]
+    assert len(events) == 2
+    assert "0:00:00.00,0:00:05.00" in events[0] and "\\move(100,0,500,0,0,10000)\\fad(0,0)" in events[0]
+    assert "0:00:06.00,0:00:11.00" in events[1] and "\\move(300,0,500,0,0,5000)\\fad(0,400)" in events[1]

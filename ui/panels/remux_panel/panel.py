@@ -2319,13 +2319,25 @@ class RemuxPanel(QWidget):
         for entry_id, link in list(self._track_sync_links.items()):
             if entry_id not in present or link.reference_entry_id not in present:
                 self._forget_track_link(entry_id)
-        removed_ids = {track.entry_id for track in self._track_table.current_tracks() if track.entry_id not in present}
+        current = self._track_table.current_tracks()
+        removed = {track.entry_id: track for track in current if track.entry_id not in present}
+        removed_ids = set(removed)
         dropped = False
         for token, (analysed_id, reference_id, scope) in list(self._cadence_pending.items()):
             # Analyse d'une source lancée depuis une piste retirée : elle vaut encore pour la source.
             if reference_id in removed_ids or (scope.startswith("track:") and analysed_id in removed_ids):
                 del self._cadence_pending[token]
                 dropped = True
+            elif analysed_id in removed_ids:
+                # Piste mesurée retirée (variante) : rattachée à une piste du même flux, qui se mesure
+                # à l'identique (la reprise de session ne passe pas à un autre doublage).
+                gone = removed[analysed_id]
+                same_stream = sorted(
+                    (track for track in current if track.entry_id in present and track.file_id == gone.file_id
+                     and track.mkv_tid == gone.mkv_tid and track.track_type == gone.track_type),
+                    key=lambda track: track.is_new)
+                if same_stream:
+                    self._cadence_pending[token] = (same_stream[0].entry_id, reference_id, scope)
         if dropped:
             self.ready_changed.emit(self._has_ready_files())
         for file_id, link in list(self._sync_links.items()):

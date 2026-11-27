@@ -31,14 +31,10 @@ _ASS_KARAOKE = re.compile(r"(\\(?:kf|ko|k|K))(\d+(?:\.\d+)?)")
 _ASS_TIMED_TAG = re.compile(r"\\(move|fade|fad|t)\(")
 
 
-def _scaled_number(value: str, ratio: float) -> str:
-    """Temps d'une balise ASS mis à l'échelle (entier conservé entier)."""
-    try:
-        number = float(value)
-    except ValueError:
-        return value
-    scaled = number * ratio
-    return str(round(scaled)) if "." not in value.strip() else f"{scaled:g}"
+def _number(value: float) -> str:
+    """Nombre d'une balise ASS : entier si possible, sinon deux décimales au plus."""
+    rounded = round(value, 2)
+    return str(int(rounded)) if rounded == int(rounded) else f"{rounded:g}"
 
 
 def _split_args(inner: str) -> list[str]:
@@ -58,21 +54,38 @@ def _split_args(inner: str) -> list[str]:
     return args
 
 
-def _is_number(value: str) -> bool:
+def _float(value: str) -> float | None:
     try:
-        float(value)
+        return float(value)
     except ValueError:
-        return False
-    return True
+        return None
 
 
-def _scale_ass_override_times(text: str, ratio: float) -> str:
-    """Conversion de cadence : temps internes des balises (relatifs au début de l'événement, ms ;
-    karaoké en centièmes) étirés comme la chronologie, l'animation reste calée sur l'image.
-    \\move(…, t1, t2), \\t(t1, t2, …), \\fad(entrée, sortie), \\fade(…, t1, t2, t3, t4), \\k."""
-    if abs(ratio - 1.0) < 1e-12 or "{" not in text:
+def _retime_ass_override(text: str, ratio: float, *, elapsed_ms: float = 0.0, duration_ms: float = 0.0,
+                         split: bool = False, last: bool = True) -> str:
+    """Temps internes des balises (relatifs au début de l'événement, ms ; karaoké en centièmes) d'un
+    morceau d'événement : étirés par la conversion de cadence (`ratio`) et, pour un morceau qui ne
+    commence pas au début de l'événement (`elapsed_ms` déjà écoulées, coupe ou début rogné), repris
+    là où l'animation en était. `split` : événement découpé (animations sur toute sa durée rendues
+    explicites, fondu de sortie sur le dernier morceau seulement)."""
+    if (abs(ratio - 1.0) < 1e-12 and not split) or "{" not in text:
         return text
-    text = _ASS_KARAOKE.sub(lambda match: match[1] + _scaled_number(match[2], ratio), text)
+
+    def out(source_ms: float) -> int:
+        """Temps source (depuis le début de l'événement) → temps du morceau, étiré."""
+        return round((source_ms - elapsed_ms) * ratio)
+
+    karaoke_source = [0.0]
+    karaoke_out = [0]
+
+    def karaoke(match: re.Match) -> str:
+        # Bornes cumulées étirées puis différences : aucune dérive d'arrondi syllabe après syllabe.
+        karaoke_source[0] += float(match[2]) * 10
+        end = round(max(0.0, karaoke_source[0] - elapsed_ms) * ratio / 10)
+        value, karaoke_out[0] = end - karaoke_out[0], end
+        return match[1] + str(value)
+
+    text = _ASS_KARAOKE.sub(karaoke, text)
     result: list[str] = []
     position = 0
     while (match := _ASS_TIMED_TAG.search(text, position)) is not None:
@@ -84,22 +97,43 @@ def _scale_ass_override_times(text: str, ratio: float) -> str:
             end += 1
         if depth:
             break  # parenthèse non fermée : balise laissée telle quelle
-        args = _split_args(text[start:end - 1])
-        name = match[1]
-        timed: tuple[int, ...]
-        if name == "move" and len(args) == 6:
-            timed = (4, 5)
-        elif name == "fad" and len(args) == 2:
-            timed = (0, 1)
-        elif name == "fade" and len(args) == 7:
-            timed = (3, 4, 5, 6)
-        elif name == "t" and len(args) >= 3 and _is_number(args[0]) and _is_number(args[1]):
-            timed = (0, 1)
-        else:
-            timed = ()
-        for index in timed:
-            args[index] = _scaled_number(args[index], ratio)
-        result.append(text[position:start] + ",".join(args) + ")")
+        name, args = match[1], _split_args(text[start:end - 1])
+        values = [_float(arg) for arg in args]
+        replacement = None
+        if name == "move" and len(args) in {4, 6} and all(value is not None for value in values):
+            x1, y1, x2, y2 = (float(value or 0.0) for value in values[:4])
+            t1, t2 = (float(values[4] or 0.0), float(values[5] or 0.0)) if len(args) == 6 else (0.0, 0.0)
+            if not t1 and not t2:
+                t1, t2 = 0.0, duration_ms  # mouvement sur tout l'événement
+            if not split:
+                replacement = (f"\\move({','.join(args[:4])},{out(t1)},{out(t2)})" if len(args) == 6
+                               else text[match.start():end])
+            elif elapsed_ms >= t2:
+                replacement = f"\\pos({_number(x2)},{_number(y2)})"
+            elif elapsed_ms > t1:
+                k = (elapsed_ms - t1) / (t2 - t1)
+                replacement = (f"\\move({_number(x1 + (x2 - x1) * k)},{_number(y1 + (y2 - y1) * k)},"
+                               f"{_number(x2)},{_number(y2)},0,{out(t2)})")
+            else:
+                replacement = f"\\move({','.join(args[:4])},{out(t1)},{out(t2)})"
+        elif name == "fad" and len(args) == 2 and None not in values:
+            fade_in, fade_out = float(values[0] or 0.0), float(values[1] or 0.0)
+            fade_in = max(0.0, fade_in - elapsed_ms)
+            fade_out = fade_out if last else 0.0
+            replacement = f"\\fad({round(fade_in * ratio)},{round(fade_out * ratio)})"
+        elif name == "fade" and len(args) == 7 and None not in values:
+            times = ",".join(str(out(float(value or 0.0))) for value in values[3:])
+            replacement = f"\\fade({','.join(args[:3])},{times})"
+        elif name == "t":
+            timed = len(args) >= 3 and values[0] is not None and values[1] is not None
+            if timed or split:
+                t1, t2 = (float(values[0] or 0.0), float(values[1] or 0.0)) if timed else (0.0, duration_ms)
+                rest = args[2:] if timed else args
+                o1, o2 = out(t1), out(t2)
+                if o2 <= 0:
+                    o1, o2 = -1, 0  # transformation déjà achevée (jamais 0,0 : tout l'événement)
+                replacement = f"\\t({o1},{o2},{','.join(rest)})"
+        result.append(text[position:match.start()] + (replacement or text[match.start():end]))
         position = end
     result.append(text[position:])
     return "".join(result)
@@ -125,10 +159,17 @@ def shift_text(text: str, calibration: SyncCalibration, *, suffix=".srt") -> str
                 if len(values) != len(fields):
                     raise ValueError("ASS : événement invalide.")
                 a, b = fields.index("start"), fields.index("end")
-                if "text" in fields:
-                    values[fields.index("text")] = _scale_ass_override_times(values[fields.index("text")], ratio)
-                for start, end in calibration.intervals(parse_time(values[a]), parse_time(values[b])):
+                event_start, event_end = parse_time(values[a]), parse_time(values[b])
+                pieces = list(calibration.source_intervals(event_start, event_end))
+                split = len(pieces) > 1 or (bool(pieces) and pieces[0][2] > event_start + 0.5)
+                text_index = fields.index("text") if "text" in fields else None
+                for piece, (start, end, source_start) in enumerate(pieces):
                     clone = list(values)
+                    if text_index is not None:
+                        clone[text_index] = _retime_ass_override(
+                            values[text_index], ratio, elapsed_ms=max(0.0, source_start - event_start),
+                            duration_ms=event_end - event_start, split=split, last=piece == len(pieces) - 1,
+                        )
                     clone[a], clone[b] = format_time(start, ass=True), format_time(end, ass=True)
                     result.append("Dialogue:" + ",".join(clone))
             else:
