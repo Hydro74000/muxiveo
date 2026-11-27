@@ -3664,6 +3664,10 @@ class RemuxPanel(QWidget):
         for previous, (_entry, _reference, file_id) in list(self._cadence_pending.items()):
             if file_id == scope:
                 del self._cadence_pending[previous]
+        if not alone and measured_entry is not None:
+            # Synchro de la source : la piste effectivement mesurée (son décalage porte la décision,
+            # la reprise de session repart d'elle).
+            entry_id = measured_entry.entry_id
         token = object()
         self._cadence_pending[token] = (entry_id, reference_entry_id, scope)
         # Synchro relative analysée : sauvegardée en session (une synchro détachée ne la redonne pas).
@@ -3793,6 +3797,10 @@ class RemuxPanel(QWidget):
                 self._apply_resolved_cadence_method(scope, reference_entry_id, before, resolved, entry_id)
         finally:
             self.ready_changed.emit(self._has_ready_files())
+            # Analyse retirée des analyses en cours : la session sauvegardée ne doit plus la reprendre,
+            # même si son résultat ne change aucune synchro.
+            from ui.panels.remux_panel.functions.workflow import mark_dirty
+            mark_dirty(self)
 
     def _apply_resolved_cadence_method(self, file_id: str, reference_entry_id: str,
                                        before: SyncCalibration, resolved: SyncCalibration,

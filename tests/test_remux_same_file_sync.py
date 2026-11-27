@@ -2319,20 +2319,23 @@ def test_detached_track_pitch_follows_the_corrected_reference_at_native_speed(fi
 # --- Relecture Codex (0d40ee5). ---
 
 
-def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str):
-    """A ; B calée sur A (PAL, atempo) ; C (VF, VO) calée sur B depuis sa VO au rapport inverse en Auto
-    (vitesses réciproques, hauteur ×1 : simple décalage) ; +500 ms saisi sur la VO pendant l'analyse,
-    qui tranche pour `method`. Retourne (panneau, VF de C, VO de C, journal)."""
+def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str, *, launched_from: str = "vo"):
+    """A ; B (VF, VO) calée sur A (PAL, atempo) ; C (VF, VO) calée sur la VO de B au rapport inverse en
+    Auto (vitesses réciproques, hauteur ×1 : simple décalage), lancée depuis la piste `launched_from`
+    de C (la VO de C est mesurée, langue de la référence) ; +500 ms saisi sur la VO de C pendant
+    l'analyse, qui tranche pour `method`. Retourne (panneau, VF de C, VO de C, journal, décalage)."""
     from dataclasses import replace
 
     from core.workflows.audio_sync_scan import AudioSyncScanner
     from core.workflows.cadence import detect_cadence_from_metadata
 
     panel = RemuxPanel(AppConfig())
-    master, b1 = _track(1, "audio", file_id="A"), _track(1, "audio", file_id="B")
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    master = _track(1, "audio", file_id="A")
+    b_vf, b_vo = _track(1, "audio", file_id="B"), _track(2, "audio", file_id="B", language="eng")
     c_vf, c_vo = _track(1, "audio", file_id="C"), _track(2, "audio", file_id="C", language="eng")
     _add_source(panel, tmp_path, "A", [master])
-    _add_source(panel, tmp_path, "B", [b1])
+    _add_source(panel, tmp_path, "B", [b_vf, b_vo])
     _add_source(panel, tmp_path, "C", [c_vf, c_vo])
     logs: list[tuple[str, str]] = []
     panel.log_message.connect(lambda level, text: logs.append((level, text)))
@@ -2341,25 +2344,33 @@ def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str):
                         lambda _self, _r, _t, calibration, log=None: replace(
                             calibration, cadence_audio_method=method, cadence_method_auto=True))
     pal = detect_cadence_from_metadata("24000/1001", "25/1")
-    panel._on_audio_sync_done(b1.entry_id, master.entry_id, 0, .95,
+    panel._on_audio_sync_done(b_vf.entry_id, master.entry_id, 0, .95,
                               SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method="atempo"))
-    panel._on_audio_sync_done(c_vo.entry_id, b1.entry_id, 300, .95, SyncCalibration(
+    launcher = c_vo if launched_from == "vo" else c_vf
+    panel._on_audio_sync_done(launcher.entry_id, b_vo.entry_id, 300, .95, SyncCalibration(
         (SyncSegment(0, 300.0),), cadence_mismatch=detect_cadence_from_metadata("25/1", "24000/1001"),
         cadence_audio_method="auto"))
     assert [entry_id for entry_id, _r, _s in panel._cadence_pending.values()] == [c_vo.entry_id]
+    pending = workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"]
+    assert [item["track"]["id"] for item in pending] == [c_vo.mkv_tid]
     measured = int(c_vf.time_shift_ms or 0)
     assert measured and measured == int(c_vo.time_shift_ms or 0)
     c_vo.time_shift_ms = 500
     panel._track_table.time_shift_edited.emit(c_vo)
     assert int(c_vf.time_shift_ms or 0) == measured  # décalages par piste
+    panel._autosave_dirty = False
     _run_pending(submitted)
     return panel, c_vf, c_vo, logs, measured
 
 
-def test_per_track_source_decision_keeps_the_offset_of_the_analysed_track(qt_app, tmp_path, monkeypatch):
-    """Conversion tranchée (asetrate) : synchro de nouveau commune à C, au décalage de la piste analysée
-    (la VO, +500 ms saisi), jamais à celui de la VF en tête du tableau ; décalage ignoré signalé."""
-    panel, c_vf, c_vo, logs, measured = _per_track_offsets_source(qt_app, tmp_path, monkeypatch, "asetrate")
+@pytest.mark.parametrize("launched_from", ["vo", "vf"])
+def test_per_track_source_decision_keeps_the_offset_of_the_analysed_track(qt_app, tmp_path, monkeypatch,
+                                                                         launched_from):
+    """Conversion tranchée (asetrate) : synchro de nouveau commune à C, au décalage de la piste mesurée
+    (la VO, +500 ms saisi), même lancée depuis la VF, jamais à celui de la VF en tête du tableau ;
+    décalage ignoré signalé."""
+    panel, c_vf, c_vo, logs, measured = _per_track_offsets_source(qt_app, tmp_path, monkeypatch, "asetrate",
+                                                                  launched_from=launched_from)
     calibration = panel._source_calibration("C")
     assert calibration.audio_pitch_factor == pytest.approx(25 / (24000 / 1001))
     assert round(calibration.segments[0].shift_ms) == 500
@@ -2370,8 +2381,11 @@ def test_per_track_source_decision_keeps_the_offset_of_the_analysed_track(qt_app
 
 def test_per_track_source_decision_without_conversion_keeps_each_offset(qt_app, tmp_path, monkeypatch):
     """Décision sans conversion (atempo, hauteur ×1) : rien de commun à réappliquer, chaque piste garde
-    son décalage."""
+    son décalage ; la session sauvegardée ne garde plus l'analyse."""
     panel, c_vf, c_vo, _logs, measured = _per_track_offsets_source(qt_app, tmp_path, monkeypatch, "atempo")
     assert int(c_vo.time_shift_ms or 0) == 500 and int(c_vf.time_shift_ms or 0) == measured
     assert effective_calibration(panel._source_calibration("C")) is None
+    # Analyse terminée : la session est à sauvegarder, elle ne la reprendra plus.
+    assert panel._autosave_dirty
+    assert workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"] == []
     panel.close()
