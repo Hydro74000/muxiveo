@@ -266,12 +266,20 @@ class SubtitleSyncScanner:
         is_ref_sub: bool = True,
         detect_cuts: bool = True,
         log: Callable[[str], None] | None = None,
+        target_time_scale: float = 1.0,
     ) -> SyncCalibration:
-        """Effectue une analyse complète et retourne un SyncCalibration prêt à l'emploi."""
+        """Effectue une analyse complète et retourne un SyncCalibration prêt à l'emploi.
+
+        `target_time_scale` : allongement des temps de la cible (conversion de cadence appliquée) ;
+        répliques comparées sur les temps convertis, débuts de segments rendus dans le temps de la cible.
+        """
         _log = log or (lambda _: None)
         _log(f"Extraction des sous-titres cibles ({target_source.name} #{target_stream_index})…")
         tgt_cues = self.extract_cues(target_source, target_stream_index)
         _log(f"{len(tgt_cues)} répliques extraites pour la cible.")
+        scale = float(target_time_scale) if target_time_scale and target_time_scale > 0 else 1.0
+        if scale != 1.0:
+            tgt_cues = [SubtitleCue(cue.start_ms * scale, cue.end_ms * scale, cue.text) for cue in tgt_cues]
 
         if is_ref_sub:
             _log(f"Extraction des sous-titres de référence ({reference_source.name} #{reference_stream_index})…")
@@ -329,6 +337,9 @@ class SubtitleSyncScanner:
                     segments.append(SyncSegment(round(cut_pos_ms, 1), float(next_s["shift_ms"])))
                     _log(f"  ✂ Coupure détectée à {SyncCalibration.format_timestamp(cut_pos_ms)} -> saut de {diff:+.1f} ms")
 
+            if scale != 1.0:
+                # Coupures repérées sur les temps convertis : début de segment dans le temps de la cible.
+                segments = [SyncSegment(round(segment.start_ms / scale, 1), segment.shift_ms) for segment in segments]
             return SyncCalibration(tuple(segments), confidence)
 
         else:

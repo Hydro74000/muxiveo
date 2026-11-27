@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from fractions import Fraction
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -87,6 +88,16 @@ def _parse_timestamp_ms(text: str) -> float | None:
     for value in values:
         seconds = seconds * 60 + value
     return seconds * 1000.0
+
+
+def _same_ratio(first: str | None, second: str | None) -> bool:
+    """Rapports de cadence égaux, comparés comme fractions (« 1001/960 » = « 25025/24000 »)."""
+    if not first or not second:
+        return False
+    try:
+        return Fraction(first) == Fraction(second)
+    except (ValueError, ZeroDivisionError):
+        return first == second
 
 
 def _pitch_method(calibration: SyncCalibration) -> str | None:
@@ -190,7 +201,7 @@ class SyncStudioDialog(QDialog):
         # conversion déjà choisie parmi eux : liste conservée, positionnée sur elle.
         current_ratio = self._cadence_available.speed_ratio if self._cadence_available is not None else None
         self._cadence_choices = tuple(cadence_choices) if (
-            current_ratio is None or any(choice.speed_ratio == current_ratio for choice in cadence_choices)
+            current_ratio is None or any(_same_ratio(choice.speed_ratio, current_ratio) for choice in cadence_choices)
         ) else ()
         if self._cadence_choices and self._cadence_available is None:
             self._cadence_available = self._cadence_choices[0]
@@ -295,7 +306,7 @@ class SyncStudioDialog(QDialog):
             self.cadence_combo = QComboBox()
             for choice in self._cadence_choices:
                 self.cadence_combo.addItem(choice.description, choice)
-                if choice.speed_ratio == mismatch.speed_ratio:
+                if _same_ratio(choice.speed_ratio, mismatch.speed_ratio):
                     self.cadence_combo.setCurrentIndex(self.cadence_combo.count() - 1)
             self.cadence_combo.setToolTip(translate_text(
                 "Même vidéo pour les deux pistes : choisir la cadence d'origine de la piste (master PAL…)."
@@ -363,7 +374,7 @@ class SyncStudioDialog(QDialog):
         if hasattr(self, "cadence_combo") and self._cadence_available is not None:
             # Liste du rapport alignée sur la conversion retenue (réinitialisation, synchro automatique).
             index = next((i for i, choice in enumerate(self._cadence_choices)
-                          if choice.speed_ratio == self._cadence_available.speed_ratio), -1)
+                          if _same_ratio(choice.speed_ratio, self._cadence_available.speed_ratio)), -1)
             if index >= 0:
                 self.cadence_combo.blockSignals(True)
                 self.cadence_combo.setCurrentIndex(index)
@@ -1484,6 +1495,7 @@ class SyncStudioDialog(QDialog):
                 is_ref_sub = self.reference_entry is not None and self.reference_entry.is_subtitle
                 ref_src = self.reference_source_path or self.target_source_path
                 ref_idx = self.reference_stream_index if self.reference_stream_index is not None else 0
+                cadence = self.current_calibration.active_cadence
                 cal = scanner.scan(
                     reference_source=ref_src,
                     reference_stream_index=ref_idx,
@@ -1491,7 +1503,15 @@ class SyncStudioDialog(QDialog):
                     target_stream_index=self.target_stream_index,
                     is_ref_sub=is_ref_sub,
                     detect_cuts=True,
+                    # Conversion de cadence retenue : répliques comparées sur les temps convertis.
+                    target_time_scale=cadence.time_stretch_ratio if cadence is not None else 1.0,
                 )
+                if cadence is not None:
+                    current = self.current_calibration
+                    cal = replace(cal, cadence_mismatch=current.cadence_mismatch,
+                                  cadence_audio_method=current.cadence_audio_method,
+                                  cadence_method_auto=current.cadence_method_auto,
+                                  cadence_pitch_analysis=current.cadence_pitch_analysis)
                 if not self._closing:
                     self._auto_sub_sync_ready.emit(cal)
             except Exception as exc:

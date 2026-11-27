@@ -1769,3 +1769,106 @@ def test_variant_of_a_detached_track_is_analysed_against_its_source_reference(fi
     _run_pending(submitted)
     variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
     assert panel._track_calibration(variant).cadence_audio_method == "asetrate"
+
+
+# --- Relecture Codex (commits 5e8f732, e07857a). ---
+
+
+def test_ffmpeg_command_reencodes_a_same_codec_variant_at_its_bitrate(films):
+    """Variante E-AC-3 384 kb/s d'une E-AC-3 768 kb/s : réencodée au débit demandé, jamais copiée ;
+    une variante copie et une piste déjà réécrite par la synchro physique restent copiées."""
+    from dataclasses import replace
+
+    from core.workflows.remux_command import _audio_variant_codec_args
+
+    panel, _master, _vf, vo, _subtitle, _logs = films
+    vo.display_info = vo.orig_display_info = "5.1  768 kbps"
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="eac3", bitrate_kbps=384)
+    panel.add_audio_track_variant(vo, entry_id="copy", codec="copy")
+    mapped = {item.track.entry_id: item for item in resolve_mapped_tracks(panel.collect_config())}
+    args = _audio_variant_codec_args(mapped["variant"])
+    assert any(arg.startswith("-c:a:") for arg in args) and "384k" in args
+    assert _audio_variant_codec_args(mapped["copy"]) == []
+    rewritten = replace(mapped["variant"], track=replace(mapped["variant"].track, is_new=False,
+                                                          orig_codec=mapped["variant"].track.codec,
+                                                          orig_display_info=mapped["variant"].track.display_info))
+    assert _audio_variant_codec_args(rewritten) == []
+
+
+def test_studio_matches_a_reciprocal_ratio_written_differently(qt_app, tmp_path, monkeypatch):
+    """Conversion 23,976 → 25 portée par la calibration sous la forme « 1001/960 » : la liste la
+    reconnaît (25025/24000)."""
+    from core.workflows.cadence import manual_cadence_choices
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    vo = TrackEntry(2, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="B")
+    vf = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="B")
+    choices = manual_cadence_choices()
+    reciprocal = choices[0].inverse()
+    assert reciprocal.speed_ratio != choices[2].speed_ratio
+    calibration = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=reciprocal, cadence_audio_method="asetrate")
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=vo, target_source_path=tmp_path / "b.mkv", target_stream_index=2,
+        reference_entry=vf, reference_source_path=tmp_path / "b.mkv", reference_stream_index=1,
+        calibration=calibration, cadence_choices=choices,
+    )
+    assert dialog.cadence_combo.currentIndex() == 2
+    dialog.close()
+
+
+def test_subtitle_scan_compares_converted_times():
+    """Cible à 25 i/s non convertie : comparée sur les temps convertis, le décalage est retrouvé et
+    les coupures rendues dans le temps de la cible."""
+    from core.workflows.cadence import manual_cadence_choices
+    from core.workflows.subtitle_sync_scan import SubtitleCue, SubtitleSyncScanner
+
+    import random
+
+    scale = manual_cadence_choices()[0].time_stretch_ratio
+    rng = random.Random(7)
+    reference, start = [], 10_000.0
+    for i in range(400):
+        duration = rng.uniform(900.0, 3_500.0)
+        reference.append(SubtitleCue(start, start + duration, f"r{i}"))
+        start += duration + rng.uniform(300.0, 9_000.0)
+    target = [SubtitleCue((cue.start_ms - 800.0) / scale, (cue.end_ms - 800.0) / scale, cue.text) for cue in reference]
+    scanner = SubtitleSyncScanner()
+    scanner.extract_cues = lambda path, index=None: reference if "ref" in str(path) else target
+    calibration = scanner.scan(Path("ref.srt"), 0, Path("tgt.srt"), 0, target_time_scale=scale)
+    assert abs(calibration.segments[0].shift_ms - 800.0) <= 40.0
+
+
+def test_studio_subtitle_alignment_keeps_the_chosen_cadence(qt_app, tmp_path, monkeypatch):
+    from typing import Any, cast
+
+    from core.workflows.cadence import manual_cadence_choices
+    from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    scales: list = []
+
+    def scan(_self, *_a, target_time_scale=1.0, **_k):
+        scales.append(target_time_scale)
+        return SyncCalibration.linear(150)
+
+    monkeypatch.setattr(SubtitleSyncScanner, "scan", scan)
+    sub = TrackEntry(3, "subtitle", "SubRip", "", "fre", "VF", file_id="B")
+    ref = TrackEntry(4, "subtitle", "SubRip", "", "eng", "VO", file_id="B")
+    choices = manual_cadence_choices()
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=sub, target_source_path=tmp_path / "b.mkv", target_stream_index=3,
+        reference_entry=ref, reference_source_path=tmp_path / "b.mkv", reference_stream_index=4,
+        cadence_choices=choices,
+    )
+    dialog.cadence_combo.setCurrentIndex(1)
+    dialog.cadence_check.setChecked(True)
+    dialog._executor = cast(Any, SimpleNamespace(submit=lambda callback: callback(), shutdown=lambda **_k: None))
+    dialog._run_auto_subtitle_sync()
+    from PySide6.QtCore import QCoreApplication
+    QCoreApplication.processEvents()
+    assert scales == [pytest.approx(choices[1].time_stretch_ratio)]
+    assert dialog.current_calibration.cadence_mismatch == choices[1]
+    assert dialog.current_calibration.segments[0].shift_ms == 150
+    dialog.close()
