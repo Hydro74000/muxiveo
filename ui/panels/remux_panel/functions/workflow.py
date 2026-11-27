@@ -179,6 +179,27 @@ def _restore_own_sync_tracks(panel, config, payload) -> None:
                                       else SyncCalibration.linear(int(track.time_shift_ms or 0)).to_dict())
 
 
+def _pending_cadence_payload(panel, tracks_by_id, source_index) -> list[dict]:
+    """Analyses de hauteur en cours : piste, référence et synchro relative. Analyse d'une source lancée
+    depuis une piste retirée depuis : rattachée à une piste qui suit encore la source."""
+    payload: list[dict] = []
+    for token, (entry_id, reference_id, scope) in panel._cadence_pending.items():
+        entry = tracks_by_id.get(entry_id)
+        if entry is None and not scope.startswith("track:"):
+            entry = panel._source_audio_track(scope)
+        reference = tracks_by_id.get(reference_id)
+        relative = panel._cadence_relatives.get(token)
+        if (entry is None or reference is None or relative is None
+                or entry.file_id not in source_index or reference.file_id not in source_index):
+            continue
+        payload.append({
+            "track": _track_key(entry, source_index[entry.file_id]),
+            "reference_track": _track_key(reference, source_index[reference.file_id]),
+            "calibration": relative.to_dict(),
+        })
+    return payload
+
+
 def _restored_cadence_analyses(config, payload) -> list[tuple[str, str, SyncCalibration]]:
     """Analyses de hauteur en cours à la sauvegarde : (piste, référence, synchro relative)."""
     if not isinstance(payload, list):
@@ -395,17 +416,7 @@ def _session_job(panel, *, identity_selectors=True):
             and tracks_by_id[reference_id].file_id in source_index
         },
         # Analyses de hauteur en cours : reprises à la restauration sur leur synchro relative.
-        "pending_cadence_analyses": [
-            {
-                "track": _track_key(tracks_by_id[entry_id], source_index[tracks_by_id[entry_id].file_id]),
-                "reference_track": _track_key(tracks_by_id[reference_id],
-                                              source_index[tracks_by_id[reference_id].file_id]),
-                "calibration": panel._cadence_relatives[token].to_dict(),
-            }
-            for token, (entry_id, reference_id, _scope) in panel._cadence_pending.items()
-            if token in panel._cadence_relatives and entry_id in tracks_by_id and reference_id in tracks_by_id
-            and tracks_by_id[entry_id].file_id in source_index and tracks_by_id[reference_id].file_id in source_index
-        ],
+        "pending_cadence_analyses": _pending_cadence_payload(panel, tracks_by_id, source_index),
         "own_sync_tracks": [
             _track_key(track, source_index[track.file_id])
             for track in panel._track_table.current_tracks()

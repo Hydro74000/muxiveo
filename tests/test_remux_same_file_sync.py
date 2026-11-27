@@ -2080,3 +2080,45 @@ def test_resumed_session_relaunches_an_analysis_whose_ratios_cancel(qt_app, tmp_
     assert resolved.cadence_audio_method != "auto" and resolved.audio_pitch_factor == pytest.approx(1.0)
     assert not panel.cadence_resolution_pending()
     panel.close()
+
+
+# --- Relecture Codex (3514c3f). ---
+
+
+def test_pending_source_analysis_saved_after_its_variant_is_removed(films, monkeypatch):
+    """Synchro de B lancée depuis une variante, décalage saisi, variante retirée, session sauvegardée :
+    l'analyse en cours est sauvegardée sur une piste qui suit encore B."""
+    panel, master, vf, _vo, _subtitle, _logs = films
+    panel.add_audio_track_variant(vf, entry_id="variant", codec="aac", bitrate_kbps=192)
+    _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done("variant", master.entry_id, 300, .95, _pal_auto())
+    vf.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vf)
+    panel.remove_audio_track_variant("variant")
+    assert panel.cadence_resolution_pending()
+    pending = workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"]
+    assert len(pending) == 1 and pending[0]["track"]["id"] == vf.mkv_tid
+
+
+def test_studio_discards_an_audio_result_after_the_conversion_was_unchecked(qt_app, tmp_path, monkeypatch):
+    from core.workflows.cadence import manual_cadence_choices
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    vf = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="B")
+    vo = TrackEntry(2, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="B")
+    choices = manual_cadence_choices()
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=vf, target_source_path=tmp_path / "b.mkv", target_stream_index=1,
+        reference_entry=vo, reference_source_path=tmp_path / "b.mkv", reference_stream_index=2,
+        cadence_choices=choices,
+    )
+    dialog.cadence_check.setChecked(True)
+    dialog._executor = SimpleNamespace(submit=lambda *_a, **_k: None, shutdown=lambda **_k: None)
+    dialog._run_auto_audio_sync(deep=True)
+    dialog.cadence_check.setChecked(False)
+    measured = SyncCalibration((SyncSegment(0, 150.0),), cadence_mismatch=choices[0], cadence_audio_method="asetrate")
+    dialog._on_auto_sub_sync_ready(measured)
+    assert dialog.current_calibration.cadence_mismatch is None
+    assert dialog.current_calibration.segments[0].shift_ms == 0
+    dialog.close()

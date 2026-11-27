@@ -22,12 +22,14 @@ pytestmark = [
 ]
 
 
-def _late_source(path: Path) -> Path:
-    """Vidéo FFV1 + audio E-AC-3, toutes deux démarrant à 0,5 s."""
+def _late_source(path: Path, *, audio_delay_ms: int = 0) -> Path:
+    """Vidéo FFV1 + audio E-AC-3 démarrant à 0,5 s ; l'audio commence `audio_delay_ms` plus tard."""
     subprocess.run([
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-f", "lavfi", "-i", "color=s=64x64:r=25:d=3",
+        "-itsoffset", f"{audio_delay_ms / 1000:.3f}",
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+        "-map", "0:v", "-map", "1:a",
         "-c:v", "ffv1", "-c:a", "eac3", "-b:a", "384k", "-output_ts_offset", "0.5", str(path),
     ], check=True)
     return path
@@ -42,9 +44,11 @@ def _first_timestamps(path: Path) -> dict[int, int]:
     return first
 
 
+@pytest.mark.parametrize("audio_delay_ms", [0, 300])
 @pytest.mark.parametrize("variant_codec", ["copy", "AAC"])
-def test_native_variant_starts_with_its_original_track(tmp_path: Path, variant_codec: str) -> None:
-    source = _late_source(tmp_path / "late.mkv")
+def test_native_variant_starts_with_its_original_track(tmp_path: Path, variant_codec: str, audio_delay_ms: int) -> None:
+    """Vidéo à 500 ms, audio à 500 ou 800 ms : la variante démarre avec sa piste d'origine."""
+    source = _late_source(tmp_path / "late.mkv", audio_delay_ms=audio_delay_ms)
     tracks = tracks_from_file_info(FileInspector().inspect(source), file_id="src")
     audio = next(track for track in tracks if track.track_type == "audio")
     variant = clone_track_entry(audio, entry_id="variant")
@@ -59,5 +63,5 @@ def test_native_variant_starts_with_its_original_track(tmp_path: Path, variant_c
     first = _first_timestamps(config.output)
     numbers = sorted(first)
     original, copied = first[numbers[1]], first[numbers[2]]
-    assert original >= 400
+    assert original >= 400 + audio_delay_ms
     assert abs(copied - original) <= 40, first

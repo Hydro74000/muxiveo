@@ -510,10 +510,18 @@ def build_audio_variant_command(
     stream_index: int,
     target: Path,
     ffmpeg_bin: str,
+    *,
+    copyts: bool = True,
 ) -> list[str]:
-    """Commande ffmpeg de matérialisation d'une variante audio isolée."""
+    """Commande ffmpeg de matérialisation d'une variante audio isolée.
+
+    `copyts` : horodatages de la source conservés (la variante démarre comme sa piste d'origine,
+    même quand l'audio ne démarre pas avec la vidéo) ; faux pour une piste réécrite par la synchro,
+    replacée ensuite d'après les origines.
+    """
     command = [
         ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        *(["-copyts"] if copyts else []),
         "-i", str(source_path), "-map", f"0:{stream_index}",
         "-c:a", variant.encoder,
     ]

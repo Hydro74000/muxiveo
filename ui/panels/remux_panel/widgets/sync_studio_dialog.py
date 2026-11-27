@@ -435,6 +435,13 @@ class SyncStudioDialog(QDialog):
         self.calibration_changed.emit(self.current_calibration)
         self._sync_cadence_controls()
 
+    def _cadence_settings(self) -> tuple[str, str]:
+        """Réglages de conversion qui conditionnent une analyse : rapport (vide sans conversion) et
+        méthode demandée."""
+        cadence = self.current_calibration.active_cadence
+        ratio = str(Fraction(cadence.speed_ratio)) if cadence is not None and cadence.speed_ratio else ""
+        return ratio, self.current_calibration.cadence_method_requested if cadence is not None else ""
+
     def _on_cadence_choice_changed(self, index: int) -> None:
         """Rapport de cadence choisi à la main : appliqué aussitôt si la conversion est cochée."""
         if not 0 <= index < len(self._cadence_choices):
@@ -1447,6 +1454,8 @@ class SyncStudioDialog(QDialog):
             return
         self._is_sub_sync_running = True
         self._set_auto_sync_buttons_enabled(False)
+        # Conversion au lancement : un résultat obtenu avec d'autres réglages est écarté.
+        self._auto_sync_launch = self._cadence_settings()
         text = (
             translate_text("Synchronisation approfondie en cours…")
             if deep
@@ -1492,6 +1501,7 @@ class SyncStudioDialog(QDialog):
         cadence = self.current_calibration.active_cadence
         # Marqueur propre à cet alignement (le gestionnaire du résultat sert aussi la synchro audio).
         self._sub_sync_launch = (cadence,)
+        self._auto_sync_launch = self._cadence_settings()
         scale = cadence.time_stretch_ratio if cadence is not None else 1.0
 
         def _worker() -> None:
@@ -1526,17 +1536,14 @@ class SyncStudioDialog(QDialog):
         self._is_sub_sync_running = False
         self._set_auto_sync_buttons_enabled(True)
         launch = self.__dict__.pop("_sub_sync_launch", None)
+        settings = self.__dict__.pop("_auto_sync_launch", None)
         current_cadence = self.current_calibration.active_cadence
-        if launch is not None:
-            # Alignement des sous-titres : rapport de cadence inchangé depuis son lancement.
-            launched = launch[0]
-            if (launched is None) != (current_cadence is None) or (
-                    launched is not None and current_cadence is not None
-                    and not _same_ratio(launched.speed_ratio, current_cadence.speed_ratio)):
-                self.listen_status.setText(translate_text(
-                    "Conversion de cadence changée pendant l'alignement : résultat écarté, relancer « Synchro sous-titres »."
-                ))
-                return
+        if settings is not None and settings != self._cadence_settings():
+            # Conversion cochée, décochée, rapport ou méthode changés pendant l'analyse : résultat écarté.
+            self.listen_status.setText(translate_text(
+                "Conversion de cadence changée pendant l'analyse : résultat écarté, relancer la synchro."
+            ))
+            return
         if launch is not None and current_cadence is not None:
             # Mesuré sur les temps convertis : la conversion retenue est conservée.
             current = self.current_calibration
@@ -1586,7 +1593,10 @@ class SyncStudioDialog(QDialog):
         """Synchro cohérente proposée : chargée comme un résultat, zones à relire affichées."""
         if getattr(self, "_closing", False):
             return
+        settings = self.__dict__.get("_auto_sync_launch")
         self._on_auto_sub_sync_ready(cal)
+        if settings is not None and settings != self._cadence_settings():
+            return
         self._set_review_ranges(ranges_ms)
         self._goto_review_range(0)
 
