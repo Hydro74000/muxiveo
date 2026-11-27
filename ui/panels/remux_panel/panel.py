@@ -2316,32 +2316,52 @@ class RemuxPanel(QWidget):
             and not same_applied_sync(self._track_calibration(track),
                                       self._source_calibration(track.file_id).for_track(track.track_type))
         )
-        for entry_id, link in list(self._track_sync_links.items()):
-            if entry_id not in present or link.reference_entry_id not in present:
-                self._forget_track_link(entry_id)
         current = self._track_table.current_tracks()
         removed = {track.entry_id: track for track in current if track.entry_id not in present}
         removed_ids = set(removed)
+
+        def same_stream(gone: TrackEntry) -> list[TrackEntry]:
+            """Pistes restantes du même flux que `gone` (piste d'origine d'abord)."""
+            return sorted((track for track in current if track.entry_id in present and track.file_id == gone.file_id
+                           and track.mkv_tid == gone.mkv_tid and track.track_type == gone.track_type),
+                          key=lambda track: track.is_new)
+
+        # Référence retirée (variante) : une piste du même flux à la même position la remplace pour la
+        # synchro des sources, les analyses en cours et les dernières références (le même son au même
+        # endroit). Une piste recalée sur elle dans son fichier reste figée.
+        replacements = {
+            entry_id: candidates[0].entry_id for entry_id, gone in removed.items()
+            if (candidates := [track for track in same_stream(gone)
+                               if same_applied_sync(self._track_calibration(track), self._track_calibration(gone))])
+        }
+        for entry_id, link in list(self._track_sync_links.items()):
+            if entry_id not in present or link.reference_entry_id not in present:
+                self._forget_track_link(entry_id)
+        for references in (self._source_reference_ids, self._last_reference_ids):
+            for key, reference_id in list(references.items()):
+                if reference_id in replacements:
+                    references[key] = replacements[reference_id]
         dropped = False
         for token, (analysed_id, reference_id, scope) in list(self._cadence_pending.items()):
+            if not scope.startswith("track:"):
+                reference_id = replacements.get(reference_id, reference_id)
             # Analyse d'une source lancée depuis une piste retirée : elle vaut encore pour la source.
             if reference_id in removed_ids or (scope.startswith("track:") and analysed_id in removed_ids):
                 del self._cadence_pending[token]
                 dropped = True
-            elif analysed_id in removed_ids:
+                continue
+            if analysed_id in removed_ids:
                 # Piste mesurée retirée (variante) : rattachée à une piste du même flux, qui se mesure
                 # à l'identique (la reprise de session ne passe pas à un autre doublage).
-                gone = removed[analysed_id]
-                same_stream = sorted(
-                    (track for track in current if track.entry_id in present and track.file_id == gone.file_id
-                     and track.mkv_tid == gone.mkv_tid and track.track_type == gone.track_type),
-                    key=lambda track: track.is_new)
-                if same_stream:
-                    self._cadence_pending[token] = (same_stream[0].entry_id, reference_id, scope)
+                stream = same_stream(removed[analysed_id])
+                analysed_id = stream[0].entry_id if stream else analysed_id
+            self._cadence_pending[token] = (analysed_id, reference_id, scope)
         if dropped:
             self.ready_changed.emit(self._has_ready_files())
         for file_id, link in list(self._sync_links.items()):
-            if link.reference_entry_id in removed_own:
+            if link.reference_entry_id in replacements:
+                self._sync_links[file_id] = replace(link, reference_entry_id=replacements[link.reference_entry_id])
+            elif link.reference_entry_id in removed_own:
                 del self._sync_links[file_id]
                 self.log_message.emit("INFO", translate_text(
                     "Piste de référence de « {source} » retirée : sa synchro est conservée, "
@@ -3808,7 +3828,7 @@ class RemuxPanel(QWidget):
             elif entry_ids is None or entry_id in entry_ids or reference_entry_id in entry_ids:
                 del self._cadence_pending[token]
 
-    def _on_cadence_method_resolved(self, entry_id: str, reference_entry_id: str,
+    def _on_cadence_method_resolved(self, _entry_id: str, _reference_entry_id: str,
                                     before: SyncCalibration, resolved: SyncCalibration,
                                     token: object) -> None:
         # Jeton retiré (piste ou référence retirée, synchros annulées, analyse remplacée) : périmé.
@@ -3818,10 +3838,12 @@ class RemuxPanel(QWidget):
         scope = pending[2]
         try:
             # Portée enregistrée au lancement : synchro propre de la piste, ou synchro de sa source.
+            # Pistes en cours (rattachées au même flux si une variante a été retirée), pas celles du lancement.
+            analysed_id, reference_id = pending[0], pending[1]
             if scope.startswith("track:"):
-                self._apply_resolved_track_cadence(entry_id, reference_entry_id, before, resolved)
+                self._apply_resolved_track_cadence(analysed_id, reference_id, before, resolved)
             else:
-                self._apply_resolved_cadence_method(scope, reference_entry_id, before, resolved, entry_id)
+                self._apply_resolved_cadence_method(scope, reference_id, before, resolved, analysed_id)
         finally:
             self.ready_changed.emit(self._has_ready_files())
             # Analyse retirée des analyses en cours : la session sauvegardée ne doit plus la reprendre,

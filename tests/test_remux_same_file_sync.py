@@ -2321,7 +2321,7 @@ def test_detached_track_pitch_follows_the_corrected_reference_at_native_speed(fi
 
 
 def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str, *, launched_from: str = "vo",
-                              before_result=None):
+                              before_result=None, from_variant: bool = False):
     """A ; B (VF, VO) calée sur A (PAL, atempo) ; C (VF, VO) calée sur la VO de B au rapport inverse en
     Auto (vitesses réciproques, hauteur ×1 : simple décalage), lancée depuis la piste `launched_from`
     de C (la VO de C est mesurée, langue de la référence) ; +500 ms saisi sur la VO de C pendant
@@ -2348,11 +2348,16 @@ def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str, *, lau
     pal = detect_cadence_from_metadata("24000/1001", "25/1")
     panel._on_audio_sync_done(b_vf.entry_id, master.entry_id, 0, .95,
                               SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method="atempo"))
-    launcher = c_vo if launched_from == "vo" else c_vf
-    panel._on_audio_sync_done(launcher.entry_id, b_vo.entry_id, 300, .95, SyncCalibration(
+    launcher_id = c_vo.entry_id if launched_from == "vo" else c_vf.entry_id
+    if from_variant:
+        # Lancée depuis une variante AAC de la VO de C (mesurée elle-même, même langue).
+        panel.add_audio_track_variant(c_vo, entry_id="vo_aac", codec="aac", bitrate_kbps=256)
+        launcher_id = "vo_aac"
+    panel._on_audio_sync_done(launcher_id, b_vo.entry_id, 300, .95, SyncCalibration(
         (SyncSegment(0, 300.0),), cadence_mismatch=detect_cadence_from_metadata("25/1", "24000/1001"),
         cadence_audio_method="auto"))
-    assert [entry_id for entry_id, _r, _s in panel._cadence_pending.values()] == [c_vo.entry_id]
+    measured_id = "vo_aac" if from_variant else c_vo.entry_id
+    assert [entry_id for entry_id, _r, _s in panel._cadence_pending.values()] == [measured_id]
     pending = workflow_functions._session_job(panel)["_muxiveo_session"]["pending_cadence_analyses"]
     assert [item["track"]["id"] for item in pending] == [c_vo.mkv_tid]
     measured = int(c_vf.time_shift_ms or 0)
@@ -2627,3 +2632,69 @@ def test_ass_animation_resumes_where_it_was_after_a_cut():
     assert len(events) == 2
     assert "0:00:00.00,0:00:05.00" in events[0] and "\\move(100,0,500,0,0,10000)\\fad(0,0)" in events[0]
     assert "0:00:06.00,0:00:11.00" in events[1] and "\\move(300,0,500,0,0,5000)\\fad(0,400)" in events[1]
+
+
+# --- Relecture Gemini Neon (f850c7b). ---
+
+
+def test_ass_transform_ending_at_zero_spans_the_whole_event():
+    """\\t(0,0,…) = jusqu'à la fin de l'événement (libass, VSFilter) : converti en temps explicites
+    étirés ; transformation achevée avant un morceau : jamais une fin à 0 (elle la rejouerait)."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+    from core.workflows.subtitle_sync import _retime_ass_override, shift_text
+
+    ass = ("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+           "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\t(0,0,\\fscx200)}Zoom\n")
+    pal = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"))
+    ratio = pal.cadence_mismatch.time_stretch_ratio
+    assert f"\\t(0,{round(10000 * ratio)},\\fscx200)" in shift_text(ass, pal, suffix=".ass")
+    done = _retime_ass_override("{\\t(0,1000,\\fscx200)}a", 1.0, elapsed_ms=5000, duration_ms=10000, split=True)
+    assert done == "{\\t(-2,-1,\\fscx200)}a"
+
+
+def test_ass_event_with_its_end_cut_keeps_its_animation_pace():
+    """Événement de 10 s dont la fin est retirée par une coupe (5 → 12 s) : un seul morceau de 5 s, le
+    \\move garde son rythme sur 10 s et le fondu de sortie (fin d'origine supprimée) n'est pas joué."""
+    from core.workflows.subtitle_sync import shift_text
+
+    ass = ("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+           "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\move(100,0,500,0)\\fad(0,400)}Défilant\n")
+    cut = SyncCalibration((SyncSegment(0, 0.0), SyncSegment(5000, -7000.0)))
+    events = [line for line in shift_text(ass, cut, suffix=".ass").splitlines() if line.startswith("Dialogue:")]
+    assert len(events) == 1 and "0:00:00.00,0:00:05.00" in events[0]
+    assert "\\move(100,0,500,0,0,10000)\\fad(0,0)" in events[0]
+
+
+def test_removed_measured_variant_decision_uses_its_stream_offset(qt_app, tmp_path, monkeypatch):
+    """Synchro de C lancée depuis une variante AAC de la VO, variante retirée et +500 ms saisi sur la VO
+    pendant l'analyse : la décision (asetrate) porte le décalage de la VO (flux rattaché), jamais celui
+    de la VF en tête du tableau."""
+    def remove_variant(panel, _c_vf, _c_vo):
+        panel.remove_audio_track_variant("vo_aac")
+
+    panel, c_vf, c_vo, _logs, _measured = _per_track_offsets_source(
+        qt_app, tmp_path, monkeypatch, "asetrate", before_result=remove_variant, from_variant=True)
+    calibration = panel._source_calibration("C")
+    assert calibration.audio_pitch_factor == pytest.approx(25 / (24000 / 1001))
+    assert round(calibration.segments[0].shift_ms) == 500
+    assert int(c_vo.time_shift_ms or 0) == 500 and int(c_vf.time_shift_ms or 0) == 500
+    panel.close()
+
+
+def test_removed_reference_variant_hands_links_and_analysis_to_its_stream(films, monkeypatch):
+    """B calée en Auto sur une variante AAC du master, variante retirée pendant l'analyse : le lien de B
+    et l'analyse passent au master (même flux, même position) ; la méthode est tranchée, jamais laissée
+    « auto » (atempo au remux)."""
+    panel, master, vf, _vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel.add_audio_track_variant(master, entry_id="master_aac", codec="aac", bitrate_kbps=256)
+    panel._on_audio_sync_done(vf.entry_id, "master_aac", 300, .95, _pal_auto())
+    assert panel._sync_links["B"].reference_entry_id == "master_aac"
+    assert [reference for _e, reference, _s in panel._cadence_pending.values()] == ["master_aac"]
+    panel.remove_audio_track_variant("master_aac")
+    assert panel._sync_links["B"].reference_entry_id == master.entry_id
+    assert [reference for _e, reference, _s in panel._cadence_pending.values()] == [master.entry_id]
+    assert panel.cadence_resolution_pending()
+    _run_pending(submitted)
+    assert panel._sync_links["B"].relative.cadence_audio_method == "asetrate"
+    assert panel._source_calibration("B").cadence_audio_method == "asetrate"

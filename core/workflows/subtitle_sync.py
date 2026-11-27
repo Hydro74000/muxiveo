@@ -128,10 +128,13 @@ def _retime_ass_override(text: str, ratio: float, *, elapsed_ms: float = 0.0, du
             timed = len(args) >= 3 and values[0] is not None and values[1] is not None
             if timed or split:
                 t1, t2 = (float(values[0] or 0.0), float(values[1] or 0.0)) if timed else (0.0, duration_ms)
+                if not t2:
+                    t2 = duration_ms  # fin 0 : jusqu'à la fin de l'événement (libass, VSFilter)
                 rest = args[2:] if timed else args
                 o1, o2 = out(t1), out(t2)
                 if o2 <= 0:
-                    o1, o2 = -1, 0  # transformation déjà achevée (jamais 0,0 : tout l'événement)
+                    # Transformation déjà achevée : jamais une fin à 0, qui la rejouerait sur le morceau.
+                    o1, o2 = -2, -1
                 replacement = f"\\t({o1},{o2},{','.join(rest)})"
         result.append(text[position:match.start()] + (replacement or text[match.start():end]))
         position = end
@@ -161,14 +164,19 @@ def shift_text(text: str, calibration: SyncCalibration, *, suffix=".srt") -> str
                 a, b = fields.index("start"), fields.index("end")
                 event_start, event_end = parse_time(values[a]), parse_time(values[b])
                 pieces = list(calibration.source_intervals(event_start, event_end))
-                split = len(pieces) > 1 or (bool(pieces) and pieces[0][2] > event_start + 0.5)
+                # Fin rognée (coupe négative) : le dernier morceau s'arrête avant la fin de l'événement.
+                tail_clipped = bool(pieces) and (
+                    pieces[-1][2] + (pieces[-1][1] - pieces[-1][0]) / ratio < event_end - 0.5)
+                split = (len(pieces) > 1 or (bool(pieces) and pieces[0][2] > event_start + 0.5)
+                         or tail_clipped)
                 text_index = fields.index("text") if "text" in fields else None
                 for piece, (start, end, source_start) in enumerate(pieces):
                     clone = list(values)
                     if text_index is not None:
                         clone[text_index] = _retime_ass_override(
                             values[text_index], ratio, elapsed_ms=max(0.0, source_start - event_start),
-                            duration_ms=event_end - event_start, split=split, last=piece == len(pieces) - 1,
+                            duration_ms=event_end - event_start, split=split,
+                            last=piece == len(pieces) - 1 and not tail_clipped,
                         )
                     clone[a], clone[b] = format_time(start, ass=True), format_time(end, ass=True)
                     result.append("Dialogue:" + ",".join(clone))
