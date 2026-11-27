@@ -1686,13 +1686,14 @@ def _three_sources(qt_app, tmp_path, monkeypatch, *, entered: bool, b_method: st
     film = detect_cadence_from_metadata(*c_cadence)
     panel._on_audio_sync_done(vf.entry_id, master.entry_id, 0, .95,
                               SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal, cadence_audio_method=b_method))
-    panel._on_audio_sync_done(c1.entry_id, vf.entry_id, 0, .95,
-                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=film, cadence_audio_method="auto"))
+    # Décalage mesuré non négligeable : la conversion « auto » est analysée.
+    panel._on_audio_sync_done(c1.entry_id, vf.entry_id, 300, .95,
+                              SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=film, cadence_audio_method="auto"))
     if entered:
         c1.time_shift_ms = 500
         panel._track_table.time_shift_edited.emit(c1)
     _run_pending(submitted)
-    applied = panel._source_calibration("C")
+    applied = panel._track_calibration(c1)
     panel.close()
     return applied
 
@@ -1701,6 +1702,7 @@ def _three_sources(qt_app, tmp_path, monkeypatch, *, entered: bool, b_method: st
     ("asetrate", ("25/1", "24/1")),          # référence déjà convertie
     ("auto", ("25/1", "24/1")),              # référence tranchée pendant l'analyse de C
     ("asetrate", ("25/1", "24000/1001")),    # cadences réciproques : vitesses annulées
+    ("atempo", ("25/1", "24000/1001")),      # réciproques, hauteur ×1 au moment de la saisie
 ])
 def test_source_analysis_without_link_is_composed_with_its_reference(qt_app, tmp_path, monkeypatch, b_method, c_cadence):
     """Méthode tranchée après un décalage saisi (lien retiré) : même hauteur qu'avec le lien."""
@@ -2225,3 +2227,90 @@ def test_resume_infers_a_source_scope_from_the_saved_reference(films, monkeypatc
     assert [(entry_id, scope) for entry_id, _r, scope in pending if scope == "B"] == [(vo.entry_id, "B")]
     assert not any(scope == f"track:{vf.entry_id}" for _e, reference_id, scope in pending
                    if reference_id == master.entry_id)
+
+
+# --- Relecture Codex (e54b96f). ---
+
+
+def test_resume_infers_a_track_scope_for_a_same_file_reference_after_detaching(films, monkeypatch):
+    """B convertie (PAL asetrate) ; VO recalée sur la VF de B au rapport inverse en Auto (vitesse nette 1),
+    puis décalage saisi sur la VO (lien retiré). Analyse sauvegardée sans portée : sa référence est
+    dans le fichier de la VO, c'est donc l'analyse de son recalage, jamais celle de la source B."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel, master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 0, .95,
+                              SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=pal,
+                                              cadence_audio_method="asetrate"))
+    inverse = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=detect_cadence_from_metadata("25/1", "24000/1001"),
+                              cadence_audio_method="auto")
+    _studio_with(panel, monkeypatch, inverse, vf)
+    panel._on_sync_studio_requested(vo)
+    relative = panel._track_sync_links[vo.entry_id].relative
+    vo.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vo)
+    assert vo.entry_id not in panel._track_sync_links
+    assert not panel._track_calibration(vo).cadence_method_undecided  # vitesses annulées
+    panel._cadence_pending.clear()
+    submitted.clear()
+    panel._restored_cadence_analyses = [(vo.entry_id, vf.entry_id, relative, "")]
+    panel._resume_cadence_analyses()
+    scopes = [scope for _e, _r, scope in panel._cadence_pending.values()]
+    assert scopes == [f"track:{vo.entry_id}"]
+
+
+def _detached_vf(panel, monkeypatch, master, vf, vo, *, entered: bool, corrected: bool = False):
+    """B (VO) ralentie en atempo, VF recalée sur la VO au rapport inverse en Auto (vitesse nette 1,
+    hauteur ×1 en attendant l'analyse), figée par une saisie si `entered`, B passée en asetrate avant
+    le résultat si `corrected`. Retourne la synchro de la VF après le résultat « asetrate »."""
+    from dataclasses import replace
+
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    slowed = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=detect_cadence_from_metadata("24000/1001", "25/1"),
+                             cadence_audio_method="atempo")
+    panel._on_audio_sync_done(vo.entry_id, master.entry_id, 0, .95, slowed)
+    inverse = SyncCalibration((SyncSegment(0, 0.0),), cadence_mismatch=detect_cadence_from_metadata("25/1", "24000/1001"),
+                              cadence_audio_method="auto")
+    _studio_with(panel, monkeypatch, inverse, vo)
+    panel._on_sync_studio_requested(vf)
+    if entered:
+        vf.time_shift_ms = 500
+        panel._track_table.time_shift_edited.emit(vf)
+        assert vf.entry_id not in panel._track_sync_links
+    if corrected:
+        panel._on_audio_sync_done(vo.entry_id, master.entry_id, 0, .95, replace(slowed, cadence_audio_method="asetrate"))
+        assert panel._source_calibration("B").cadence_audio_method == "asetrate"
+    assert any(scope == f"track:{vf.entry_id}" for _e, _r, scope in panel._cadence_pending.values())
+    _run_pending(submitted)
+    return panel._track_calibration(vf)
+
+
+@pytest.mark.parametrize("entered", [False, True])
+def test_detached_track_analysis_is_applied_when_its_pitch_was_neutral(films, monkeypatch, entered):
+    """Saisie pendant l'analyse alors que la synchro de la VF se réduisait à un décalage (vitesses
+    réciproques, hauteur ×1) : le résultat est appliqué comme avec le lien (VF aussi aiguë que la VO
+    restée en atempo), au décalage saisi."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    calibration = _detached_vf(panel, monkeypatch, master, vf, vo, entered=entered)
+    assert calibration.audio_pitch_factor == pytest.approx(25 / (24000 / 1001))
+    assert calibration.cadence_audio_method == "asetrate"
+    assert round(calibration.segments[0].shift_ms) == (500 if entered else 0)
+
+
+def test_detached_track_pitch_follows_the_corrected_reference_at_native_speed(films, monkeypatch):
+    """Écarté (relectures Codex de e2b5db3 et e54b96f) : même scénario, B passée en asetrate avant le
+    résultat. La VF joue à sa vitesse d'origine et l'analyse la trouve à la hauteur naturelle face à
+    la VO d'origine : ×1, comme avec le lien. Garder la hauteur figée (×1,0427) rendrait la VF trop
+    aiguë de 4,27 % à vitesse native : l'aigu de l'ancien atempo de la VO, corrigé depuis."""
+    panel, master, vf, vo, _subtitle, logs = films
+    calibration = _detached_vf(panel, monkeypatch, master, vf, vo, entered=True, corrected=True)
+    applied = translate_text("Méthode de conversion de cadence de la piste #{idx} : {method}.",
+                             idx=vf.mkv_tid, method="asetrate")
+    assert ("INFO", applied) in logs  # résultat appliqué
+    assert calibration.active_cadence is None
+    assert calibration.audio_pitch_factor == pytest.approx(1.0)
+    assert round(calibration.segments[0].shift_ms) == 500

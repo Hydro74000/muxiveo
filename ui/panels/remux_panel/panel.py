@@ -3704,12 +3704,15 @@ class RemuxPanel(QWidget):
         for entry_id, reference_id, relative, scope in restored:
             entry, reference = by_id.get(entry_id), by_id.get(reference_id)
             if entry is not None and not scope:
-                # Portée absente (sauvegarde antérieure), déduite de la référence sauvegardée : l'analyse
-                # d'une piste liée se fait toujours face à la référence de son lien ; une piste détachée
-                # sans lien n'a d'analyse propre que si sa conversion reste à trancher.
-                track_link = self._track_sync_links.get(entry_id)
-                if track_link is not None:
-                    scope = "track" if track_link.reference_entry_id == reference_id else "source"
+                # Portée absente (sauvegarde antérieure), déduite de la référence sauvegardée : une
+                # référence du même fichier n'appartient qu'au recalage de la piste (la synchro d'une
+                # source se fait face à un autre fichier), même si la piste s'est détachée depuis ;
+                # une piste liée (référence de son fichier) face à un autre fichier : analyse de la
+                # source ; détachée sans lien : analyse propre seulement si sa conversion reste à trancher.
+                if reference is not None and reference.file_id == entry.file_id:
+                    scope = "track"
+                elif entry_id in self._track_sync_links:
+                    scope = "source"
                 elif not self._track_inherits_source_sync(entry):
                     scope = "track" if self._track_calibration(entry).cadence_method_undecided else "source"
                 else:
@@ -3845,6 +3848,28 @@ class RemuxPanel(QWidget):
         self._emit_signals()
 
     @staticmethod
+    def _cadence_method_chosen(calibration: SyncCalibration) -> bool:
+        """Méthode de conversion choisie (hors « auto ») sur une synchro qui convertit l'audio ; réduite
+        à un décalage (vitesses réciproques, hauteur ×1), sa méthode n'a pas d'objet."""
+        return calibration.converts_audio and (calibration.cadence_audio_method or "auto") != "auto"
+
+    def _warn_common_source_offset(self, file_id: str, kept: TrackEntry) -> None:
+        """Synchro de la source redevenue commune à ses pistes : décalages saisis différents ignorés."""
+        offset = int(kept.time_shift_ms or 0)
+        ignored = sorted({
+            int(track.time_shift_ms or 0) for track in self._track_table.current_tracks()
+            if track.file_id == file_id and track.track_type in {"audio", "subtitle"}
+            and self._track_inherits_source_sync(track)
+        } - {offset})
+        if ignored:
+            self.log_message.emit("WARN", translate_text(
+                "Synchro de « {source} » commune à toutes ses pistes (coupures ou cadence) : décalage "
+                "{offset} ms de la piste #{idx} retenu, {ignored} ms ignoré(s).",
+                source=self._source_label(file_id), offset=f"{offset:+d}", idx=kept.mkv_tid,
+                ignored=", ".join(f"{value:+d}" for value in ignored),
+            ))
+
+    @staticmethod
     def _keep_frozen_segments(fresh: SyncCalibration, frozen: SyncCalibration,
                               before: SyncCalibration, resolved: SyncCalibration) -> SyncCalibration:
         """Décision de hauteur portée sur la calibration figée à la saisie (piste ou source détachée) :
@@ -3877,10 +3902,18 @@ class RemuxPanel(QWidget):
         synchro relative tranchée recomposée avec la position de la référence, au décalage actuel de la
         source. Ignorée si une méthode a été choisie entre-temps."""
         applied = self._source_calibration(file_id)
-        if (applied.cadence_audio_method or "auto") != "auto" or not before.cadence_method_undecided:
+        if self._cadence_method_chosen(applied) or not before.cadence_method_undecided:
             return
         if resolved.cadence_audio_method == before.cadence_audio_method:
             return
+        if effective_calibration(applied) is None:
+            # Synchro réduite à un décalage (vitesses réciproques, hauteur ×1 en attendant), détachée
+            # en décalages par piste à la saisie : décision portée au décalage de la piste qui suit la
+            # source (celle que mesure la synchro), commun ensuite à toutes ses pistes.
+            measured = self._source_audio_track(file_id)
+            if measured is not None:
+                applied = SyncCalibration.linear(int(measured.time_shift_ms or 0))
+                self._warn_common_source_offset(file_id, measured)
         calibration = self._keep_frozen_segments(
             compose_calibrations(self._decided_relative(resolved), self._track_calibration(reference)), applied,
             before, resolved,
@@ -3918,8 +3951,7 @@ class RemuxPanel(QWidget):
             if current.to_dict() != before.to_dict():
                 self._schedule_cadence_method(entry, reference)
                 return
-        elif ((self._track_calibration(entry).cadence_audio_method or "auto") != "auto"
-              or not before.cadence_method_undecided):
+        elif self._cadence_method_chosen(self._track_calibration(entry)) or not before.cadence_method_undecided:
             return  # synchro propre sans lien : méthode choisie entre-temps
         if resolved.cadence_audio_method == before.cadence_audio_method:
             return
