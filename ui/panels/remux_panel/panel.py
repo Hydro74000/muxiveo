@@ -2707,7 +2707,8 @@ class RemuxPanel(QWidget):
         if not self._track_table.update_time_shift(entry.entry_id, 0):
             return
 
-        if self._track_inherits_source_sync(entry) and source_index is not None:
+        inherited = self._track_inherits_source_sync(entry)
+        if inherited and source_index is not None:
             self._detach_linear_source_calibration(entry.file_id, {entry.entry_id})
             self._workflow_options.get("sync_calibrations", {}).pop(str(source_index), None)
         entry.sync_calibration = None
@@ -2727,6 +2728,11 @@ class RemuxPanel(QWidget):
                 new_chapter_offset_ms,
             )
         else:
+            if (inherited and any(scope == entry.file_id for _e, _r, scope in self._cadence_pending.values())):
+                # Conversion commune encore à trancher : la piste annulée en reste hors (synchro propre
+                # nulle), sinon le résultat lui rendrait le décalage et la conversion de sa source.
+                self._own_sync_entry_ids.add(entry.entry_id)
+                entry.sync_calibration = SyncCalibration.linear(0).to_dict()
             # Les autres pistes de la source restent synchronisées ; celles qui suivent cette piste suivent.
             self._propagate_sync(set(), {entry.entry_id})
         self._sync_entry_calibrations()

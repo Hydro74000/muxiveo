@@ -2319,7 +2319,8 @@ def test_detached_track_pitch_follows_the_corrected_reference_at_native_speed(fi
 # --- Relecture Codex (0d40ee5). ---
 
 
-def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str, *, launched_from: str = "vo"):
+def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str, *, launched_from: str = "vo",
+                              before_result=None):
     """A ; B (VF, VO) calée sur A (PAL, atempo) ; C (VF, VO) calée sur la VO de B au rapport inverse en
     Auto (vitesses réciproques, hauteur ×1 : simple décalage), lancée depuis la piste `launched_from`
     de C (la VO de C est mesurée, langue de la référence) ; +500 ms saisi sur la VO de C pendant
@@ -2359,6 +2360,8 @@ def _per_track_offsets_source(qt_app, tmp_path, monkeypatch, method: str, *, lau
     panel._track_table.time_shift_edited.emit(c_vo)
     assert int(c_vf.time_shift_ms or 0) == measured  # décalages par piste
     panel._autosave_dirty = False
+    if before_result is not None:
+        before_result(panel, c_vf, c_vo)
     _run_pending(submitted)
     return panel, c_vf, c_vo, logs, measured
 
@@ -2442,4 +2445,44 @@ def test_cancelling_the_last_offset_of_a_source_drops_its_pitch_analysis(qt_app,
     calibration = panel._track_calibration(c1)
     assert calibration.audio_pitch_factor == pytest.approx(1.0) and effective_calibration(calibration) is None
     assert int(c1.time_shift_ms or 0) == 0
+    panel.close()
+
+
+# --- Relecture Codex (db6af4e). ---
+
+
+def test_track_cancelled_during_a_source_analysis_stays_out_of_its_sync(qt_app, tmp_path, monkeypatch):
+    """Décalages par piste de C, analyse de la source en cours : la synchro de la VF annulée la laisse à
+    0 ms sans conversion quand la décision (asetrate) rend la synchro de C commune ; statut conservé
+    par la session."""
+    def cancel_vf(panel, c_vf, _c_vo):
+        panel._on_auto_sync_cancel_requested(c_vf)
+        assert int(c_vf.time_shift_ms or 0) == 0
+
+    panel, c_vf, c_vo, _logs, _measured = _per_track_offsets_source(
+        qt_app, tmp_path, monkeypatch, "asetrate", before_result=cancel_vf)
+    assert int(c_vo.time_shift_ms or 0) == 500
+    assert panel._track_calibration(c_vo).audio_pitch_factor == pytest.approx(25 / (24000 / 1001))
+    assert int(c_vf.time_shift_ms or 0) == 0
+    calibration = panel._track_calibration(c_vf)
+    assert effective_calibration(calibration) is None and calibration.audio_pitch_factor == pytest.approx(1.0)
+    own = workflow_functions._session_job(panel)["_muxiveo_session"]["own_sync_tracks"]
+    assert {"source": 2, "id": c_vf.mkv_tid} in own
+    # Session relue : la VF reste hors de la conversion commune de C.
+    from cli.logging import Logger
+    from core.jobs.options import CommonOptions
+    from core.jobs.remux_config import build_remux_config
+
+    infos = {source.path: source.info for source in panel._source_files}
+    monkeypatch.setattr("core.inspector.FileInspector.inspect", lambda _self, path, *_a, **_k: infos[Path(path)])
+    job = workflow_functions._session_job(panel)
+    config = build_remux_config(job, panel._config, CommonOptions(), Logger())
+    workflow_functions.restore(panel, config, [source.info for source in panel._source_files], job["_muxiveo_session"])
+    c_id = panel._source_files[2].id
+    tracks = {(track.file_id, track.mkv_tid): track for track in panel._track_table.current_tracks()}
+    vf_after, vo_after = tracks[(c_id, 1)], tracks[(c_id, 2)]
+    assert int(vo_after.time_shift_ms or 0) == 500
+    assert panel._track_calibration(vo_after).audio_pitch_factor == pytest.approx(25 / (24000 / 1001))
+    assert int(vf_after.time_shift_ms or 0) == 0
+    assert panel._track_calibration(vf_after).audio_pitch_factor == pytest.approx(1.0)
     panel.close()

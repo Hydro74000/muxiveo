@@ -1,6 +1,7 @@
 """Matérialisation audio/sous-titres avant assemblage, sans délai utilisateur."""
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -16,6 +17,7 @@ from core.workflows.sync_calibration import SyncCalibration, effective_calibrati
 from core.workflows.common.sync_rewrite import (
     SYNC_AUDIO_ORIGIN_FILTER,
     SYNC_REWRITE_MODE_OFFSET,
+    EmptySubtitleRewrite,
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
     requested_audio_reencode,
@@ -115,11 +117,26 @@ def track_calibration(config, mapped):
     return SyncCalibration.from_dict(payload).for_track(mapped.track.track_type)
 
 
+def _origin_fold(calibration: SyncCalibration, origin_ms: float) -> float:
+    """Part de l'origine (ms) intégrée au recalage audio : juste ce qu'il faut pour que rien ne soit
+    coupé avant le départ réel de la sortie native (-origine) ; le reste devient un décalage
+    d'assemblage (jamais des secondes de silence ajoutées)."""
+    ratio = calibration.cadence_mismatch.time_stretch_ratio if calibration.cadence_mismatch else 1.0
+    earliest = min(segment.start_ms * ratio + segment.shift_ms for segment in calibration.segments)
+    return min(float(origin_ms), max(0.0, -earliest))
+
+
 def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, float] | None = None,
-                         sample_rates: Mapping[tuple[Path, int], int] | None = None):
+                         sample_rates: Mapping[tuple[Path, int], int] | None = None,
+                         restore_origins: Mapping[Path, Mapping[str, float]] | None = None,
+                         restored: dict[Path, int] | None = None):
     """Décrit chaque piste transformée ; le même contrat sert à la preview.
 
     ``sample_rates`` : débits des pistes audio (source, index), connus après la sonde du lancement.
+    ``restore_origins`` : origine (ms, par type de piste) retirée à l'extraction et à rendre à la
+    piste préparée (assemblage natif) : sous-titre, intégrée au recalage avant l'écrêtage à zéro ;
+    audio, intégrée pour la part qui serait coupée, le reste noté dans ``restored`` (sortie → ms,
+    décalage d'assemblage).
     """
     result: list[tuple[Any, Path, list[str], SyncCalibration]] = []
     root = Path(root)
@@ -151,6 +168,13 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
         if track.track_type == "subtitle" and config.sync_subtitles == "none" and not (track.time_shift_ms or calibrated):
             continue
         calibration = SyncCalibration.linear(mirror_offset) if mirror_offset else track_calibration(config, mapped)
+        origin_ms = float((restore_origins or {}).get(Path(mapped.source_path), {}).get(track.track_type, 0.0))
+        restored_ms = 0
+        if origin_ms:
+            fold = origin_ms if track.track_type == "subtitle" else _origin_fold(calibration, origin_ms)
+            if fold:
+                calibration = calibration.with_start_offset(calibration.segments[0].shift_ms + fold)
+            restored_ms = round(origin_ms - fold)
         timestamp_args = (["-copyts", *input_timestamp_offset_args(
             -(source_origins or {}).get(Path(mapped.source_path), 0.0),
         )] if track.track_type == "audio" else [])
@@ -197,6 +221,8 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
                 raise RemuxError("Recalage miroir bitmap PGS/VobSub non pris en charge ; fournir des sous-titres texte ou choisir --sync-subtitles none.")
             output = root / f"sync_{index}{suffix}"
             command = base + ["-c:s", encoder, str(output)]
+        if restored is not None:
+            restored[output] = restored_ms
         result.append((mapped, output, command, calibration))
     return result
 
@@ -204,14 +230,25 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
 _MATROSKA_SUFFIXES = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
 
 
+def _subtitle_has_events(path: Path) -> bool:
+    """Sous-titre texte recalé : au moins un événement restant (règle de la réécriture conteneur)."""
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    if path.suffix.lower() == ".ass":
+        return bool(re.search(r"^Dialogue:", text, re.MULTILINE | re.IGNORECASE))
+    return "-->" in text
+
+
 def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffprobe",
-                     cancel_cb: Callable[[], bool] | None = None, restore_matroska_origin: bool = False):
+                     cancel_cb: Callable[[], bool] | None = None, restore_matroska_origin: bool = False,
+                     empty_subtitle_artifact: Callable[[Any], Path] | None = None):
     """Pistes à réécrire préparées une à une (piste préparée = nouvelle source).
 
     `restore_matroska_origin` : assemblage natif, qui lit un Matroska avec ses horodatages bruts ;
     l'origine retirée à la préparation (audio : origine commune, sous-titre : départ du conteneur)
     est rendue à la piste préparée d'une source Matroska. Le muxage FFmpeg ramène toutes les entrées
     à leur départ et les sources TS sont rebasées par la canonicalisation : rien à rendre.
+    `empty_subtitle_artifact` : sous-titre dont le recalage retire tous les événements → piste vide
+    (assemblage natif, en-tête de l'origine) ; sans lui, refus explicite (`EmptySubtitleRewrite`).
     """
     from core.workflows.subtitle_sync import shift_file
     sources = [replace(s, tracks=[replace(t) for t in s.tracks]) for s in config.sources]
@@ -233,11 +270,29 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             if (isinstance(stream, dict) and str(stream.get("index", "")).isdigit()
                     and str(stream.get("sample_rate", "")).isdigit()):
                 sample_rates[(path, int(stream["index"]))] = int(stream["sample_rate"])
+    restore_origins: dict[Path, dict[str, float]] = {}
+    if restore_matroska_origin:
+        for path, payload in payloads.items():
+            if path.suffix.lower() not in _MATROSKA_SUFFIXES:
+                continue
+            fmt = payload.get("format")
+            # Audio : origine commune retirée (-copyts + -itsoffset) ; sous-titre : départ du format
+            # retiré par FFmpeg sans -copyts (un Matroska n'a pas de discontinuités).
+            restore_origins[path] = {
+                "audio": origins.get(path, 0.0) * 1000,
+                "subtitle": (timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0) * 1000,
+            }
+    restored: dict[Path, int] = {}
     for mapped, output, command, calibration in preparation_commands(
-            config, root, ffmpeg, source_origins=origins, sample_rates=sample_rates):
+            config, root, ffmpeg, source_origins=origins, sample_rates=sample_rates,
+            restore_origins=restore_origins, restored=restored):
         if log is not None:
             track = mapped.track
-            segments = calibration.segments
+            # Recalage affiché tel que demandé (sans la part d'origine intégrée).
+            fold = (restore_origins.get(Path(mapped.source_path), {}).get(track.track_type, 0.0)
+                    - restored.get(output, 0))
+            shown = calibration.with_start_offset(calibration.segments[0].shift_ms - fold) if fold else calibration
+            segments = shown.segments
             cadence_info = ""
             if calibration.active_cadence is not None:
                 cadence_info = f" — cadence {calibration.cadence_mismatch.description} ({calibration.cadence_audio_method})"
@@ -249,7 +304,7 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
                     f"Synchronisation physique (réécriture exacte) : piste #{mapped.stream_index} "
                     f"({track.track_type} {track.codec}){cadence_info} — {len(segments)} segments ({len(segments) - 1} coupures, fondu {config.crossfade_ms} ms) :"
                 )
-                for line in calibration.summary_lines():
+                for line in shown.summary_lines():
                     log("INFO", f"  • {line}")
             else:
                 shift = segments[0].shift_ms if segments else 0.0
@@ -263,23 +318,15 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             payload = probe_timestamp_payload(output, ffprobe, cancel_cb=cancel_cb)
             fmt = payload.get("format")
             timestamp_offsets[output] = timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0
-        restored_ms = 0
-        if restore_matroska_origin and Path(mapped.source_path).suffix.lower() in _MATROSKA_SUFFIXES:
-            source_path = Path(mapped.source_path)
-            fmt = payloads.get(source_path, {}).get("format")
-            # Audio : origine commune retirée (-copyts + -itsoffset) ; sous-titre : départ du format
-            # retiré par FFmpeg sans -copyts (un Matroska n'a pas de discontinuités).
-            removed = (origins.get(source_path, 0.0) if mapped.track.track_type == "audio"
-                       else timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0)
-            restored_ms = round(removed * 1000)
         if mapped.track.track_type == "subtitle":
-            applied = calibration
-            if restored_ms:
-                # Origine intégrée au recalage, avant l'écrêtage à zéro : une réplique avancée avant
-                # le départ extrait reste dans le fichier.
-                applied = calibration.with_start_offset(calibration.segments[0].shift_ms + restored_ms)
-                restored_ms = 0
-            shift_file(output, output, applied)
+            shift_file(output, output, calibration)
+            if not _subtitle_has_events(output):
+                if empty_subtitle_artifact is None:
+                    raise EmptySubtitleRewrite(
+                        f"Synchronisation physique : le recalage retire tous les événements du sous-titre "
+                        f"#{mapped.stream_index}.")
+                output = empty_subtitle_artifact(mapped)
+        restored_ms = restored.get(output, 0)
         # Origine rendue : décalage d'assemblage, jamais une synchro à réécrire une seconde fois.
         track = replace(mapped.track, mkv_tid=0, time_shift_ms=restored_ms, sync_rewrite_label="",
                         sync_rewrite_mode=SYNC_REWRITE_MODE_OFFSET if restored_ms else "",

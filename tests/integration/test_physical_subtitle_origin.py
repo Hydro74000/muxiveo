@@ -176,3 +176,70 @@ def test_native_physical_subtitle_advanced_before_the_extracted_start_is_kept(tm
     assert state["failed"] is None, state["failed"]
     _video, reference, shifted = _first_timestamps(config.output)
     assert reference == pytest.approx(600, abs=5) and shifted == pytest.approx(200, abs=5), (reference, shifted)
+
+
+def _block_bounds(path: Path) -> dict[int, tuple[int, int]]:
+    """(premier, dernier) horodatage (ms) des blocs de chaque piste."""
+    bounds: dict[int, tuple[int, int]] = {}
+    for block in MatroskaReader(path).blocks(first_lace_only=True):
+        timestamp = block.timestamp_ns if block.timestamp_ns is not None else block.timestamp_ms * 1_000_000
+        value = round(timestamp / 1_000_000)
+        first, last = bounds.get(block.track_number, (value, value))
+        bounds[block.track_number] = (min(first, value), max(last, value))
+    return bounds
+
+
+def test_native_physical_audio_advanced_before_the_extracted_start_is_not_cut(tmp_path: Path) -> None:
+    """MKV à +500 ms, FLAC avancé de 400 ms : départ à +100 ms dans la sortie native, rien de coupé
+    (les 400 premières millisecondes restent, l'origine couvre l'avance)."""
+    source = _audio_source(tmp_path)
+    tracks = tracks_from_file_info(FileInspector().inspect(source), file_id="src")
+    target = [track for track in tracks if track.track_type == "audio"][1]
+    target.sync_calibration = SyncCalibration.linear(-400).to_dict()
+    target.time_shift_ms = -400
+    order = [(0, track.mkv_tid, track.entry_id) for track in tracks]
+    config = RemuxConfig(sources=[SourceInput(source, 0, tracks)], output=tmp_path / "out.mkv", track_order=order,
+                         keep_chapters=False, mux_backend="native", sync_mode="physical", work_dir=tmp_path / "work")
+    state = wait_task(RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe").run(config), timeout=120.0)
+    assert state["failed"] is None, state["failed"]
+    (_v, _vl), (ref_first, ref_last), (first, last) = [_block_bounds(config.output)[n] for n in sorted(_block_bounds(config.output))]
+    assert first == pytest.approx(ref_first - 400, abs=30), (ref_first, first)
+    assert last - first == pytest.approx(ref_last - ref_first, abs=60), (ref_first, ref_last, first, last)
+
+
+_LONELY_SRT = """1
+00:00:00,100 --> 00:00:00,350
+Seul carton
+"""
+
+
+@pytest.mark.parametrize("backend", ["ffmpeg", "native"])
+def test_physical_subtitle_emptied_by_its_shift(tmp_path: Path, backend: str) -> None:
+    """Carton unique (600–850 ms dans un MKV à +500 ms) avancé d'une seconde : piste vide gardée par
+    l'assemblage natif (en-tête de l'origine), refus explicite avec FFmpeg (comme la réécriture)."""
+    srt = tmp_path / "lonely.srt"
+    srt.write_text(_LONELY_SRT, encoding="utf-8")
+    path = tmp_path / "lonely.mkv"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=s=64x64:r=25:d=3", "-i", str(srt), "-i", str(srt),
+        "-map", "0:v", "-map", "1:s", "-map", "2:s", "-c:v", "ffv1", "-c:s", "srt",
+        "-output_ts_offset", "0.5", str(path),
+    ], check=True)
+    tracks = tracks_from_file_info(FileInspector().inspect(path), file_id="src")
+    target = [track for track in tracks if track.track_type == "subtitle"][1]
+    target.sync_calibration = SyncCalibration.linear(-1000).to_dict()
+    target.time_shift_ms = -1000
+    order = [(0, track.mkv_tid, track.entry_id) for track in tracks]
+    config = RemuxConfig(sources=[SourceInput(path, 0, tracks)], output=tmp_path / "out.mkv", track_order=order,
+                         keep_chapters=False, mux_backend=backend, sync_mode="physical", sync_subtitles="none",
+                         work_dir=tmp_path / "work")
+    state = wait_task(RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe").run(config), timeout=120.0)
+    if backend == "ffmpeg":
+        assert state["failed"] is not None and "événements" in str(state["failed"]), state["failed"]
+        return
+    assert state["failed"] is None, state["failed"]
+    reader = MatroskaReader(config.output)
+    assert len([track for track in reader.tracks() if track.track_type == 17]) == 2  # 17 : sous-titres
+    bounds = _block_bounds(config.output)
+    assert len(bounds) == 2  # vidéo et sous-titre de référence : la piste vidée n'a aucun bloc

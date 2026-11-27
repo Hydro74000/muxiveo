@@ -517,42 +517,46 @@ def run_native_remux(
             )
             runtime_config = replace(config, extra_attachments=relocated_attachments)
             prepared_config = runtime_config
+            empty_count = [0]
+
+            def _empty_subtitle(mapped) -> Path:
+                """Sous-titre vidé par le recalage (physique ou réécriture) : piste conservée, TrackEntry
+                de l'origine."""
+                rewrite_root = _ensure_canonical_root() / "sync_rewrite"
+                rewrite_root.mkdir(parents=True, exist_ok=True)
+                origin_path = Path(mapped.source_path)
+                if origin_path.suffix.lower() in MATROSKA_EXTENSIONS:
+                    header, index = origin_path, int(mapped.stream_index)
+                else:
+                    header, index = streams.metadata(StreamTrackSpec(
+                        origin_path, int(mapped.stream_index), "subtitle",
+                        mapped.track.orig_codec or mapped.track.codec,
+                    ))
+                origin_track = MatroskaReader(header).tracks()[index]
+                empty_count[0] += 1
+                target = rewrite_root / f"native_empty_subtitle_{empty_count[0]}.mks"
+                MatroskaWriter().write(MatroskaMuxPlan(
+                    output=target,
+                    tracks=(MatroskaMuxTrack(
+                        header, origin_track, 1, origin_track.uid,
+                        patch_language=False, patch_name=False, patch_flags=False,
+                    ),),
+                    packets=(),
+                ))
+                return target
+
             if config.sync_mode == "physical":
                 from core.workflows.physical_sync import prepare_physical
                 prepared_config = prepare_physical(
                     runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external, log=log,
                     ffprobe=ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
                     # Assemblage natif : un Matroska est lu avec ses horodatages bruts.
-                    restore_matroska_origin=True,
+                    restore_matroska_origin=True, empty_subtitle_artifact=_empty_subtitle,
                 )
             native_rewrites: list[NativeRewrite] = []
             if sync_rewrite is not None and prepared_config.sync_mode == "container":
                 rewrite_root = _ensure_canonical_root() / "sync_rewrite"
                 rewrite_root.mkdir(parents=True, exist_ok=True)
-                empty_count = [0]
-
-                def _empty_subtitle(mapped) -> Path:
-                    """Sous-titre vidé par la réécriture : piste conservée, TrackEntry de l'origine."""
-                    origin_path = Path(mapped.source_path)
-                    if origin_path.suffix.lower() in MATROSKA_EXTENSIONS:
-                        header, index = origin_path, int(mapped.stream_index)
-                    else:
-                        header, index = streams.metadata(StreamTrackSpec(
-                            origin_path, int(mapped.stream_index), "subtitle",
-                            mapped.track.orig_codec or mapped.track.codec,
-                        ))
-                    origin_track = MatroskaReader(header).tracks()[index]
-                    empty_count[0] += 1
-                    target = rewrite_root / f"native_empty_subtitle_{empty_count[0]}.mks"
-                    MatroskaWriter().write(MatroskaMuxPlan(
-                        output=target,
-                        tracks=(MatroskaMuxTrack(
-                            header, origin_track, 1, origin_track.uid,
-                            patch_language=False, patch_name=False, patch_flags=False,
-                        ),),
-                        packets=(),
-                    ))
-                    return target
 
                 prepared_config, native_rewrites = prepare_native_sync_rewrites(
                     prepared_config, sync_rewrite,
