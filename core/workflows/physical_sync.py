@@ -126,9 +126,10 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
     mapped_tracks = resolve_mapped_tracks(config)
     for index, mapped in enumerate(mapped_tracks):
         track = mapped.track
-        if sync_rewrite_forced_offset(track):
-            continue
         payload = track_sync_payload(config, track, mapped.source_file_index)
+        # Mode « offset » : décalage constant seulement ; une calibration à coupures ou cadence prime.
+        if sync_rewrite_forced_offset(track) and effective_calibration(payload, track.track_type) is None:
+            continue
         # Calibration sans effet (décalage nul, ni coupure ni conversion : piste recalée ramenée à
         # 0 ms) : piste non préparée, ses horodatages d'origine restent (la copie les remettrait à
         # zéro). Hors audio, une hauteur seule se réduit au décalage.

@@ -469,6 +469,13 @@ def ui_sync_rewrite_can_toggle(
     enabled: bool,
     advanced_audio_enabled: bool = False,
 ) -> bool:
+    """Bascule « Sync réelle » / « Sync offset » : décalage constant seulement ; une calibration à
+    coupures ou cadence impose la réécriture (le mode offset ne la porterait pas)."""
+    from core.workflows.sync_calibration import effective_calibration
+
+    if effective_calibration(getattr(track, "sync_calibration", None),
+                             str(getattr(track, "track_type", "") or "audio")) is not None:
+        return False
     return ui_sync_rewrite_preview_for_track(
         track,
         enabled=enabled,

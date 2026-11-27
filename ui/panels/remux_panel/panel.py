@@ -1477,8 +1477,18 @@ class RemuxPanel(QWidget):
         """Variante créée d'une piste : même synchro que son modèle, synchro propre et recalage dans
         le fichier compris (sinon elle suivrait sa source en direct, mais plus après une reprise)."""
         if template is None or template.entry_id not in self._own_sync_entry_ids:
-            if self._track_type_inherits_source_sync(variant):
-                self._sync_entry_calibrations([variant])
+            if not self._track_type_inherits_source_sync(variant):
+                return
+            source = effective_calibration(self._source_calibration(variant.file_id), variant.track_type)
+            offset = int(variant.time_shift_ms or 0)
+            if source is not None and offset != round(source.segments[0].shift_ms):
+                # Décalage propre (règle d'un profil) sur une source à coupures ou cadence, commune à
+                # ses pistes : la variante en est détachée, synchro propre à ce décalage.
+                self._own_sync_entry_ids.add(variant.entry_id)
+                variant.sync_calibration = source.with_start_offset(offset).to_dict()
+                self._auto_sync_entry_ids.add(variant.entry_id)
+                return
+            self._sync_entry_calibrations([variant])
             return
         self._own_sync_entry_ids.add(variant.entry_id)
         offset = int(variant.time_shift_ms or 0)

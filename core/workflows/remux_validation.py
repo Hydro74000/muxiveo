@@ -187,16 +187,21 @@ def validate_remux_config(
                               else selected_track.orig_display_info or selected_track.display_info),
             )
             audio_codecs = REWRITE_AUDIO_CODECS | ({"flac"} if config.sync_mode == "physical" else set())
+            # Mode container : la réécriture décode la source et produit la variante dans son codec cible.
+            target_codec = normalized_rewrite_codec(selected_track.codec)
+            variant_target = (not physical_audio and selected_track.track_type == "audio"
+                              and target_codec != codec and target_codec not in REWRITE_AUDIO_CODECS)
             unsupported = (
                 selected_track.track_type == "subtitle" and codec not in REWRITE_SUBTITLE_CODECS
             ) or (
-                selected_track.track_type == "audio" and (object_audio or codec not in audio_codecs)
+                selected_track.track_type == "audio" and (object_audio or codec not in audio_codecs or variant_target)
             )
             if unsupported:
                 errors.append(
                     "Calibration multi-segments/cadence incompatible avec la piste "
                     f"{selected_track.title or selected_track.track_type} "
-                    f"(source={file_index}, stream={mkv_tid}, codec={codec}). "
+                    f"(source={file_index}, stream={mkv_tid}, "
+                    f"codec={target_codec if variant_target else codec}). "
                     "Retirer cette piste de la sortie, annuler sa calibration ou fournir une variante compatible."
                 )
 

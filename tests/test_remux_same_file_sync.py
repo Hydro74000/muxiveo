@@ -83,6 +83,24 @@ def _studio(panel, monkeypatch, target, reference, delta):
     return offered
 
 
+class _CutStudio(_Studio):
+    """Synchro Studio validé avec une coupure (+200 ms puis +400 ms à 60 s)."""
+
+    def result_calibration(self):
+        changed = SyncCalibration((SyncSegment(0, 200), SyncSegment(60000, 400)))
+        return changed, 200
+
+
+def _cut_realign(panel, monkeypatch, target, reference):
+    """Recalage à coupure de `target` face à `reference` (choisie dans la fenêtre de choix)."""
+    monkeypatch.setattr(studio_module, "SyncStudioDialog", _CutStudio)
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog",
+                        lambda choices, **_k: SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted,
+                                                              selected_entry=lambda: reference))
+    panel._on_sync_studio_requested(target)
+    assert target.entry_id in panel._track_sync_links
+
+
 def _shifts(*tracks):
     return [track.time_shift_ms for track in tracks]
 
@@ -905,11 +923,6 @@ def test_physical_validation_accepts_an_aac_variant_of_a_dts_track(films, monkey
     la validation l'accepte."""
     from core.workflows.remux import RemuxWorkflow
 
-    class _CutStudio(_Studio):
-        def result_calibration(self):
-            changed = SyncCalibration((SyncSegment(0, 200), SyncSegment(60000, 400)))
-            return changed, 200
-
     panel, _master, vf, _vo, _subtitle, _logs = films
     panel._workflow_options["sync_mode"] = "physical"
     dts = TrackEntry(5, "audio", "DTS", "5.1  1509 kbps", "eng", "VO DTS", file_id="B")
@@ -917,12 +930,66 @@ def test_physical_validation_accepts_an_aac_variant_of_a_dts_track(films, monkey
     panel._find_source("B").tracks.append(dts)
     panel.add_audio_track_variant(dts, entry_id="variant", codec="aac", bitrate_kbps=384)
     variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
-    monkeypatch.setattr(studio_module, "SyncStudioDialog", _CutStudio)
-    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog",
-                        lambda choices, **_k: SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted,
-                                                              selected_entry=lambda: vf))
-    panel._on_sync_studio_requested(variant)
-    assert variant.entry_id in panel._track_sync_links
+    _cut_realign(panel, monkeypatch, variant, vf)
     _uncheck(panel, dts)
     errors = RemuxWorkflow().validate(panel.collect_config())
     assert not any("incompatible" in error for error in errors), errors
+
+
+# --- Huitième relecture Codex (commit 23d4ab7). ---
+
+
+def test_profile_variant_offset_on_a_source_with_cuts(qt_app, monkeypatch, tmp_path):
+    """B à coupures (+300) ; variante AAC de VO recalée sur VF (+120) ; profil capturé, variante
+    retirée, profil réappliqué : la variante sort à +120 (synchro propre), pas à la synchro de B."""
+    from core.profiles.decision import remux_config_to_decision_profile
+    from core.workflows.remux_mapping import track_sync_payload
+
+    panel = RemuxPanel(AppConfig())
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    master = _track(1, "audio", file_id="A", title="Master", language="ger", orig_language="ger", orig_title="Master")
+    vf = _track(1, "audio", file_id="B", title="VF")
+    vo = _track(2, "audio", file_id="B", title="VO", language="eng", orig_language="eng", orig_title="VO")
+    _add_source(panel, tmp_path, "A", [master])
+    _add_source(panel, tmp_path, "B", [vf, vo])
+    cuts = SyncCalibration((SyncSegment(0, 300), SyncSegment(60000, 500)))
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, cuts)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _studio(panel, monkeypatch, variant, vf, 120)
+    assert variant.time_shift_ms == 420
+    profile = remux_config_to_decision_profile(panel.collect_config())
+    panel.remove_audio_track_variant("variant")
+    panel._apply_decision_profile(profile)
+    recreated = next(track for track in panel._track_table.current_tracks() if track.is_new)
+    assert recreated.time_shift_ms == 420 and recreated.entry_id in panel._own_sync_entry_ids
+    payload = track_sync_payload(panel.collect_config(), recreated, 1)
+    assert SyncCalibration.from_dict(payload).segments[0].shift_ms == 420
+    panel.close()
+
+
+def test_offset_toggle_never_hides_cuts(films, monkeypatch, tmp_path):
+    """Calibration à coupures : bascule « Sync offset » indisponible ; un mode offset restauré
+    n'empêche pas la préparation physique."""
+    from core.workflows.common.sync_rewrite import SYNC_REWRITE_MODE_OFFSET
+
+    panel, _master, vf, vo, _subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    _cut_realign(panel, monkeypatch, vo, vf)
+    assert not panel._track_table._can_toggle_sync_rewrite(vo)
+    vo.sync_rewrite_mode = SYNC_REWRITE_MODE_OFFSET
+    assert _prepared_shifts(panel, tmp_path)[vo.entry_id] == 200
+
+
+def test_container_validation_checks_the_variant_target_codec(films, monkeypatch):
+    """Mode container : variante FLAC d'une piste E-AC-3 recalée avec une coupure, seule en sortie :
+    refusée dès la validation (la réécriture container ne produit pas de FLAC)."""
+    from core.workflows.remux import RemuxWorkflow
+
+    panel, _master, vf, vo, _subtitle, _logs = films
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="flac")
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _cut_realign(panel, monkeypatch, variant, vf)
+    _uncheck(panel, vo)
+    errors = RemuxWorkflow().validate(panel.collect_config())
+    assert any("incompatible" in error and "flac" in error for error in errors), errors
