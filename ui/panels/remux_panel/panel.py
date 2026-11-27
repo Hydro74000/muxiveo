@@ -71,6 +71,7 @@ from core.workflows.sync_calibration import (
     projected_calibration,
     invert_calibration,
 )
+from core.workflows.cadence import manual_cadence_choices
 from core.workflows.sync_links import (
     depends_on,
     follows_track,
@@ -3182,6 +3183,11 @@ class RemuxPanel(QWidget):
             apply_cadence_hint=(bool(getattr(self._config, "sync_cadence_auto_apply", True))
                                 and entry.file_id not in self._cadence_declined_source_ids),
             analysis_stream_index=int(analysed.mkv_tid),
+            # Référence du même fichier : les vidéos ne disent rien de la cadence des pistes (VF issue
+            # d'un master PAL) ; conversion au choix, décochée.
+            cadence_choices=(manual_cadence_choices()
+                             if reference_entry is not None and reference_entry.file_id == entry.file_id
+                             else ()),
         )
 
     def _note_cadence_choice(self, file_id: str, dialog, calibration: SyncCalibration) -> None:

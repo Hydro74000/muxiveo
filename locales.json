@@ -12346,5 +12346,9 @@
   "Méthode de conversion de cadence de la piste #{idx} : {method}.": {
     "fra": "Méthode de conversion de cadence de la piste #{idx} : {method}.",
     "eng": "Cadence conversion method of track #{idx}: {method}."
+  },
+  "Même vidéo pour les deux pistes : choisir la cadence d'origine de la piste (master PAL…).": {
+    "fra": "Même vidéo pour les deux pistes : choisir la cadence d'origine de la piste (master PAL…).",
+    "eng": "Same video for both tracks: choose the original cadence of the track (PAL master…)."
   }
 }

@@ -273,6 +273,14 @@ def detect_cadence_from_metadata(
     )
 
 
+def manual_cadence_choices() -> tuple[CadenceMismatch, ...]:
+    """Conversions proposées au choix quand les vidéos ne disent rien de la cadence des pistes
+    (piste d'un master PAL réunie à une piste cinéma dans le même fichier) : PAL → cinéma d'abord."""
+    pairs = (("24000/1001", "25/1"), ("24/1", "25/1"), ("25/1", "24000/1001"), ("25/1", "24/1"))
+    choices = (detect_cadence_from_metadata(master, donor) for master, donor in pairs)
+    return tuple(choice for choice in choices if choice is not None)
+
+
 def detect_cadence_from_acoustic_samples(
     samples: list[dict] | tuple[dict, ...],
     min_span_ms: float = 120_000.0,

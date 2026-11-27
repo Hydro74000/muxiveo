@@ -1233,3 +1233,73 @@ def test_cancelled_realignment_no_longer_holds_the_media_operation(films, monkey
     ready.clear()
     panel._on_auto_sync_cancel_requested(vo)
     assert not panel.cadence_resolution_pending() and ready
+
+
+# --- Choix manuel de la conversion de cadence (référence du même fichier). ---
+
+
+def test_studio_offers_manual_cadence_only_for_a_reference_of_the_same_file(films, monkeypatch):
+    from core.workflows.cadence import manual_cadence_choices
+
+    panel, master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 0)
+    choices = _Studio.opened[0]["cadence_choices"]
+    assert choices == manual_cadence_choices() and choices[0].description.startswith("PAL 25 -> 23.976")
+    _studio(panel, monkeypatch, vo, master, 0)
+    assert _Studio.opened[0]["cadence_choices"] == ()
+
+
+def test_studio_manual_cadence_choice_drives_the_calibration(qt_app, tmp_path, monkeypatch):
+    from core.workflows.cadence import manual_cadence_choices
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    vf = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="B")
+    vo = TrackEntry(2, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="B")
+    choices = manual_cadence_choices()
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=vf, target_source_path=tmp_path / "b.mkv", target_stream_index=1,
+        reference_entry=vo, reference_source_path=tmp_path / "b.mkv", reference_stream_index=2,
+        cadence_choices=choices,
+    )
+    assert not dialog.cadence_check.isChecked() and dialog.current_calibration.cadence_mismatch is None
+    dialog.cadence_check.setChecked(True)
+    assert dialog.current_calibration.cadence_mismatch == choices[0]
+    dialog.cadence_combo.setCurrentIndex(2)
+    assert dialog.current_calibration.cadence_mismatch == choices[2]
+    calibration, _offset = dialog.result_calibration()
+    dialog.close()
+    # Réouverture avec cette conversion : liste conservée, positionnée sur le choix.
+    reopened = studio_module.SyncStudioDialog(
+        target_entry=vf, target_source_path=tmp_path / "b.mkv", target_stream_index=1,
+        reference_entry=vo, reference_source_path=tmp_path / "b.mkv", reference_stream_index=2,
+        calibration=calibration, cadence_choices=choices,
+    )
+    assert reopened.cadence_check.isChecked() and reopened.cadence_combo.currentIndex() == 2
+    reopened.close()
+
+
+def test_manual_cadence_is_applied_to_the_realigned_track_alone(films, monkeypatch, tmp_path):
+    """VF issue d'un master PAL, recalée sur VO avec la conversion PAL → 23,976 : piste seule convertie."""
+    from core.workflows.cadence import manual_cadence_choices
+
+    panel, _master, vf, vo, subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    pal = manual_cadence_choices()[0]
+
+    class _PalStudio(_Studio):
+        def result_calibration(self):
+            calibration = SyncCalibration((SyncSegment(0, 150.0),), cadence_mismatch=pal,
+                                          cadence_audio_method="asetrate")
+            return calibration, 150
+
+    monkeypatch.setattr(studio_module, "SyncStudioDialog", _PalStudio)
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog",
+                        lambda choices, **_k: SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted,
+                                                              selected_entry=lambda: vo))
+    panel._on_sync_studio_requested(vf)
+    assert panel._track_calibration(vf).active_cadence == pal
+    assert panel._track_calibration(vo).active_cadence is None
+    assert _shifts(vo, subtitle) == [0, 0]
+    shifts = _prepared_shifts(panel, tmp_path)
+    assert shifts[vf.entry_id] == 150 and vo.entry_id not in shifts

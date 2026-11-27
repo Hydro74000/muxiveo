@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFrame,
@@ -130,6 +131,7 @@ class SyncStudioDialog(QDialog):
         cadence_audio_method: str = "auto",
         apply_cadence_hint: bool = True,
         analysis_stream_index: int | None = None,
+        cadence_choices: tuple[CadenceMismatch, ...] = (),
     ) -> None:
         """`quick_validated` : synchro actuelle validée par la seule vérification rapide.
 
@@ -142,6 +144,8 @@ class SyncStudioDialog(QDialog):
         (conversion refusée auparavant, ou plan qui en décide).
         `analysis_stream_index` : piste de la source cible comparée à la référence par les
         analyses (synchro automatique, hauteur) ; défaut : la cible.
+        `cadence_choices` : conversions proposées au choix (décochées) quand les vidéos ne disent
+        rien de la cadence des pistes (référence du même fichier : piste issue d'un master PAL).
         """
         super().__init__(parent)
         self.quick_validated = bool(quick_validated)
@@ -182,6 +186,14 @@ class SyncStudioDialog(QDialog):
         self._cadence_available = (
             self._initial_calibration.active_cadence or hint
         )
+        # Choix manuel du rapport (aucune cadence connue des vidéos) : premier choix proposé, décoché ;
+        # conversion déjà choisie parmi eux : liste conservée, positionnée sur elle.
+        current_ratio = self._cadence_available.speed_ratio if self._cadence_available is not None else None
+        self._cadence_choices = tuple(cadence_choices) if (
+            current_ratio is None or any(choice.speed_ratio == current_ratio for choice in cadence_choices)
+        ) else ()
+        if self._cadence_choices and self._cadence_available is None:
+            self._cadence_available = self._cadence_choices[0]
         self._cadence_method_default = cadence_audio_method or "auto"
         # Méthode portée par une conversion (sinon celle par défaut d'une calibration sans cadence).
         self._cadence_method_set = self._initial_calibration.active_cadence is not None
@@ -278,9 +290,22 @@ class SyncStudioDialog(QDialog):
         ))
         self.cadence_check.toggled.connect(self._on_cadence_toggled)
         top_row.addWidget(self.cadence_check)
-        lbl_cad_title = QLabel(mismatch.description)
-        lbl_cad_title.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
-        top_row.addWidget(lbl_cad_title)
+        if self._cadence_choices:
+            # Cadence des pistes inconnue des vidéos : rapport choisi à la main.
+            self.cadence_combo = QComboBox()
+            for choice in self._cadence_choices:
+                self.cadence_combo.addItem(choice.description, choice)
+                if choice.speed_ratio == mismatch.speed_ratio:
+                    self.cadence_combo.setCurrentIndex(self.cadence_combo.count() - 1)
+            self.cadence_combo.setToolTip(translate_text(
+                "Même vidéo pour les deux pistes : choisir la cadence d'origine de la piste (master PAL…)."
+            ))
+            self.cadence_combo.currentIndexChanged.connect(self._on_cadence_choice_changed)
+            top_row.addWidget(self.cadence_combo)
+        else:
+            lbl_cad_title = QLabel(mismatch.description)
+            lbl_cad_title.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+            top_row.addWidget(lbl_cad_title)
         top_row.addStretch()
         self._cadence_metric_lbl = QLabel()
         self._cadence_metric_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px;")
@@ -390,6 +415,14 @@ class SyncStudioDialog(QDialog):
             self._reload_timer.start()
         self.calibration_changed.emit(self.current_calibration)
         self._sync_cadence_controls()
+
+    def _on_cadence_choice_changed(self, index: int) -> None:
+        """Rapport de cadence choisi à la main : appliqué aussitôt si la conversion est cochée."""
+        if not 0 <= index < len(self._cadence_choices):
+            return
+        self._cadence_available = self._cadence_choices[index]
+        if self.cadence_check.isChecked():
+            self._on_cadence_toggled(True)
 
     def _resolve_cadence_method(self) -> None:
         """Méthode « auto » sans analyse : tranchée en arrière-plan par la hauteur des deux pistes."""
