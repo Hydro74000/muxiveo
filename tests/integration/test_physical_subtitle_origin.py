@@ -101,3 +101,42 @@ def test_rewritten_audio_keeps_the_source_origin(tmp_path: Path, backend: str) -
     video, reference, shifted = _first_timestamps(config.output)
     assert shifted == pytest.approx(reference, abs=5) and reference == pytest.approx(video, abs=30), \
         (video, reference, shifted)
+
+
+def test_native_physical_aac_is_encoded_once(tmp_path: Path, monkeypatch) -> None:
+    """AAC recalée dans un MKV à +500 ms, « Sync réelle » active : l'origine rendue à la piste préparée
+    est un décalage d'assemblage, la piste n'est pas réécrite une seconde fois."""
+    import core.workflows.remux_backend as backend
+
+    path = tmp_path / "late_aac.mkv"
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=s=64x64:r=25:d=3",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+        "-f", "lavfi", "-i", "sine=frequency=660:sample_rate=48000:duration=3",
+        "-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "ffv1", "-c:a", "aac",
+        "-output_ts_offset", "0.5", str(path),
+    ], check=True)
+    rewrites: list = []
+    original = backend.prepare_native_sync_rewrites
+
+    def capture(*args, **kwargs):
+        config, planned = original(*args, **kwargs)
+        rewrites.extend(planned)
+        return config, planned
+
+    monkeypatch.setattr(backend, "prepare_native_sync_rewrites", capture)
+    tracks = tracks_from_file_info(FileInspector().inspect(path), file_id="src")
+    target = [track for track in tracks if track.track_type == "audio"][1]
+    target.sync_calibration = SyncCalibration.linear(250).to_dict()
+    target.time_shift_ms = 250
+    order = [(0, track.mkv_tid, track.entry_id) for track in tracks]
+    config = RemuxConfig(sources=[SourceInput(path, 0, tracks)], output=tmp_path / "out.mkv", track_order=order,
+                         keep_chapters=False, mux_backend="native", sync_mode="physical", work_dir=tmp_path / "work")
+    workflow = RemuxWorkflow(ffmpeg_bin="ffmpeg", ffprobe_bin="ffprobe", sync_rewrite_enabled=True)
+    state = wait_task(workflow.run(config), timeout=120.0)
+    assert state["failed"] is None, state["failed"]
+    assert rewrites == []
+    video, reference, shifted = _first_timestamps(config.output)
+    assert shifted == pytest.approx(reference, abs=30) and reference == pytest.approx(video, abs=30), \
+        (video, reference, shifted)

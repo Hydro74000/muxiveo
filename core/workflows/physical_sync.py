@@ -15,6 +15,7 @@ from core.workflows.remux_mapping import resolve_mapped_tracks, track_sync_paylo
 from core.workflows.sync_calibration import SyncCalibration, effective_calibration
 from core.workflows.common.sync_rewrite import (
     SYNC_AUDIO_ORIGIN_FILTER,
+    SYNC_REWRITE_MODE_OFFSET,
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
     requested_audio_reencode,
@@ -273,7 +274,10 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             removed = (origins.get(source_path, 0.0) if mapped.track.track_type == "audio"
                        else timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0)
             restored_ms = round(removed * 1000)
-        track = replace(mapped.track, mkv_tid=0, time_shift_ms=restored_ms, sync_rewrite_label="", sync_rewrite_mode="", sync_calibration=None, is_new=False, orig_codec=mapped.track.codec)
+        # Origine rendue : décalage d'assemblage, jamais une synchro à réécrire une seconde fois.
+        track = replace(mapped.track, mkv_tid=0, time_shift_ms=restored_ms, sync_rewrite_label="",
+                        sync_rewrite_mode=SYNC_REWRITE_MODE_OFFSET if restored_ms else "",
+                        sync_calibration=None, is_new=False, orig_codec=mapped.track.codec)
         source_index = max(s.file_index for s in sources) + 1
         sources.append(SourceInput(output, source_index, [track]))
         for index, item in enumerate(order):

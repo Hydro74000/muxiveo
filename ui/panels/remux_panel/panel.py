@@ -3790,13 +3790,15 @@ class RemuxPanel(QWidget):
             if scope.startswith("track:"):
                 self._apply_resolved_track_cadence(entry_id, reference_entry_id, before, resolved)
             else:
-                self._apply_resolved_cadence_method(scope, reference_entry_id, before, resolved)
+                self._apply_resolved_cadence_method(scope, reference_entry_id, before, resolved, entry_id)
         finally:
             self.ready_changed.emit(self._has_ready_files())
 
     def _apply_resolved_cadence_method(self, file_id: str, reference_entry_id: str,
-                                       before: SyncCalibration, resolved: SyncCalibration) -> None:
-        """Méthode « auto » de la synchro de la source `file_id` tranchée."""
+                                       before: SyncCalibration, resolved: SyncCalibration,
+                                       analysed_entry_id: str = "") -> None:
+        """Méthode « auto » de la synchro de la source `file_id` tranchée (analyse faite sur la piste
+        `analysed_entry_id`)."""
         tracks = {track.entry_id: track for track in self._track_table.current_tracks()}
         reference = tracks.get(reference_entry_id)
         if reference is None or self._find_source(file_id) is None:
@@ -3806,7 +3808,7 @@ class RemuxPanel(QWidget):
             # Synchro désormais faite face à une autre référence : cette analyse ne la concerne plus.
             return
         if link is None:
-            self._apply_detached_source_cadence(file_id, reference, before, resolved)
+            self._apply_detached_source_cadence(file_id, reference, before, resolved, analysed_entry_id)
             return
         current = link.relative
         if not current.cadence_method_undecided:
@@ -3897,7 +3899,8 @@ class RemuxPanel(QWidget):
         return replace(resolved, cadence_method_auto=True, cadence_pitch_factor=1.0)
 
     def _apply_detached_source_cadence(self, file_id: str, reference: TrackEntry,
-                                       before: SyncCalibration, resolved: SyncCalibration) -> None:
+                                       before: SyncCalibration, resolved: SyncCalibration,
+                                       analysed_entry_id: str = "") -> None:
         """Méthode « auto » d'une source détachée de sa référence pendant l'analyse (décalage saisi) :
         synchro relative tranchée recomposée avec la position de la référence, au décalage actuel de la
         source. Ignorée si une méthode a été choisie entre-temps."""
@@ -3906,18 +3909,31 @@ class RemuxPanel(QWidget):
             return
         if resolved.cadence_audio_method == before.cadence_audio_method:
             return
+        kept: TrackEntry | None = None
         if effective_calibration(applied) is None:
             # Synchro réduite à un décalage (vitesses réciproques, hauteur ×1 en attendant), détachée
-            # en décalages par piste à la saisie : décision portée au décalage de la piste qui suit la
-            # source (celle que mesure la synchro), commun ensuite à toutes ses pistes.
-            measured = self._source_audio_track(file_id)
-            if measured is not None:
-                applied = SyncCalibration.linear(int(measured.time_shift_ms or 0))
-                self._warn_common_source_offset(file_id, measured)
+            # en décalages par piste à la saisie : décision portée au décalage de la piste analysée
+            # (sinon d'une piste qui suit la source).
+            analysed = next((track for track in self._track_table.current_tracks()
+                             if track.entry_id == analysed_entry_id), None)
+            kept = (analysed if analysed is not None and analysed.file_id == file_id
+                    and self._track_inherits_source_sync(analysed) else self._source_audio_track(file_id))
+            if kept is not None:
+                applied = SyncCalibration.linear(int(kept.time_shift_ms or 0))
         calibration = self._keep_frozen_segments(
             compose_calibrations(self._decided_relative(resolved), self._track_calibration(reference)), applied,
             before, resolved,
         )
+        if kept is not None and effective_calibration(calibration) is None:
+            # Décision sans conversion : les décalages par piste restent tels quels.
+            self.log_message.emit("INFO", translate_text(
+                "Méthode de conversion de cadence de « {source} » : {method}.",
+                source=self._source_label(file_id), method=resolved.cadence_audio_method,
+            ))
+            return
+        if kept is not None:
+            # Conversion commune à la source : un seul décalage pour toutes ses pistes.
+            self._warn_common_source_offset(file_id, kept)
         negligible = (effective_calibration(calibration) is None
                       and abs(round(calibration.segments[0].shift_ms)) <= NEGLIGIBLE_SYNC_MS)
         self._set_source_calibration(file_id, calibration, negligible=negligible)
