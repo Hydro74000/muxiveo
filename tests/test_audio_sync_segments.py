@@ -43,7 +43,7 @@ def _fake_sync_panel(**overrides):
         _audio_sync_error=SimpleNamespace(emit=lambda *_a: None),
         _executor=SimpleNamespace(submit=lambda callback: callback()),
         _preselected_reference=lambda *_a: None,
-        _last_reference_ids={},
+        _remember_reference=lambda *_a: None,
     )
     state.update(overrides)
     return SimpleNamespace(**state)

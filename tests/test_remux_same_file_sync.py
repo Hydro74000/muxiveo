@@ -699,3 +699,39 @@ def test_preselection_follows_every_selector_and_the_session(films, monkeypatch)
     _vf, vo, _sub = _reloaded(panel, monkeypatch)
     offered = _studio(panel, monkeypatch, vo, _vf, 0)
     assert offered[0][1] is _vf
+
+
+# --- Troisième relecture Codex (commit 3bb6157). ---
+
+
+def test_realigning_in_its_file_cannot_close_a_loop(films, monkeypatch):
+    """B suit le master de A, A suit VO (indépendante) : recaler VO sur VF (B) fermerait la boucle ;
+    le lien de A est abandonné, VO prend la place réglée."""
+    panel, master, vf, vo, _subtitle, logs = films
+    _reciprocal(panel, monkeypatch, master, vf, vo)
+    _studio(panel, monkeypatch, vo, vf, 10)
+    assert _Studio.opened[0]["calibration"] == SyncCalibration.linear(-150)
+    assert "A" not in panel._sync_links and "B" in panel._sync_links
+    assert _shifts(master, vf, vo) == [750, 850, 710]
+    assert any("(boucle)" in text or "(loop)" in text for _level, text in logs)
+
+
+def test_inverted_realignment_moves_the_sources_linked_to_the_released_track(films, monkeypatch):
+    """VO suit VF (+300), A suit VO (+100) ; VF recalée sur VO libère VO (0) : A suit (+100)."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    _studio(panel, monkeypatch, vo, vf, 300)
+    panel._on_audio_sync_done(master.entry_id, vo.entry_id, 100, .95, None)
+    assert master.time_shift_ms == 400
+    _studio(panel, monkeypatch, vf, vo, 50)
+    assert vo.entry_id not in panel._track_sync_links
+    assert _shifts(master, vf, vo) == [100, -250, 0]
+
+
+def test_new_reference_choice_triggers_the_autosave(films, monkeypatch):
+    panel, _master, vf, vo, _subtitle, _logs = films
+    panel._autosave_dirty = False
+    _studio(panel, monkeypatch, vo, vf, 0)
+    assert panel._autosave_dirty is True
+    panel._autosave_dirty = False
+    _studio(panel, monkeypatch, vo, vf, 0)
+    assert panel._autosave_dirty is False

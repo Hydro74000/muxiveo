@@ -1724,6 +1724,14 @@ class RemuxPanel(QWidget):
             and ref.entry_id != target.entry_id
         ]
 
+    def _remember_reference(self, entry: TrackEntry, reference: TrackEntry) -> None:
+        """Référence choisie pour la piste : présélectionnée ensuite ; session à sauvegarder si elle change."""
+        if self._last_reference_ids.get(entry.entry_id) == reference.entry_id:
+            return
+        self._last_reference_ids[entry.entry_id] = reference.entry_id
+        from ui.panels.remux_panel.functions.workflow import mark_dirty
+        mark_dirty(self)
+
     def _preselected_reference(self, entry: TrackEntry, choices: list[tuple[str, TrackEntry]]) -> TrackEntry | None:
         """Référence présélectionnée parmi `choices` : dernier choix validé pour la piste, sinon sa
         référence liée (recalage, puis lien de sa source), sinon celle de sa dernière synchro audio."""
@@ -2117,10 +2125,14 @@ class RemuxPanel(QWidget):
                 "son recalage est retiré, le nouveau prime.",
                 reference=reference.mkv_tid, target=entry.mkv_tid,
             ))
+            # Référence revenue à la synchro de sa source : les sources liées à elle suivent.
+            self._propagate_sync(set(), {reference.entry_id})
         if self._track_type_inherits_source_sync(entry):
             # Piste qui suivait sa source (audio, sous-titre en miroir) : détachée.
             self._own_sync_entry_ids.add(entry.entry_id)
         self._track_sync_links[entry.entry_id] = SyncLink(entry.file_id, reference.entry_id, relative)
+        # Source liée à cette piste dont dépend désormais la référence : boucle, son lien est abandonné.
+        self._break_sync_loops(entry.entry_id)
 
     def _release_track_sync(self, entry: TrackEntry) -> None:
         """Synchro propre de la piste retirée : une piste qui suivait sa source la suit de nouveau."""
@@ -2726,7 +2738,7 @@ class RemuxPanel(QWidget):
             reference_entry = dialog.selected_entry()
             if reference_entry is None:
                 return
-        self._last_reference_ids[entry.entry_id] = reference_entry.entry_id
+        self._remember_reference(entry, reference_entry)
         if target_family == "stereo" and not reference_reused:
             QMessageBox.warning(
                 self,
@@ -3176,7 +3188,7 @@ class RemuxPanel(QWidget):
 
         if reference_entry is None:
             return
-        self._last_reference_ids[entry.entry_id] = reference_entry.entry_id
+        self._remember_reference(entry, reference_entry)
 
         target_source = self._find_source(entry.file_id)
         reference_source = self._find_source(reference_entry.file_id)
@@ -3350,7 +3362,7 @@ class RemuxPanel(QWidget):
         )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             if reference_entry is not None:
-                self._last_reference_ids[entry.entry_id] = reference_entry.entry_id
+                self._remember_reference(entry, reference_entry)
             measured, _relative_offset = dialog.result_calibration()
             self._note_cadence_choice(entry.file_id, dialog, measured)
             # Validé sans modification : rien n'est appliqué (une référence à silences ajoutés
