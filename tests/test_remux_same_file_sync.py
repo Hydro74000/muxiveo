@@ -2698,3 +2698,51 @@ def test_removed_reference_variant_hands_links_and_analysis_to_its_stream(films,
     _run_pending(submitted)
     assert panel._sync_links["B"].relative.cadence_audio_method == "asetrate"
     assert panel._source_calibration("B").cadence_audio_method == "asetrate"
+
+
+# --- Relecture Gemini Neon (d14d802). ---
+
+
+def _variant(panel, template, entry_id):
+    panel.add_audio_track_variant(template, entry_id=entry_id, codec="aac", bitrate_kbps=256)
+    return next(track for track in panel._track_table.current_tracks() if track.entry_id == entry_id)
+
+
+def test_removed_variant_of_an_own_sync_reference_keeps_the_analysis(films, monkeypatch):
+    """VO à synchro propre calée en Auto sur une variante AAC du master, variante retirée pendant
+    l'analyse : l'analyse passe au master (même flux, même position), la méthode est tranchée, jamais
+    laissée « auto » (atempo au remux)."""
+    panel, master, _vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._own_sync_entry_ids.add(vo.entry_id)
+    master_aac = _variant(panel, master, "master_aac")
+    _studio_with(panel, monkeypatch, _pal_auto(), master_aac)
+    panel._on_sync_studio_requested(vo)
+    assert [(r, s) for _e, r, s in panel._cadence_pending.values()] == [("master_aac", f"track:{vo.entry_id}")]
+    panel.remove_audio_track_variant("master_aac")
+    assert [r for _e, r, _s in panel._cadence_pending.values()] == [master.entry_id]
+    assert panel.cadence_resolution_pending()
+    _run_pending(submitted)
+    calibration = panel._track_calibration(vo)
+    assert calibration.cadence_audio_method == "asetrate"
+    assert calibration.audio_pitch_factor == pytest.approx((24000 / 1001) / 25)
+
+
+def test_track_realigned_on_a_removed_variant_stays_frozen_and_keeps_its_analysis(films, monkeypatch):
+    """VO recalée en Auto sur une variante AAC de la VF de son fichier, variante retirée pendant
+    l'analyse : la VO reste figée (lien retiré) et son analyse passe à la VF (même flux, même position) ;
+    méthode tranchée, jamais laissée « auto »."""
+    panel, _master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    vf_aac = _variant(panel, vf, "vf_aac")
+    _studio_with(panel, monkeypatch, _pal_auto(), vf_aac)
+    panel._on_sync_studio_requested(vo)
+    assert panel._track_sync_links[vo.entry_id].reference_entry_id == "vf_aac"
+    panel.remove_audio_track_variant("vf_aac")
+    assert vo.entry_id not in panel._track_sync_links and vo.entry_id in panel._own_sync_entry_ids
+    assert [(r, s) for _e, r, s in panel._cadence_pending.values()] == [(vf.entry_id, f"track:{vo.entry_id}")]
+    _run_pending(submitted)
+    calibration = panel._track_calibration(vo)
+    assert calibration.cadence_audio_method == "asetrate"
+    assert calibration.audio_pitch_factor == pytest.approx((24000 / 1001) / 25)
+    assert round(calibration.segments[0].shift_ms) == 300

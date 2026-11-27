@@ -526,3 +526,54 @@ def test_parallel_encode_lines_hide_libvmaf_noise() -> None:
             assert dummy._handle_encode_internal_progress(wrapped) is True
     logged = [call.args[1] for call in dummy.log_requested.emit.call_args_list]
     assert logged == ["[MEDIA] x265 [warning]: --vbv-bufsize ignored"]
+
+
+# --- Relecture Gemini Neon (c6ff7c7). ---
+
+
+@pytest.mark.parametrize("codec", ["libx265", "nvencc_hevc"])
+def test_command_naming_vmaf_is_logged_and_restarts_the_counters(tmp_path, codec) -> None:
+    """Commande avec l'option VMAF de NVEncC (`model=vmaf_v0.6.1`) : affichée, compteurs remis à zéro
+    (jamais prise pour le bruit libvmaf de libx265)."""
+    dummy = _debug_routing_dummy(tmp_path)
+    dummy._op_encode_config = SimpleNamespace(video=SimpleNamespace(codec=codec))
+    dummy._op_encode_progress = MagicMock()
+    command = "$ NVEncC64 -i in.mkv --vmaf model=vmaf_v0.6.1,threads=4 -o out.hevc"
+    dummy._on_op_progress(command)
+    dummy.log_requested.emit.assert_called_once_with("INFO", f"[MEDIA] {command}")
+    dummy._op_encode_progress.command_started.assert_called_once()
+
+
+def test_nvencc_vmaf_messages_are_not_hidden(tmp_path) -> None:
+    """NVEncC : ses messages VMAF (calcul demandé) restent au journal ; le bruit visé est celui de libx265."""
+    dummy = _debug_routing_dummy(tmp_path)
+    dummy._encode_panel = SimpleNamespace(parse_progress_line=lambda _cfg, _line: None)
+    message = 'libvmaf ERROR could not read model from path: "/usr/local/share/model/vmaf_v0.6.1.json"'
+    dummy._on_op_progress(message)
+    dummy.log_requested.emit.assert_called_once_with("INFO", f"[MEDIA] {message}")
+    dummy.log_requested.emit.reset_mock()
+    dummy._op_encode_config = SimpleNamespace(video=SimpleNamespace(codec="libx265"))
+    dummy._on_op_progress(message)
+    dummy.log_requested.emit.assert_not_called()
+
+
+def test_parallel_encode_libvmaf_noise_kept_in_the_verbose_log(tmp_path) -> None:
+    """Encodages vidéo parallèles : le bruit libvmaf, absent du journal, reste dans le journal verbeux."""
+    dummy = SimpleNamespace()
+    dummy._config = SimpleNamespace(enable_file_logging=True, file_logging_level="verbose",
+                                    app_data_dir=tmp_path, verbose_log_dir=tmp_path / "logs")
+    dummy._op_mode = "encode"
+    dummy._log_panel = SimpleNamespace(log=MagicMock())
+    dummy._verbose_log_file_path = None
+    dummy._verbose_log_session_stamp = None
+    dummy._verbose_log_file_index = 1
+    dummy._verbose_log_file_error_reported = False
+    dummy._verbose_log_part_path = MethodType(MainWindow._verbose_log_part_path, dummy)
+    dummy._verbose_log_session_path = MethodType(MainWindow._verbose_log_session_path, dummy)
+    dummy._prepare_verbose_log_target = MethodType(MainWindow._prepare_verbose_log_target, dummy)
+    dummy._append_verbose_tool_output = MethodType(MainWindow._append_verbose_tool_output, dummy)
+    line = _LIBVMAF_SPAM[-1]
+    MainWindow._capture_verbose_progress_line(dummy, _ENCODE_INTERNAL_PROGRESS_PREFIX + json.dumps(
+        {"kind": "encode_ffmpeg", "label": "ffmpeg-video-1", "event": "line", "line": line}, ensure_ascii=False))
+    content = next((tmp_path / "logs").glob("Muxiveo-verbose-*.log")).read_text(encoding="utf-8")
+    assert f"[TOOL] [ffmpeg-video-1] {line}" in content

@@ -2328,14 +2328,16 @@ class RemuxPanel(QWidget):
 
         # Référence retirée (variante) : une piste du même flux à la même position la remplace pour la
         # synchro des sources, les analyses en cours et les dernières références (le même son au même
-        # endroit). Une piste recalée sur elle dans son fichier reste figée.
+        # endroit). Une piste recalée sur elle dans son fichier reste figée, son analyse continue.
         replacements = {
             entry_id: candidates[0].entry_id for entry_id, gone in removed.items()
             if (candidates := [track for track in same_stream(gone)
                                if same_applied_sync(self._track_calibration(track), self._track_calibration(gone))])
         }
         for entry_id, link in list(self._track_sync_links.items()):
-            if entry_id not in present or link.reference_entry_id not in present:
+            if entry_id in present and link.reference_entry_id in replacements:
+                del self._track_sync_links[entry_id]
+            elif entry_id not in present or link.reference_entry_id not in present:
                 self._forget_track_link(entry_id)
         for references in (self._source_reference_ids, self._last_reference_ids):
             for key, reference_id in list(references.items()):
@@ -2343,8 +2345,7 @@ class RemuxPanel(QWidget):
                     references[key] = replacements[reference_id]
         dropped = False
         for token, (analysed_id, reference_id, scope) in list(self._cadence_pending.items()):
-            if not scope.startswith("track:"):
-                reference_id = replacements.get(reference_id, reference_id)
+            reference_id = replacements.get(reference_id, reference_id)
             # Analyse d'une source lancée depuis une piste retirée : elle vaut encore pour la source.
             if reference_id in removed_ids or (scope.startswith("track:") and analysed_id in removed_ids):
                 del self._cadence_pending[token]

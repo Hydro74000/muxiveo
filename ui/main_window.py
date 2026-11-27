@@ -288,6 +288,12 @@ def _is_libvmaf_noise(line: str) -> bool:
     if not text:
         return False
     return bool(_LIBVMAF_NOISE_RE.search(text)) or (len(text) <= 16 and text in _LIBVMAF_NOISE_TEMPLATE)
+
+
+def _encode_uses_nvencc(encode_config: object) -> bool:
+    """Encodage vidéo par NVEncC : ni libx265 ni son bruit libvmaf (ses lignes VMAF sont les siennes)."""
+    codec = str(getattr(getattr(encode_config, "video", None), "codec", "") or "").strip().lower()
+    return bool(codec) and backend_id_for_codec(codec) == "nvencc"
 # Hauteur réservée au cadre/titre de fenêtre dans la zone utile de l'écran.
 _WINDOW_FRAME_MARGIN_PX = 40
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
@@ -2960,14 +2966,14 @@ class MainWindow(QMainWindow):
                     parts = [f"{pct}%"]
                     self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
-            if _is_libvmaf_noise(line):
-                return
             tracker = self._op_encode_progress
             if line.startswith("$ "):
                 self._stop_prep_progress()
                 self._tool_json_depth = 0  # bloc EditConfig éventuellement tronqué
                 tracker.command_started()
                 self.log_requested.emit("INFO", f"[MEDIA] {line}")
+                return
+            if _is_libvmaf_noise(line) and not _encode_uses_nvencc(getattr(self, "_op_encode_config", None)):
                 return
             rife_progress_line = parse_rife_progress(line) is not None
             if self._is_debug_tool_line(line):
@@ -3475,7 +3481,9 @@ class MainWindow(QMainWindow):
                 self._append_verbose_tool_output("done", label=label)
                 return
             if raw_line and not raw_line.startswith("$ "):
-                if _is_encode_progress_noise(raw_line) or _is_encode_stage_message(raw_line):
+                if (_is_encode_progress_noise(raw_line) or _is_encode_stage_message(raw_line)
+                        or _is_libvmaf_noise(raw_line)):
+                    # Lignes absentes du journal : conservées dans le journal verbeux.
                     self._append_verbose_tool_output(raw_line, label=label)
             return
 
@@ -3487,9 +3495,7 @@ class MainWindow(QMainWindow):
                 self._append_verbose_tool_output(line)
             return
 
-        encode_cfg = getattr(self, "_op_encode_config", None)
-        encode_codec = str(getattr(getattr(encode_cfg, "video", None), "codec", "") or "").strip().lower()
-        if encode_codec and backend_id_for_codec(encode_codec) == "nvencc":
+        if _encode_uses_nvencc(getattr(self, "_op_encode_config", None)):
             if line and not line.startswith("$ ") and not line.startswith(_PCT_SENTINEL):
                 self._append_verbose_tool_output(line)
             return
