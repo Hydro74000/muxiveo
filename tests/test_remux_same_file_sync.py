@@ -1457,3 +1457,125 @@ def test_entered_zero_on_a_realigned_track_refreshes_the_cancel_buttons(films, m
     panel._track_table.time_shift_edited.emit(vo)
     assert vo.entry_id not in panel._track_table._linked_sync_entry_ids
     assert panel._global_sync_cancel_btn.isHidden()
+
+
+# --- Seconde relecture Gemini Neon (commit 7a0f063). ---
+
+
+def test_studio_ratio_change_outside_auto_drops_the_former_pitch_analysis(qt_app, tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from core.workflows.cadence import manual_cadence_choices
+    from core.workflows.cadence_pitch import CadencePitchAnalysis
+
+    resolutions: list = []
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method",
+                        lambda self: resolutions.append(self.current_calibration))
+    vf = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="B")
+    vo = TrackEntry(2, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="B")
+    choices = manual_cadence_choices()
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=vf, target_source_path=tmp_path / "b.mkv", target_stream_index=1,
+        reference_entry=vo, reference_source_path=tmp_path / "b.mkv", reference_stream_index=2,
+        cadence_choices=choices,
+    )
+    dialog.cadence_check.setChecked(True)
+    analysis = CadencePitchAnalysis("asetrate", 0.7, 0.9, 0.5, 220.0, 230.0)
+    dialog.current_calibration = replace(dialog.current_calibration, cadence_audio_method="asetrate",
+                                         cadence_method_auto=True, cadence_pitch_analysis=analysis)
+    dialog.rb_atempo.setChecked(True)
+    dialog._on_cadence_method_changed()
+    dialog.cadence_combo.setCurrentIndex(2)
+    assert dialog.current_calibration.cadence_pitch_analysis is None
+    assert dialog.current_calibration.cadence_audio_method == "atempo"
+    resolutions.clear()
+    dialog.rb_auto.setChecked(True)
+    dialog._on_cadence_method_changed()
+    assert dialog.current_calibration.cadence_method_undecided and resolutions
+    dialog.close()
+
+
+def test_declining_on_an_own_track_against_another_file_is_not_a_source_refusal(films, monkeypatch):
+    panel, master, vf, vo, _subtitle, _logs = films
+    _independent(panel, monkeypatch, vo, vf, 700)
+    _studio_with(panel, monkeypatch, SyncCalibration.linear(150), master, cadence_declined=True)
+    panel._on_sync_studio_requested(vo)
+    assert panel._cadence_declined_source_ids == set()
+
+
+def test_resolved_method_does_not_reach_another_track_of_the_file(films, monkeypatch):
+    """VO et VD recalées sur VF avec la même conversion « auto » : le résultat de VO ne vaut pas pour VD."""
+    from PySide6.QtCore import QCoreApplication
+
+    panel, _master, vf, vo, _subtitle, _logs = films
+    vd = _track(4, "audio", file_id="B", language="ger", title="VD")
+    panel._track_table.append_tracks(_COLOR_A, [vd])
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(0.0), vf)
+    panel._on_sync_studio_requested(vo)
+    panel._on_sync_studio_requested(vd)
+    assert len(submitted) == 2
+    submitted.pop(0)()
+    QCoreApplication.processEvents()
+    assert panel._track_sync_links[vo.entry_id].relative.cadence_audio_method == "asetrate"
+    assert panel._track_sync_links[vd.entry_id].relative.cadence_audio_method == "auto"
+
+
+def test_variant_of_an_own_track_gets_the_resolved_method(films, monkeypatch):
+    """VO indépendante calée sur le master en « auto », variante créée pendant l'analyse : même résultat."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    _independent(panel, monkeypatch, vo, vf, 700)
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(), master)
+    panel._on_sync_studio_requested(vo)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    assert panel._last_reference_ids["variant"] == master.entry_id
+    _run_pending(submitted)
+    assert panel._track_calibration(vo).cadence_audio_method == "asetrate"
+    assert panel._track_calibration(variant).cadence_audio_method == "asetrate"
+
+
+def test_profile_variant_with_its_own_offset_is_cancellable(qt_app, monkeypatch, tmp_path):
+    from core.profiles.decision import remux_config_to_decision_profile
+
+    panel, master, vf, vo, _sub = _distinct_panel(tmp_path)
+    cuts = SyncCalibration((SyncSegment(0, 300), SyncSegment(60000, 500)))
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, cuts)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _studio(panel, monkeypatch, variant, vf, 120)
+    profile = remux_config_to_decision_profile(panel.collect_config())
+    panel.remove_audio_track_variant("variant")
+    panel._apply_decision_profile(profile)
+    recreated = next(track for track in panel._track_table.current_tracks() if track.is_new)
+    assert panel._track_table._has_cancelable_auto_sync(recreated)
+    panel.close()
+
+
+def test_redone_source_sync_no_longer_waits_for_the_former_analysis(films, monkeypatch):
+    from dataclasses import replace
+
+    panel, master, vf, _vo, _subtitle, _logs = films
+    _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
+    assert panel.cadence_resolution_pending()
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, replace(_pal_auto(), cadence_audio_method="atempo"))
+    assert not panel.cadence_resolution_pending()
+
+
+def test_entered_offset_on_a_realignment_keeps_its_pitch_analysis(films, monkeypatch):
+    """Recalage « auto » dans le fichier, décalage saisi avant le résultat (lien retiré) : analyse
+    relancée face à la dernière référence, résultat posé sur la synchro propre."""
+    panel, _master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(), vf)
+    panel._on_sync_studio_requested(vo)
+    submitted.clear()
+    vo.time_shift_ms = 500
+    panel._track_table.time_shift_edited.emit(vo)
+    assert vo.entry_id not in panel._track_sync_links and panel.cadence_resolution_pending()
+    _run_pending(submitted)
+    assert panel._track_calibration(vo).cadence_audio_method == "asetrate"
+    assert vo.time_shift_ms == 500 and not panel.cadence_resolution_pending()

@@ -429,13 +429,16 @@ class SyncStudioDialog(QDialog):
         if not 0 <= index < len(self._cadence_choices):
             return
         self._cadence_available = self._cadence_choices[index]
-        if self.current_calibration.cadence_method_requested == "auto":
-            # Mode « Auto » : la hauteur analysée valait pour l'ancien rapport, analyse à refaire.
-            self.current_calibration = replace(
-                self.current_calibration, cadence_audio_method="auto", cadence_pitch_analysis=None,
-            )
+        # La hauteur analysée valait pour l'ancien rapport : effacée (mode « Auto » : analyse à refaire).
+        auto = self.current_calibration.cadence_method_requested == "auto"
+        self.current_calibration = replace(
+            self.current_calibration, cadence_pitch_analysis=None,
+            cadence_audio_method="auto" if auto else self.current_calibration.cadence_audio_method,
+        )
         if self.cadence_check.isChecked():
             self._on_cadence_toggled(True)
+        else:
+            self._refresh_cadence_info()
 
     def _resolve_cadence_method(self) -> None:
         """Méthode « auto » sans analyse : tranchée en arrière-plan par la hauteur des deux pistes."""
