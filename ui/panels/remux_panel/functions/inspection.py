@@ -233,6 +233,8 @@ def on_remove_file(panel: "RemuxPanel", file_id: str) -> None:
     panel._chapter_sync_cancelled_source_ids.discard(file_id)
     panel._cadence_declined_source_ids.discard(file_id)
     panel._drop_cadence_analyses({track.entry_id for track in sf.tracks})
+    # Analyses de la synchro de la source, lancées depuis une piste déjà retirée comprises.
+    panel._drop_cadence_analyses(file_id=file_id)
     panel._auto_sync_entry_ids.difference_update(
         track.entry_id
         for track in sf.tracks
