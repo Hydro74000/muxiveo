@@ -364,9 +364,17 @@ class SyncStudioDialog(QDialog):
         return self._cadence_unchecked and self.current_calibration.active_cadence is None
 
     def _sync_cadence_controls(self) -> None:
-        """Case et méthode de la carte Cadence d'après la calibration courante (résultat, réinitialisation)."""
+        """Case et méthode de la carte Cadence d'après la calibration courante (résultat, réinitialisation).
+
+        Conversion apportée par une analyse alors que la carte était absente : la carte est créée,
+        pour pouvoir la décocher ou en changer la méthode avant validation."""
         if not hasattr(self, "cadence_check"):
-            return
+            active = self.current_calibration.active_cadence
+            layout = getattr(self, "_header_layout", None)
+            if active is None or layout is None:
+                return
+            self._cadence_available = self.current_calibration.cadence_mismatch
+            layout.addWidget(self._build_cadence_frame(self._cadence_available))
         calibration = self.current_calibration
         if calibration.active_cadence is not None:
             self._cadence_available = calibration.cadence_mismatch
@@ -564,7 +572,8 @@ class SyncStudioDialog(QDialog):
         info_lbl.setWordWrap(True)
         hc_layout.addWidget(info_lbl)
 
-        # Section Cadence & Hauteur tonale (Pitch)
+        # Section Cadence & Hauteur tonale (Pitch) ; créée plus tard si une analyse découvre une conversion.
+        self._header_layout = hc_layout
         if self._cadence_available is not None:
             hc_layout.addWidget(self._build_cadence_frame(self._cadence_available))
 

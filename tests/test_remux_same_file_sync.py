@@ -2163,3 +2163,43 @@ def test_saved_source_analysis_keeps_its_scope_when_its_track_is_realigned(films
     panel._restored_cadence_analyses = [(vf.entry_id, master.entry_id, panel._sync_links["B"].relative, "source")]
     panel._resume_cadence_analyses()
     assert any(scope == "B" for _e, _r, scope in panel._cadence_pending.values())
+
+
+# --- Relecture Codex (4c1c0bc). ---
+
+
+def test_resume_infers_the_scope_of_an_analysis_saved_without_it(films, monkeypatch):
+    """Analyse sauvegardée sans portée (format antérieur) d'une VO recalée dans son fichier : reprise
+    comme analyse de la piste seule, une seule fois."""
+    panel, _master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    _studio_with(panel, monkeypatch, _pal_auto(), vf)
+    panel._on_sync_studio_requested(vo)
+    relative = panel._track_sync_links[vo.entry_id].relative
+    panel._cadence_pending.clear()
+    submitted.clear()
+    panel._restored_cadence_analyses = [(vo.entry_id, vf.entry_id, relative, "")]
+    panel._resume_cadence_analyses()
+    scopes = [scope for _e, _r, scope in panel._cadence_pending.values()]
+    assert scopes == [f"track:{vo.entry_id}"] and len(submitted) == 1
+
+
+def test_studio_reveals_the_cadence_card_when_an_analysis_finds_a_conversion(qt_app, tmp_path, monkeypatch):
+    from core.workflows.cadence import manual_cadence_choices
+
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_load_segment_audio_async", lambda *_a, **_k: None)
+    monkeypatch.setattr(studio_module.SyncStudioDialog, "_resolve_cadence_method", lambda *_a, **_k: None)
+    vf = TrackEntry(1, "audio", "E-AC-3", "5.1", "fre", "VF", file_id="B")
+    master = TrackEntry(1, "audio", "E-AC-3", "5.1", "eng", "VO", file_id="A")
+    dialog = studio_module.SyncStudioDialog(
+        target_entry=vf, target_source_path=tmp_path / "b.mka", target_stream_index=1,
+        reference_entry=master, reference_source_path=tmp_path / "a.mkv", reference_stream_index=1,
+    )
+    assert not hasattr(dialog, "cadence_check")
+    found = SyncCalibration((SyncSegment(0, 150.0),), cadence_mismatch=manual_cadence_choices()[0],
+                            cadence_audio_method="asetrate")
+    dialog._on_auto_sub_sync_ready(found)
+    assert dialog.cadence_check.isChecked()
+    dialog.cadence_check.setChecked(False)
+    assert dialog.current_calibration.cadence_mismatch is None
+    dialog.close()

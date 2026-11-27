@@ -3703,15 +3703,21 @@ class RemuxPanel(QWidget):
         restored, self._restored_cadence_analyses = self._restored_cadence_analyses, []
         for entry_id, reference_id, relative, scope in restored:
             entry, reference = by_id.get(entry_id), by_id.get(reference_id)
+            if entry is not None and not scope:
+                # Portée absente (sauvegarde antérieure) : synchro propre de la piste si elle en a une.
+                scope = "track" if (entry_id in self._track_sync_links
+                                    or not self._track_inherits_source_sync(entry)) else "source"
             if entry is not None and scope == "source" and not self._track_inherits_source_sync(entry):
                 # Portée enregistrée : la synchro de la source, analysée sur une piste qui la suit.
                 entry = self._source_audio_track(entry.file_id)
             if entry is not None and reference is not None:
                 self._schedule_cadence_method(entry, reference, relative)
         for entry_id, track_link in list(self._track_sync_links.items()):
-            # Recalage dans le fichier à méthode « auto » non tranchée : analysé à nouveau.
+            # Recalage dans le fichier à méthode « auto » non tranchée : analysé à nouveau (sauf analyse
+            # sauvegardée déjà reprise ci-dessus).
             entry, reference = by_id.get(entry_id), by_id.get(track_link.reference_entry_id)
-            if entry is not None and reference is not None and track_link.relative.cadence_method_undecided:
+            if (entry is not None and reference is not None and track_link.relative.cadence_method_undecided
+                    and not any(scope == f"track:{entry_id}" for _e, _r, scope in self._cadence_pending.values())):
                 self._schedule_cadence_method(entry, reference)
         for entry in tracks:
             # Synchro propre sans lien (calée face à une autre source) : face à sa dernière référence.

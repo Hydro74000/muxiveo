@@ -216,8 +216,10 @@ def _restored_cadence_analyses(config, payload) -> list[tuple[str, str, SyncCali
         except (KeyError, TypeError, ValueError):
             continue
         if target is not None and reference is not None:
-            scope = "track" if item.get("scope") == "track" else "source"
-            restored.append((target.entry_id, reference.entry_id, relative, scope))
+            # Sauvegarde sans portée : déduite à la reprise de l'état de la piste (« »).
+            scope = str(item.get("scope") or "")
+            restored.append((target.entry_id, reference.entry_id, relative,
+                             scope if scope in ("track", "source") else ""))
     return restored
 
 
