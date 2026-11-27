@@ -12350,5 +12350,9 @@
   "Même vidéo pour les deux pistes : choisir la cadence d'origine de la piste (master PAL…).": {
     "fra": "Même vidéo pour les deux pistes : choisir la cadence d'origine de la piste (master PAL…).",
     "eng": "Same video for both tracks: choose the original cadence of the track (PAL master…)."
+  },
+  "Méthode de conversion de cadence de la piste #{idx} non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.": {
+    "fra": "Méthode de conversion de cadence de la piste #{idx} non tranchée (piste de référence introuvable) : atempo, hauteur de la piste conservée.",
+    "eng": "Cadence conversion method of track #{idx} undecided (reference track not found): atempo, track pitch kept."
   }
 }

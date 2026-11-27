@@ -360,6 +360,14 @@ class SyncStudioDialog(QDialog):
         if calibration.active_cadence is not None:
             self._cadence_available = calibration.cadence_mismatch
             self._cadence_method_set = True
+        if hasattr(self, "cadence_combo") and self._cadence_available is not None:
+            # Liste du rapport alignée sur la conversion retenue (réinitialisation, synchro automatique).
+            index = next((i for i, choice in enumerate(self._cadence_choices)
+                          if choice.speed_ratio == self._cadence_available.speed_ratio), -1)
+            if index >= 0:
+                self.cadence_combo.blockSignals(True)
+                self.cadence_combo.setCurrentIndex(index)
+                self.cadence_combo.blockSignals(False)
         self.cadence_check.blockSignals(True)
         self.cadence_check.setChecked(calibration.active_cadence is not None)
         self.cadence_check.blockSignals(False)
@@ -421,6 +429,11 @@ class SyncStudioDialog(QDialog):
         if not 0 <= index < len(self._cadence_choices):
             return
         self._cadence_available = self._cadence_choices[index]
+        if self.current_calibration.cadence_method_requested == "auto":
+            # Mode « Auto » : la hauteur analysée valait pour l'ancien rapport, analyse à refaire.
+            self.current_calibration = replace(
+                self.current_calibration, cadence_audio_method="auto", cadence_pitch_analysis=None,
+            )
         if self.cadence_check.isChecked():
             self._on_cadence_toggled(True)
 
