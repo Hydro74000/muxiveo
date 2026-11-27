@@ -12342,5 +12342,9 @@
   "Synchro de « {source} » : sa référence suit désormais cette source (boucle) ; la synchro est conservée, elle ne suit plus sa référence.": {
     "fra": "Synchro de « {source} » : sa référence suit désormais cette source (boucle) ; la synchro est conservée, elle ne suit plus sa référence.",
     "eng": "Sync of “{source}”: its reference now follows this source (loop); the sync is kept, it no longer follows its reference."
+  },
+  "Méthode de conversion de cadence de la piste #{idx} : {method}.": {
+    "fra": "Méthode de conversion de cadence de la piste #{idx} : {method}.",
+    "eng": "Cadence conversion method of track #{idx}: {method}."
   }
 }

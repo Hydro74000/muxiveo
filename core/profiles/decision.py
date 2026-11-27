@@ -1657,6 +1657,11 @@ def _apply_decision_profile_rules(
     for entry_id, field in [*proposed, *sorted(variant_written - set(proposed))]:
         written.setdefault(entry_id, []).append(field)
     report["written_fields"] = {entry_id: sorted(fields) for entry_id, fields in written.items()}
+    # Décalages propres rejoués par create_audio_variant (variante créée ou reprise) : piste → ms.
+    report["variant_time_shifts"] = {
+        track.entry_id: int(track.time_shift_ms or 0)
+        for track in working if (track.entry_id, "time_shift_ms") in variant_written
+    }
     report["valid"] = not report["conflicts"] and not report["ambiguous_matches"]
     return DecisionProfileResult(tracks=working, report=report, profile=dict(profile))
 

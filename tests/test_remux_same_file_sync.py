@@ -993,3 +993,132 @@ def test_container_validation_checks_the_variant_target_codec(films, monkeypatch
     _uncheck(panel, vo)
     errors = RemuxWorkflow().validate(panel.collect_config())
     assert any("incompatible" in error and "flac" in error for error in errors), errors
+
+
+# --- Neuvième relecture Codex (commit bcdcef9). ---
+
+
+def _distinct_panel(tmp_path, *, with_subtitle=False):
+    """A (master allemand) ; B : VF, VO (pistes distinguables par un profil), sous-titres en option."""
+    panel = RemuxPanel(AppConfig())
+    panel._output_edit.setText(str(tmp_path / "output.mkv"))
+    master = _track(1, "audio", file_id="A", title="Master", language="ger", orig_language="ger", orig_title="Master")
+    vf = _track(1, "audio", file_id="B", title="VF")
+    vo = _track(2, "audio", file_id="B", title="VO", language="eng", orig_language="eng", orig_title="VO")
+    b_tracks = [vf, vo]
+    subtitle = None
+    if with_subtitle:
+        subtitle = _track(3, "subtitle", codec="SRT", file_id="B", title="VF")
+        b_tracks.append(subtitle)
+    _add_source(panel, tmp_path, "A", [master])
+    _add_source(panel, tmp_path, "B", b_tracks)
+    return panel, master, vf, vo, subtitle
+
+
+def test_profile_offset_applies_to_a_reused_variant_on_a_source_with_cuts(qt_app, monkeypatch, tmp_path):
+    """Profil capturé avec une variante à +420 ; variante recréée à la main (suit B, +300), profil
+    réappliqué : la variante reprise sort à +420."""
+    from core.profiles.decision import remux_config_to_decision_profile
+    from core.workflows.remux_mapping import track_sync_payload
+
+    panel, master, vf, vo, _sub = _distinct_panel(tmp_path)
+    cuts = SyncCalibration((SyncSegment(0, 300), SyncSegment(60000, 500)))
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, cuts)
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    _studio(panel, monkeypatch, variant, vf, 120)
+    profile = remux_config_to_decision_profile(panel.collect_config())
+    panel.remove_audio_track_variant("variant")
+    panel.add_audio_track_variant(vo, entry_id="manual", codec="aac", bitrate_kbps=192)
+    panel._apply_decision_profile(profile)
+    reused = next(track for track in panel._track_table.current_tracks() if track.entry_id == "manual")
+    assert reused.time_shift_ms == 420 and reused.entry_id in panel._own_sync_entry_ids
+    payload = track_sync_payload(panel.collect_config(), reused, 1)
+    assert SyncCalibration.from_dict(payload).segments == cuts.with_start_offset(420).segments
+    panel.close()
+
+
+def test_profile_constant_variant_offset_is_not_a_mirror_ambiguity(qt_app, tmp_path):
+    """Source sans coupure : variante à +120 recréée par un profil, VO et sous-titres gardés :
+    le miroir physique des sous-titres ignore la variante (synchro propre)."""
+    from core.profiles.decision import remux_config_to_decision_profile
+
+    panel, _master, _vf, vo, subtitle = _distinct_panel(tmp_path, with_subtitle=True)
+    panel._workflow_options["sync_mode"] = "physical"
+    panel.add_audio_track_variant(vo, entry_id="variant", codec="aac", bitrate_kbps=192)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    variant.time_shift_ms = 120
+    panel._track_table.time_shift_edited.emit(variant)
+    profile = remux_config_to_decision_profile(panel.collect_config())
+    panel.remove_audio_track_variant("variant")
+    panel._apply_decision_profile(profile)
+    recreated = next(track for track in panel._track_table.current_tracks() if track.is_new)
+    shifts = _prepared_shifts(panel, tmp_path)
+    assert shifts[recreated.entry_id] == 120 and shifts.get(subtitle.entry_id, 0) == 0
+    panel.close()
+
+
+def test_auto_cadence_of_a_realignment_in_its_file_is_analysed(films, monkeypatch):
+    """Recalage dans le fichier avec conversion de cadence « auto » non tranchée : analyse de hauteur
+    planifiée sur la piste, résultat porté par son lien ; reprise de session : analyse relancée."""
+    from core.workflows.cadence import detect_cadence_from_metadata
+
+    panel, _master, vf, vo, _subtitle, _logs = films
+    pal = detect_cadence_from_metadata("24000/1001", "25/1")
+
+    class _CadenceStudio(_Studio):
+        def result_calibration(self):
+            calibration = SyncCalibration((SyncSegment(0, 300.0),), cadence_mismatch=pal,
+                                          cadence_audio_method="auto")
+            return calibration, 300
+
+    submitted: list = []
+    monkeypatch.setattr(panel._executor, "submit", lambda fn, *args: submitted.append(fn))
+    from core.workflows.audio_sync_scan import AudioSyncScanner
+    targets: list = []
+
+    def resolve(_self, _reference, target, calibration, log=None):
+        from dataclasses import replace
+        targets.append(target.stream_index)
+        return replace(calibration, cadence_audio_method="asetrate", cadence_method_auto=True)
+
+    monkeypatch.setattr(AudioSyncScanner, "resolve_cadence_method", resolve)
+    monkeypatch.setattr(studio_module, "SyncStudioDialog", _CadenceStudio)
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog",
+                        lambda choices, **_k: SimpleNamespace(exec=lambda: QDialog.DialogCode.Accepted,
+                                                              selected_entry=lambda: vf))
+    panel._on_sync_studio_requested(vo)
+    assert panel.cadence_resolution_pending() and len(submitted) == 1
+    from PySide6.QtCore import QCoreApplication
+    submitted.pop()()
+    QCoreApplication.processEvents()
+    assert targets == [vo.mkv_tid]
+    assert panel._track_sync_links[vo.entry_id].relative.cadence_audio_method == "asetrate"
+    assert SyncCalibration.from_dict(vo.sync_calibration).cadence_audio_method == "asetrate"
+    assert not panel.cadence_resolution_pending()
+    # Lien restauré encore « auto » : reprise de l'analyse.
+    from dataclasses import replace
+    link = panel._track_sync_links[vo.entry_id]
+    panel._track_sync_links[vo.entry_id] = replace(link, relative=replace(link.relative, cadence_audio_method="auto"))
+    panel._resume_cadence_analyses()
+    assert len(submitted) == 1
+
+
+def test_physical_variant_of_an_atmos_track_is_not_refused_for_its_title(films, monkeypatch, tmp_path):
+    """Variante AAC de « VO Dolby Atmos » recalée avec une coupure, original décoché : conversion
+    demandée, titre hérité sans effet (préparation et validation)."""
+    from core.workflows.remux import RemuxWorkflow
+
+    panel, _master, vf, _vo, _subtitle, _logs = films
+    panel._workflow_options["sync_mode"] = "physical"
+    atmos = TrackEntry(5, "audio", "E-AC-3", "7.1  768 kbps", "eng", "VO Dolby Atmos", file_id="B")
+    panel._track_table.append_tracks(_COLOR_A, [atmos])
+    panel._find_source("B").tracks.append(atmos)
+    panel.add_audio_track_variant(atmos, entry_id="variant", codec="aac", bitrate_kbps=384)
+    variant = next(track for track in panel._track_table.current_tracks() if track.entry_id == "variant")
+    assert "Atmos" in variant.title
+    _cut_realign(panel, monkeypatch, variant, vf)
+    _uncheck(panel, atmos)
+    assert _prepared_shifts(panel, tmp_path)[variant.entry_id] == 200
+    errors = RemuxWorkflow().validate(panel.collect_config())
+    assert not any("incompatible" in error for error in errors), errors

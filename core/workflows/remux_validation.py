@@ -14,7 +14,7 @@ from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE
 from core.workflows.common.path_safety import same_filesystem_target as _same_filesystem_target
 from core.workflows.common.sync_rewrite import (
     REWRITE_AUDIO_CODECS, REWRITE_SUBTITLE_CODECS,
-    normalized_rewrite_codec, track_has_object_audio_metadata,
+    normalized_rewrite_codec, requested_audio_reencode, track_has_object_audio_metadata,
 )
 from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import RemuxConfig, TrackEntry
@@ -181,11 +181,12 @@ def validate_remux_config(
             physical_audio = config.sync_mode == "physical" and selected_track.track_type == "audio"
             source_codec = selected_track.codec if physical_audio else (selected_track.orig_codec or selected_track.codec)
             codec = normalized_rewrite_codec(source_codec)
-            object_audio = track_has_object_audio_metadata(
-                codec=source_codec, title=selected_track.title,
-                display_info=(selected_track.display_info if physical_audio
-                              else selected_track.orig_display_info or selected_track.display_info),
-            )
+            object_audio = not (physical_audio and requested_audio_reencode(selected_track)) and (
+                track_has_object_audio_metadata(
+                    codec=source_codec, title=selected_track.title,
+                    display_info=(selected_track.display_info if physical_audio
+                                  else selected_track.orig_display_info or selected_track.display_info),
+                ))
             audio_codecs = REWRITE_AUDIO_CODECS | ({"flac"} if config.sync_mode == "physical" else set())
             # Mode container : la réécriture décode la source et produit la variante dans son codec cible.
             target_codec = normalized_rewrite_codec(selected_track.codec)

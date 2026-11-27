@@ -17,6 +17,7 @@ from core.workflows.common.sync_rewrite import (
     SYNC_AUDIO_ORIGIN_FILTER,
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
+    requested_audio_reencode,
     sync_rewrite_forced_offset,
     track_has_object_audio_metadata,
 )
@@ -169,8 +170,9 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
                 if codec not in {"ac3", "eac3"}:
                     command += ["-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS"]
             else:
-                if codec not in {"aac", "ac3", "eac3", "flac"} or track_has_object_audio_metadata(
-                        codec=track.codec, title=track.title, display_info=track.display_info):
+                if codec not in {"aac", "ac3", "eac3", "flac"} or (
+                        not requested_audio_reencode(track) and track_has_object_audio_metadata(
+                            codec=track.codec, title=track.title, display_info=track.display_info)):
                     raise RemuxError("Synchronisation physique : codec immersif/non encodable ; choisir explicitement une variante AAC, AC3, EAC3 ou FLAC.")
                 rate = (sample_rates or {}).get((Path(mapped.source_path), int(mapped.stream_index)))
                 graph = audio_filter(calibration, config.crossfade_ms, sample_rate=rate).replace(

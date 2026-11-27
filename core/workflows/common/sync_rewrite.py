@@ -356,6 +356,14 @@ def track_has_object_audio_metadata(
     return any(marker in haystack for marker in _OBJECT_AUDIO_MARKERS)
 
 
+def requested_audio_reencode(track) -> bool:
+    """Variante réencodée dans un autre codec que celui de sa piste d'origine (conversion demandée :
+    l'audio objet éventuel de l'original n'y est déjà plus, son titre hérité ne compte pas)."""
+    codec = normalized_rewrite_codec(str(getattr(track, "codec", "") or ""))
+    original = normalized_rewrite_codec(str(getattr(track, "orig_codec", "") or getattr(track, "codec", "") or ""))
+    return bool(codec) and codec != original
+
+
 def audio_bitrate_kbps_from_display_info(display_info: str) -> int | None:
     match = re.search(
         r"(\d+(?:[.,]\d+)?)\s*(?:kbps|kb/s|kbit/s)",
