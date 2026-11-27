@@ -3704,9 +3704,16 @@ class RemuxPanel(QWidget):
         for entry_id, reference_id, relative, scope in restored:
             entry, reference = by_id.get(entry_id), by_id.get(reference_id)
             if entry is not None and not scope:
-                # Portée absente (sauvegarde antérieure) : synchro propre de la piste si elle en a une.
-                scope = "track" if (entry_id in self._track_sync_links
-                                    or not self._track_inherits_source_sync(entry)) else "source"
+                # Portée absente (sauvegarde antérieure), déduite de la référence sauvegardée : l'analyse
+                # d'une piste liée se fait toujours face à la référence de son lien ; une piste détachée
+                # sans lien n'a d'analyse propre que si sa conversion reste à trancher.
+                track_link = self._track_sync_links.get(entry_id)
+                if track_link is not None:
+                    scope = "track" if track_link.reference_entry_id == reference_id else "source"
+                elif not self._track_inherits_source_sync(entry):
+                    scope = "track" if self._track_calibration(entry).cadence_method_undecided else "source"
+                else:
+                    scope = "source"
             if entry is not None and scope == "source" and not self._track_inherits_source_sync(entry):
                 # Portée enregistrée : la synchro de la source, analysée sur une piste qui la suit.
                 entry = self._source_audio_track(entry.file_id)

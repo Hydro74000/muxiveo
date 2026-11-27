@@ -2203,3 +2203,25 @@ def test_studio_reveals_the_cadence_card_when_an_analysis_finds_a_conversion(qt_
     dialog.cadence_check.setChecked(False)
     assert dialog.current_calibration.cadence_mismatch is None
     dialog.close()
+
+
+# --- Relecture Codex (1dcc618). ---
+
+
+def test_resume_infers_a_source_scope_from_the_saved_reference(films, monkeypatch):
+    """Analyse de B (VF face au master) sauvegardée sans portée, VF recalée ensuite sur la VO : la
+    référence sauvegardée n'est pas celle du lien de VF, l'analyse reste celle de la synchro de B,
+    reprise sur une piste qui la suit."""
+    panel, master, vf, vo, _subtitle, _logs = films
+    submitted, _targets = _capture_pitch_analyses(panel, monkeypatch)
+    panel._on_audio_sync_done(vf.entry_id, master.entry_id, 300, .95, _pal_auto())
+    relative = panel._sync_links["B"].relative
+    _studio(panel, monkeypatch, vf, vo, 50)
+    panel._cadence_pending.clear()
+    submitted.clear()
+    panel._restored_cadence_analyses = [(vf.entry_id, master.entry_id, relative, "")]
+    panel._resume_cadence_analyses()
+    pending = list(panel._cadence_pending.values())
+    assert [(entry_id, scope) for entry_id, _r, scope in pending if scope == "B"] == [(vo.entry_id, "B")]
+    assert not any(scope == f"track:{vf.entry_id}" for _e, reference_id, scope in pending
+                   if reference_id == master.entry_id)

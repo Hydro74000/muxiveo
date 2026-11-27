@@ -522,6 +522,8 @@ def run_native_remux(
                 prepared_config = prepare_physical(
                     runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external, log=log,
                     ffprobe=ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
+                    # Assemblage natif : un Matroska est lu avec ses horodatages bruts.
+                    restore_matroska_origin=True,
                 )
             native_rewrites: list[NativeRewrite] = []
             if sync_rewrite is not None and prepared_config.sync_mode == "container":

@@ -200,8 +200,18 @@ def preparation_commands(config, root, ffmpeg, *, source_origins: Mapping[Path, 
     return result
 
 
+_MATROSKA_SUFFIXES = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
+
+
 def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffprobe",
-                     cancel_cb: Callable[[], bool] | None = None):
+                     cancel_cb: Callable[[], bool] | None = None, restore_matroska_origin: bool = False):
+    """Pistes à réécrire préparées une à une (piste préparée = nouvelle source).
+
+    `restore_matroska_origin` : assemblage natif, qui lit un Matroska avec ses horodatages bruts ;
+    l'origine retirée à la préparation (audio : origine commune, sous-titre : départ du conteneur)
+    est rendue à la piste préparée d'une source Matroska. Le muxage FFmpeg ramène toutes les entrées
+    à leur départ et les sources TS sont rebasées par la canonicalisation : rien à rendre.
+    """
     from core.workflows.subtitle_sync import shift_file
     sources = [replace(s, tracks=[replace(t) for t in s.tracks]) for s in config.sources]
     order = list(config.track_order)
@@ -254,7 +264,16 @@ def prepare_physical(config, root: Path, ffmpeg, run, log=None, *, ffprobe="ffpr
             timestamp_offsets[output] = timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0
         if mapped.track.track_type == "subtitle":
             shift_file(output, output, calibration)
-        track = replace(mapped.track, mkv_tid=0, time_shift_ms=0, sync_rewrite_label="", sync_rewrite_mode="", sync_calibration=None, is_new=False, orig_codec=mapped.track.codec)
+        restored_ms = 0
+        if restore_matroska_origin and Path(mapped.source_path).suffix.lower() in _MATROSKA_SUFFIXES:
+            source_path = Path(mapped.source_path)
+            fmt = payloads.get(source_path, {}).get("format")
+            # Audio : origine commune retirée (-copyts + -itsoffset) ; sous-titre : départ du format
+            # retiré par FFmpeg sans -copyts (un Matroska n'a pas de discontinuités).
+            removed = (origins.get(source_path, 0.0) if mapped.track.track_type == "audio"
+                       else timestamp_seconds(fmt.get("start_time")) if isinstance(fmt, dict) else 0.0)
+            restored_ms = round(removed * 1000)
+        track = replace(mapped.track, mkv_tid=0, time_shift_ms=restored_ms, sync_rewrite_label="", sync_rewrite_mode="", sync_calibration=None, is_new=False, orig_codec=mapped.track.codec)
         source_index = max(s.file_index for s in sources) + 1
         sources.append(SourceInput(output, source_index, [track]))
         for index, item in enumerate(order):
