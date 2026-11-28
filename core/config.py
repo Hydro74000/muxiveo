@@ -427,9 +427,13 @@ def restart_application() -> bool:
         if sys.platform != "win32":
             popen_kwargs["start_new_session"] = True
         if getattr(sys, "frozen", False):
+            # Relance de l'application elle-même (interpréteur ou exécutable figé), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.Popen([sys.executable], **popen_kwargs)
         else:
             launcher_path = Path(__file__).parent.parent / "launcher.py"
+            # Relance de l'application elle-même (interpréteur ou exécutable figé), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.Popen([sys.executable, str(launcher_path)], **popen_kwargs)
         return True
     except Exception:
@@ -740,6 +744,8 @@ class ToolVersionRegistry:
 
     def _probe(self, command: str) -> ToolVersionInfo:
         try:
+            # Outil configuré, argv fixe, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 [command, "--version"],
                 capture_output=True,

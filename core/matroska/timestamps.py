@@ -87,6 +87,8 @@ class MatroskaTimestampReader:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # ffprobe configuré, arguments séparés et chemin média protégé, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,

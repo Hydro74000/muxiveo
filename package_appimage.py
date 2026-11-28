@@ -151,6 +151,8 @@ def err(msg: str)  -> None: print(_c("31",   f"  ✘  {msg}"), file=sys.stderr)
 
 def run(cmd: list[str | Path], **kwargs) -> None:
     info(" ".join(str(c) for c in cmd))
+    # Commande du packaging (argv construit par ce script), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
     subprocess.run([str(c) for c in cmd], check=True, **kwargs)
 
 
@@ -826,6 +828,8 @@ def _dl_nvencc(tools_dir: Path, arch: str) -> None:
             return
         extract_dir = tmp_path / "nvencc_extracted"
         extract_dir.mkdir()
+        # Commande du packaging (argv construit par ce script), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         subprocess.run([dpkg_deb, "-x", str(archive), str(extract_dir)], check=True)
         # Copie binaire (le .deb installe sous /usr/bin/NVEncC selon la version).
         binary_candidates = [

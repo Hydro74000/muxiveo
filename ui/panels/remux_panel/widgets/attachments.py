@@ -6,6 +6,8 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
+# Pièces jointes XML/NFO : document à DTD jamais analysé (_pretty_xml).
+# nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from xml.dom import minidom
 
 from PySide6.QtCore import QObject, QPoint, QSize, Qt, Signal
@@ -368,26 +370,27 @@ def _scaled_pixmap(pixmap: QPixmap, bounds: QSize) -> QPixmap:
     )
 
 
-def _pretty_text_attachment_content(path: Path) -> str:
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    if path.suffix.lower() not in {".xml", ".nfo"}:
+def _pretty_xml(raw: str) -> str:
+    """XML / NFO d'une pièce jointe indenté pour l'affichage. Document à DTD (entités : expansion
+    exponentielle ou externe, fichier non fiable) ou invalide : texte brut, jamais analysé."""
+    head = raw.upper()
+    if "<!DOCTYPE" in head or "<!ENTITY" in head:
         return raw
     try:
         formatted = minidom.parseString(raw.encode("utf-8")).toprettyxml(indent="  ")
     except Exception:
         return raw
     return "\n".join(line for line in formatted.splitlines() if line.strip())
+
+
+def _pretty_text_attachment_content(path: Path) -> str:
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    return _pretty_xml(raw) if path.suffix.lower() in {".xml", ".nfo"} else raw
 
 
 def _pretty_text_attachment_bytes(data: bytes, filename: str) -> str:
     raw = data.decode("utf-8", errors="replace")
-    if Path(filename).suffix.lower() not in {".xml", ".nfo"}:
-        return raw
-    try:
-        formatted = minidom.parseString(raw.encode("utf-8")).toprettyxml(indent="  ")
-    except Exception:
-        return raw
-    return "\n".join(line for line in formatted.splitlines() if line.strip())
+    return _pretty_xml(raw) if Path(filename).suffix.lower() in {".xml", ".nfo"} else raw
 
 
 class _AttachmentNameButton(QPushButton):

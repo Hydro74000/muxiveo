@@ -710,6 +710,8 @@ class ToolRunner(QObject):
                 signals=signals,
             )
 
+        # Commande d'un workflow (argv liste construit par l'application), jamais de shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         with subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -838,6 +840,8 @@ class ToolRunner(QObject):
                     popen_kwargs["stdin"] = prev_stdout
                 elif index == 0 and cmd.producer is not None:
                     popen_kwargs["stdin"] = subprocess.PIPE
+                # Commande d'un workflow (argv liste construit par l'application), jamais de shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 proc = subprocess.Popen(
                     stage,
                     stdout=subprocess.PIPE,
@@ -961,6 +965,8 @@ class ToolRunner(QObject):
         proc_env = dict(env) if env is not None else os.environ.copy()
         if proc_env.get("TERM", "dumb") in ("", "dumb"):
             proc_env["TERM"] = "xterm-256color"
+        # Commande d'un workflow (argv liste construit par l'application) sur PTY, jamais de shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         proc = subprocess.Popen(
             cmd,
             stdout=slave_fd,

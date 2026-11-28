@@ -279,6 +279,8 @@ class DoviProfileDetector:
             # MKV dont Tracks échappe au premier SeekHead : lu par le pipe FFmpeg ci-dessous.
             direct = ext != ".mkv" or strict_demuxer_reads_tracks(source)
             if stream_index is None and direct and ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 extract = subprocess.run(
                     [self._dovi_tool, "extract-rpu", "-i", str(source), "-l", "100", "-o", str(rpu_bin)],
                     capture_output=True, check=False, **subprocess_text_kwargs(),
@@ -291,6 +293,8 @@ class DoviProfileDetector:
                     )
             else:
                 # MP4/MOV/TS : pipe ffmpeg → dovi_tool extract-rpu via stdin.
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 ff = subprocess.Popen(
                     [self._ffmpeg, "-nostdin", "-loglevel", "error", "-i", str(source),
                      "-map", "0:v:0" if stream_index is None else f"0:{int(stream_index)}",
@@ -300,6 +304,8 @@ class DoviProfileDetector:
                 )
                 pipe_kwargs = subprocess_text_kwargs()
                 pipe_kwargs.pop("stdin", None)
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 dt = subprocess.run(
                     [self._dovi_tool, "extract-rpu", "-", "-l", "100", "-o", str(rpu_bin)],
                     stdin=ff.stdout, capture_output=True, check=False,
@@ -316,6 +322,8 @@ class DoviProfileDetector:
                     )
 
             try:
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 result = subprocess.run(
                     [self._dovi_tool, "info", "-i", str(rpu_bin), "--summary"],
                     capture_output=True, check=False, **subprocess_text_kwargs(),

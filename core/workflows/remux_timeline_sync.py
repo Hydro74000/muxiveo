@@ -502,6 +502,8 @@ class FfmpegTimelineSync:
                     _cli_path(fifo_path),
                 ]
                 self._log("$ " + " ".join(str(c) for c in cmd))
+                # Commande FFmpeg construite ici (argv), sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 proc = subprocess.Popen(
                     cmd,
                     stdin=subprocess.DEVNULL,
@@ -594,6 +596,8 @@ class FfmpegTimelineSync:
                     "pipe:1",
                 ]
                 self._log("$ " + " ".join(str(c) for c in cmd))
+                # Commande FFmpeg construite ici (argv), sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
@@ -724,6 +728,8 @@ class FfmpegTimelineSync:
             _cli_path(destination),
         ]
         self._log("$ " + " ".join(str(c) for c in cmd))
+        # Commande FFmpeg construite ici (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -762,6 +768,8 @@ class FfmpegTimelineSync:
         ]
         self._log("$ " + " ".join(str(c) for c in cmd))
 
+        # Commande FFmpeg construite ici (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,

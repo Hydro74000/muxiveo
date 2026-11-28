@@ -247,6 +247,8 @@ def _restart_current_app() -> bool:
             cmd = [sys.executable]
         else:
             cmd = [sys.executable, str(Path(__file__).resolve())]
+        # Relance de l'application elle-même (interpréteur ou exécutable figé), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         subprocess.Popen(cmd)
         return True
     except Exception:

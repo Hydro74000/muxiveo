@@ -393,6 +393,8 @@ def run(cmd: list[str], dry_run: bool = False, check: bool = True,
     info(f"$ {display}")
     if dry_run:
         return None
+    # Commande de l'installeur (argv construit par ce script), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         cmd,
         capture_output=capture,
@@ -1307,6 +1309,8 @@ def _windows_controlled_folder_access_state() -> int | None:
         return None
 
     script = "$p=Get-MpPreference; [int]$p.EnableControlledFolderAccess"
+    # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         [ps, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
@@ -1480,6 +1484,8 @@ exit 0
             str(targets_path),
         ]
         if _windows_is_admin():
+            # PowerShell résolu, script de l'installeur et chemins en arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -1500,6 +1506,8 @@ exit 0
                 "-Verb RunAs -Wait -PassThru; "
                 "exit $proc.ExitCode"
             )
+            # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 [ps, "-NoProfile", "-NonInteractive", "-Command", launcher],
                 capture_output=True,
@@ -1633,6 +1641,8 @@ def _windows_fetch_text(url: str) -> str:
         )
         env = os.environ.copy()
         env["MR_URL"] = url
+        # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [ps, "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
@@ -1649,6 +1659,8 @@ def _windows_fetch_text(url: str) -> str:
     curl = shutil.which("curl.exe") or shutil.which("curl")
     if not curl:
         raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    # curl résolu par shutil.which, URL HTTPS de la release, argv, sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         [curl, "-fsSL", "-H", "User-Agent: Muxiveo-setup/1.0", url],
         capture_output=True,
@@ -1675,6 +1687,8 @@ def _windows_download_file(url: str, dest: Path) -> None:
         env = os.environ.copy()
         env["MR_URL"] = url
         env["MR_DEST"] = str(dest)
+        # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [ps, "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
@@ -1691,7 +1705,10 @@ def _windows_download_file(url: str, dest: Path) -> None:
     curl = shutil.which("curl.exe") or shutil.which("curl")
     if not curl:
         raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    # curl résolu par shutil.which, URL HTTPS de la release, argv, sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         [curl, "-fL", "-H", "User-Agent: Muxiveo-setup/1.0", "-o", str(dest), url],
         capture_output=True,
         text=True,
@@ -1938,6 +1955,8 @@ def _extract_deb_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
     extract_dir.mkdir(parents=True, exist_ok=True)
     dpkg_deb = shutil.which("dpkg-deb")
     if dpkg_deb:
+        # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         subprocess.run(
             [dpkg_deb, "-x", str(archive_path), str(extract_dir)],
             check=True,
@@ -1954,6 +1973,8 @@ def _extract_deb_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
         cwd_backup = os.getcwd()
         try:
             os.chdir(extract_dir)
+            # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.run([ar, "x", str(archive_path)], check=True)
             data_tarball = next(
                 (p for p in extract_dir.glob("data.tar.*")), None,
@@ -2002,7 +2023,10 @@ def _extract_rpm_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
     try:
         os.chdir(extract_dir)
         with open(archive_path, "rb") as fp:
+            # rpm2cpio | cpio de l'installeur (outil résolu par shutil.which, argv), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             r = subprocess.Popen([rpm2cpio], stdin=fp, stdout=subprocess.PIPE)
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             c = subprocess.Popen([cpio, "-idm", "--quiet"], stdin=r.stdout)
             if r.stdout:
                 r.stdout.close()
@@ -2038,6 +2062,8 @@ def _install_windows_nvencc_zip(archive_path: Path, dest_dir: Path) -> Path:
         "Expand-Archive -LiteralPath $env:MR_ARCHIVE "
         "-DestinationPath $env:MR_EXTRACT -Force"
     )
+    # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
@@ -2135,6 +2161,8 @@ def _try_native_pkg_install(
         if dry_run:
             info(f"[dry-run] Would run: apt install -y {archive_path}")
             return True
+        # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         rc = subprocess.run(
             sudo + [apt, "install", "-y", str(archive_path)],
             check=False,
@@ -2148,6 +2176,8 @@ def _try_native_pkg_install(
         if dry_run:
             info(f"[dry-run] Would run: dnf install -y {archive_path}")
             return True
+        # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         rc = subprocess.run(
             sudo + [dnf, "install", "-y", str(archive_path)],
             check=False,

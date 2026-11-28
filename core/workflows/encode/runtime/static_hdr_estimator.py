@@ -670,6 +670,8 @@ class StaticHdrEstimateService:
         if frame_size <= 0:
             return []
         self._check_cancelled(cancel_cb)
+        # Commande FFmpeg construite ici (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -903,6 +905,8 @@ class StaticHdrEstimateService:
         cancel_cb: Callable[[], bool] | None = None,
     ) -> str:
         self._check_cancelled(cancel_cb)
+        # Commande FFmpeg construite ici (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,

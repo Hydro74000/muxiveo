@@ -104,6 +104,8 @@ def install_linux_shortcut(opt_bin: Path, opt_share: Path) -> None:
 
     validator = shutil.which("desktop-file-validate")
     if validator:
+        # Outil XDG résolu par shutil.which, argv, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         result = subprocess.run([validator, str(desktop_file)], check=False, capture_output=True, text=True)
         _log(f"desktop-file-validate rc={result.returncode}")
         if result.stdout:
@@ -128,6 +130,8 @@ def install_linux_shortcut(opt_bin: Path, opt_share: Path) -> None:
             args.extend(["-q", "-t", str((data_home / "icons" / "hicolor"))])
         elif command == "xdg-desktop-menu":
             args.append("forceupdate")
+        # Outil XDG résolu par shutil.which, argv, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         result = subprocess.run(args, check=False, capture_output=True, text=True)
         _log(f"{command} rc={result.returncode}")
         if result.stdout:

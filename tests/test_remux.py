@@ -3916,6 +3916,21 @@ class TestAttachmentPreviewFormatting:
 
         assert content == "line 1\nline 2"
 
+    def test_pretty_text_attachment_content_never_expands_a_dtd(self, tmp_path, monkeypatch):
+        """Pièce jointe XML/NFO d'un fichier non fiable déclarant des entités (bombe d'expansion) :
+        affichée telle quelle, jamais analysée."""
+        from ui.panels.remux_panel.widgets import attachments
+
+        bomb = ('<?xml version="1.0"?>\n<!DOCTYPE lolz [<!ENTITY lol "lol">'
+                '<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>\n<lolz>&lol2;</lolz>')
+        nfo_path = tmp_path / "movie.nfo"
+        nfo_path.write_text(bomb, encoding="utf-8")
+        parsed: list[bytes] = []
+        monkeypatch.setattr(attachments.minidom, "parseString", lambda data: parsed.append(data))
+
+        assert _pretty_text_attachment_content(nfo_path) == bomb
+        assert parsed == []
+
 
 class TestMatroskaAttachmentExtractor:
 

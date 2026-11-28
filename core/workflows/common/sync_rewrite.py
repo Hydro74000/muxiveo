@@ -1215,6 +1215,8 @@ class SyncRewriteService:
         cancel_cb: Callable[[], bool] | None = None,
     ) -> None:
         self._emit_tool_progress("$ " + " ".join(str(part) for part in cmd))
+        # Commande FFmpeg construite par le service (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         with subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,

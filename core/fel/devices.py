@@ -169,6 +169,8 @@ def pipeline_devices(video: VideoEncodeSettings, devices: tuple[FelDevice, ...],
             if not stage or "rife" not in Path(stage[0]).stem.lower():
                 continue
             try:
+                # Moteur muxiveo-rife configuré, argv fixe, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 result = subprocess.run(  # nosec B603
                     [stage[0], "--list-gpus"], capture_output=True, check=False,
                     timeout=5, **subprocess_text_kwargs(),

@@ -543,6 +543,8 @@ def plugin_capture(engine: object, path: Path, stream: int, *, ffmpeg_bin: str, 
             return None
 
     def capture(layer: str, time_s: float, count: int) -> list[Frame]:
+        # Outil configuré, arguments séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         reader = subprocess.Popen(  # nosec B603 (outil configuré, arguments séparés)
             [ffmpeg_bin, "-v", "error", "-nostdin", "-f", "nut", "-i", "pipe:0", "-frames:v", str(count),
              "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "pipe:1"],
@@ -787,6 +789,8 @@ def _start_tree(cmd: list[str]) -> subprocess.Popen:
     else:
         kwargs["start_new_session"] = True
     try:
+        # Outil configuré, arguments séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         process = subprocess.Popen(  # nosec B603 (outil configuré, arguments séparés)
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
     except BaseException:

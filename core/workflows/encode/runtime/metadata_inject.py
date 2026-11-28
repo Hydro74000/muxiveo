@@ -1219,6 +1219,8 @@ class MetadataInjectRunner:
 def _load_mediainfo_video(mediainfo_bin: str, path: Path) -> dict | None:
     """Charge le track Video du JSON mediainfo, ou None si indisponible."""
     try:
+        # MediaInfo configuré, arguments séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [mediainfo_bin, "--Output=JSON", str(path)],
             capture_output=True, check=False,
@@ -1261,6 +1263,8 @@ def _build_dovi_record_from_rpu(
     TV refusent le flux ou tombent en fallback HDR10 cassé.
     """
     try:
+        # dovi_tool configuré, arguments séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [dovi_tool_bin, "info", "-i", str(rpu_bin), "--summary"],
             capture_output=True,

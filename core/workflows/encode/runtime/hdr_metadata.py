@@ -142,6 +142,8 @@ class HdrMetadataProbeService:
     def load_mediainfo_video_tracks(self, path: Path) -> list[dict]:
         mediainfo_bin = self._tool_bin("mediainfo")
         try:
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 [mediainfo_bin, "--Output=JSON", str(path)],
                 capture_output=True,
@@ -243,6 +245,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -325,6 +329,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -448,6 +454,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -506,6 +514,8 @@ class HdrMetadataProbeService:
         timeout_s = 300
         probe: DynamicHdrPreviewProbeResult
         try:
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -594,6 +604,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -667,6 +679,8 @@ class HdrMetadataProbeService:
         keyframes: list[float] = []
         timed_out = False
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -867,6 +881,8 @@ class HdrMetadataProbeService:
 
         mediainfo_bin = self._tool_bin("mediainfo")
         try:
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             hdr_format = subprocess.run(
                 [mediainfo_bin, "--Inform=Video;%HDR_Format%", str(source)],
                 capture_output=True,
@@ -874,6 +890,8 @@ class HdrMetadataProbeService:
                 timeout=20,
                 **subprocess_text_kwargs(),
             )
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             hdr_compat = subprocess.run(
                 [mediainfo_bin, "--Inform=Video;%HDR_Format_Compatibility%", str(source)],
                 capture_output=True,
@@ -929,6 +947,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True, check=False, timeout=10,
@@ -949,6 +969,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True, check=False, timeout=20,

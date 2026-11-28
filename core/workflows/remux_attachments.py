@@ -137,6 +137,8 @@ def extract_attached_pics(
                 cli_path(out_path),
             ]
             log_cb("INFO", "$ " + " ".join(str(token) for token in cmd))
+            # Commande FFmpeg construite ici (argv), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,

@@ -334,6 +334,8 @@ class NvenccPipeExecutor:
                 signals._register_proc(proc)
                 prev_stdout = proc.stdout
 
+            # Commande NVEncC construite par le plan d'encodage (argv), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             encode_proc = subprocess.Popen(
                 encode_cmd,
                 stdin=prev_stdout if prev_stdout is not None else (subprocess.PIPE if native is not None else None),
