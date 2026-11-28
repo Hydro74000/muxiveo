@@ -1001,3 +1001,124 @@ def test_cadence_resolution_failure_prevents_processing(panel, tmp_path, monkeyp
     assert panel._finalize_cadence_methods([0], lambda: continued.append(True))
     _wait(qt_app, lambda: not panel.busy)
     assert not continued and "Lecture impossible" in panel.status.text()
+
+
+
+def test_imported_recipe_restores_its_controls_and_changes_the_settings_signature(panel, qt_app, tmp_path,
+                                                                                    monkeypatch):
+    """Audits 26–27 : import réel d'une recette (étiquette de sortie, chapitres, fondu) → fondu restauré dans son
+    contrôle (utilisé par la préparation) et signature des réglages changée (critère de repréparation à l'export ;
+    la conservation des plans est vérifiée par ``test_individual_preparation_with_changed_controls_…``)."""
+    from dataclasses import replace
+
+    from core.workflows.hybrid_matrix import HybridRecipe
+
+    before = panel._settings_signature()
+    recipe = replace(HybridRecipe(), output_tag="NOUVEAU", keep_master_chapters=False, crossfade_ms=20)
+    path = tmp_path / "recette.json"
+    path.write_text(json.dumps(recipe.to_dict()), encoding="utf-8")
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName", lambda *_a, **_k: (str(path), ""))
+    panel.import_recipe()
+    assert panel.controls["crossfade-ms"].value() == 20
+    effective = panel._effective_recipe()
+    assert (effective.crossfade_ms, effective.output_tag, effective.keep_master_chapters) == (20, "NOUVEAU", False)
+    assert panel._settings_signature() != before
+
+
+@pytest.mark.parametrize("change", ["crossfade", "sync_strategy"])
+def test_individual_preparation_with_changed_controls_survives_the_export(panel, season, monkeypatch, qt_app,
+                                                                          tmp_path, change):
+    """Audit 27 : contrôle modifié avant une préparation individuelle → l'export d'un lot incomplet garde le plan
+    préparé (le rattrapage de la recette par les contrôles ne change pas la signature)."""
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    if change == "crossfade":
+        panel.controls["crossfade-ms"].setValue(40)
+    else:
+        panel.sync_strategy.setCurrentIndex(panel.sync_strategy.findData("manual"))
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    assert 0 in panel.jobs
+    edited = panel.jobs[0]
+    season.clear()
+    saved = []
+
+    def save(*_args):
+        saved.append(dict(panel.jobs))
+        panel._finish_operation("finished", "test")
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getExistingDirectory", lambda *_a: str(tmp_path))
+    monkeypatch.setattr(panel, "_save_jobs", save)
+    panel.export_jobs()
+    _wait(qt_app, lambda: not panel.busy)
+    assert saved and saved[0].get(0) is edited  # plan préparé individuellement conservé
+
+
+
+def test_exported_recipe_keeps_the_crossfade_shown_in_the_studio(panel, qt_app, tmp_path, monkeypatch):
+    """Audit 28 : fondu modifié dans l'interface → export de la recette → relecture : même fondu."""
+    from core.jobs.hybrid_studio import load_recipe
+
+    panel.controls["crossfade-ms"].setValue(20)
+    path = tmp_path / "export.json"
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getSaveFileName", lambda *_a, **_k: (str(path), ""))
+    panel.export_recipe()
+    assert load_recipe(path).crossfade_ms == 20
+
+
+@pytest.mark.parametrize("field, value", [("output_tag", "NOUVEAU"), ("keep_master_chapters", False)])
+def test_each_imported_recipe_field_changes_the_settings_signature(panel, qt_app, tmp_path, monkeypatch, field,
+                                                                  value):
+    from dataclasses import replace
+
+    from core.workflows.hybrid_matrix import HybridRecipe
+
+    before = panel._settings_signature()
+    path = tmp_path / "recette.json"
+    path.write_text(json.dumps(replace(HybridRecipe(), **{field: value}).to_dict()), encoding="utf-8")
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName", lambda *_a, **_k: (str(path), ""))
+    panel.import_recipe()
+    assert panel._settings_signature() != before
+
+
+
+def test_prepared_plan_is_reprepared_at_export_after_importing_a_different_recipe(panel, season, monkeypatch,
+                                                                                  qt_app, tmp_path):
+    """Audit 33 : plan préparé, puis recette importée (étiquette différente) → l'export repréparé tout (le plan
+    préparé avec l'ancienne recette n'est pas exporté)."""
+    from dataclasses import replace
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.StandardButton.No)
+    panel.scan_button.click()
+    _wait(qt_app, lambda: not panel.busy)
+    panel.calibrate_single_row(0)
+    _wait(qt_app, lambda: not panel.busy)
+    prepared = panel.jobs[0]
+    recipe_path = tmp_path / "recette.json"
+    recipe_path.write_text(json.dumps(replace(panel._effective_recipe(), output_tag="NOUVEAU").to_dict()),
+                           encoding="utf-8")
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getOpenFileName",
+                        lambda *_a, **_k: (str(recipe_path), ""))
+    panel.import_recipe()
+    import ui.panels.hybrid_studio as studio
+
+    fake, tags = studio.prepare_matrix_episode, []
+
+    def record(episode, recipe, *args, **kwargs):  # recette réellement transmise à la repréparation
+        tags.append(recipe.output_tag)
+        return fake(episode, recipe, *args, **kwargs)
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.prepare_matrix_episode", record)
+    saved = []
+
+    def save(*_args):
+        saved.append(dict(panel.jobs))
+        panel._finish_operation("finished", "test")
+
+    monkeypatch.setattr("ui.panels.hybrid_studio.QFileDialog.getExistingDirectory", lambda *_a: str(tmp_path))
+    monkeypatch.setattr(panel, "_save_jobs", save)
+    panel.export_jobs()
+    _wait(qt_app, lambda: not panel.busy)
+    assert saved and 0 in saved[0] and saved[0][0] is not prepared  # repréparé…
+    assert tags and set(tags) == {"NOUVEAU"}  # …avec la recette importée

@@ -242,6 +242,8 @@ class ToolRunner:
 
     def run_text(self, args: list[str]) -> str:
         try:
+            # Outils de l'audit (ffprobe, ffmpeg, dovi_tool) en argv, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 args,
                 capture_output=True,
@@ -266,6 +268,8 @@ class ToolRunner:
 
     def popen(self, args: list[str]) -> subprocess.Popen[bytes]:
         try:
+            # Outils de l'audit (ffprobe, ffmpeg, dovi_tool) en argv, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             return subprocess.Popen(
                 args,
                 stdout=subprocess.PIPE,
@@ -316,12 +320,16 @@ def _extract_dovi_rpu_with_fallback(
             str(output_path),
         ]
         try:
+            # Outils de l'audit (ffprobe, ffmpeg, dovi_tool) en argv, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             ffmpeg_proc = subprocess.Popen(
                 ffmpeg_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
             assert ffmpeg_proc.stdout is not None
+            # Outils de l'audit (ffprobe, ffmpeg, dovi_tool) en argv, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             dovi_proc = subprocess.Popen(
                 dovi_cmd,
                 stdin=ffmpeg_proc.stdout,

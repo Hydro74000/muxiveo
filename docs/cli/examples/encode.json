@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "sources": ["film.mkv"],
+  "output": "film.x265.mkv",
+  "encode": {
+    "preset": "x265 qualité",
+    "video": {
+      "default": {
+        "codec": "libx265",
+        "rate_control": "crf",
+        "crf": 18,
+        "encoder_preset": "slow",
+        "bit_depth": "auto",
+        "crop": {"auto": true},
+        "restoration": {"level": "auto"},
+        "dolby_vision": {"mode": "copy"},
+        "hdr10plus": {"mode": "copy"}
+      },
+      "tracks": [
+        {"select": {"source": 0, "stream": 0}, "static_hdr": {"mode": "manual", "max_cll": "1000,400"}}
+      ]
+    },
+    "audio": [
+      {"select": {"source": 0, "stream": 1}, "codec": "eac3", "bitrate_kbps": 640}
+    ],
+    "accept_dovi_nvenc_crop": false
+  }
+}

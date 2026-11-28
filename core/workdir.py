@@ -29,6 +29,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, cast
 
 from core.file_lock import FileLock, lock_is_free
 from core.file_types import _WINDOWS_RESERVED_STEMS
@@ -53,7 +54,7 @@ _TMDB_INSECURE_SSL_ENV = f"{APP_ENV_PREFIX}_TMDB_INSECURE_SSL"
 _PROCESS_NAME_MAX = 80
 
 
-def _urlopen_image(req: urllib.request.Request, timeout: int = 30):
+def _urlopen_image(req: urllib.request.Request, timeout: float = 30):
     """urlopen TLS vérifié pour les images TMDB (même opt-in explicite que l'API)."""
     return urlopen_tls(req, timeout, insecure_env=_TMDB_INSECURE_SSL_ENV)
 
@@ -205,6 +206,67 @@ class ProcessWorkDir:
                 pass
             raise
         return True
+
+
+    def release(self) -> None:
+        """Libère le verrou du job sans rien supprimer : dossier conservé, abandonné.
+
+        Le marqueur reste : le nettoyage du démarrage suivant le proposera.
+        """
+        lock = _take_held_lock(self.token)
+        if lock is not None:
+            lock.release(unlink=True)
+
+
+@dataclass(frozen=True)
+class RetainedProcessWorkDir:
+    """Dossier process d'un job en échec, gardé jusqu'à la décision de l'utilisateur."""
+
+    work_dir: ProcessWorkDir
+    payload_bytes: int
+
+    @property
+    def path(self) -> Path:
+        return self.work_dir.path
+
+    def keep(self) -> None:
+        """Contenu conservé pour l'utilisateur (proposé au nettoyage du démarrage suivant)."""
+        self.work_dir.release()
+
+    def discard(self) -> None:
+        """Suppression ; un reste (fichier verrouillé) est repris par le nettoyage de démarrage."""
+        try:
+            self.work_dir.remove()
+        except OSError:
+            pass
+
+
+class FailedWorkDirRetention:
+    """Dossiers process à garder si leur job échoue, le temps que l'utilisateur décide.
+
+    Le job demande la conservation à la création du dossier ; le premier crochet
+    de fin en échec la réclame, une seule fois (plusieurs crochets peuvent voir
+    le même dossier).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tokens: set[str] = set()
+
+    def request(self, work_dir: ProcessWorkDir) -> None:
+        with self._lock:
+            self._tokens.add(work_dir.token)
+
+    def claim(self, path: Path) -> ProcessWorkDir | None:
+        """Dossier process ``path`` s'il a été demandé et pas encore réclamé."""
+        owned = capture_process_work_dir(path, root=path.parent)
+        if owned is None:
+            return None
+        with self._lock:
+            if owned.token not in self._tokens:
+                return None
+            self._tokens.discard(owned.token)
+        return owned
 
 
 def _register_held_lock(token: str, lock: FileLock) -> None:
@@ -361,6 +423,30 @@ def work_dir_entries(path: Path) -> list[Path]:
     )
 
 
+def process_dir_payload_bytes(path: Path, *, excluded: Callable[[Path], bool] = lambda _entry: False) -> int:
+    """Octets des fichiers produits dans un dossier process (marqueurs et entrées ``excluded`` à part).
+
+    Liens jamais suivis ; fichier illisible ignoré.
+    """
+    total = 0
+    for entry in work_dir_entries(path):
+        if excluded(entry) or _is_link_or_junction(entry):
+            continue
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+                continue
+        except OSError:
+            continue
+        for root, _dirs, files in os.walk(entry):
+            for name in files:
+                try:
+                    total += (Path(root) / name).lstat().st_size
+                except OSError:
+                    pass
+    return total
+
+
 def work_dir_has_entries(path: Path) -> bool:
     if not path.exists() or not path.is_dir():
         return False
@@ -484,26 +570,102 @@ def normalized_tmdb_cover_filename(filename: str) -> str:
     return name if name not in {"", ".", ".."} else "cover.jpg"
 
 
-def download_tmdb_cover(url: str, filename: str, target_dir: Path) -> Path:
-    """
-    Télécharge une cover depuis l'URL TMDB et la place dans target_dir.
+#: Taille maximale d'une image TMDB téléchargée (octets) : au-delà, refus (réponse anormale).
+TMDB_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+_TMDB_IMAGE_CHUNK = 64 * 1024
 
-    Retourne le chemin du fichier téléchargé.
-    Lève une OSError ou urllib.error.URLError en cas d'échec réseau/disque.
+
+def fetch_tmdb_image(url: str, *, timeout: float = 30.0, deadline: float = 60.0,
+                     max_bytes: int = TMDB_IMAGE_MAX_BYTES) -> bytes:
+    """Image TMDB (:func:`_fetch_tmdb_image`) sous échéance **dure** : connexion, en-têtes et cadrage HTTP compris,
+    la requête se déroule dans un fil abandonné à l'échéance (``TimeoutError``) ; ce fil se termine de lui-même au
+    plus tard au délai socket suivant."""
+    outcome: dict[str, object] = {}
+
+    def work() -> None:
+        try:
+            outcome["data"] = _fetch_tmdb_image(url, timeout=timeout, deadline=deadline, max_bytes=max_bytes,
+                                                opened=outcome)
+        except BaseException as exc:  # noqa: BLE001 — relancée dans le fil appelant
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=work, name="tmdb-image", daemon=True)
+    worker.start()
+    worker.join(deadline)
+    if worker.is_alive():
+        # Fil abandonné sans fermer la réponse ici (``close`` attend le verrou du tampon d'une lecture
+        # ``chunked`` en cours) : il se termine seul au délai socket suivant, son résultat ignoré.
+        raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
+    error = outcome.get("error")
+    if isinstance(error, BaseException):
+        raise error
+    return cast(bytes, outcome["data"])
+
+
+def _fetch_tmdb_image(url: str, *, timeout: float, deadline: float, max_bytes: int,
+                      opened: dict[str, object]) -> bytes:
+    """Octets d'une image TMDB : HTTPS vérifié (non vérifié seulement avec ``MUXIVEO_TMDB_INSECURE_SSL=1``,
+    jamais en repli), durée **totale** bornée par ``deadline`` (le délai socket ne borne qu'une lecture), taille
+    bornée par ``max_bytes``.
+
+    Lève :class:`~core.tls.TlsVerificationError` (certificat refusé), ``TimeoutError`` (échéance), ``ValueError``
+    (trop volumineuse) ou ``OSError`` / ``urllib.error.URLError`` (réseau).
     """
     from core.version import APP_USER_AGENT
 
+    req = urllib.request.Request(url, headers={"Accept": "image/*,*/*;q=0.8", "User-Agent": APP_USER_AGENT})
+    limit = time.monotonic() + deadline
+    with _urlopen_image(req, timeout=timeout) as resp:
+        declared = resp.headers.get("Content-Length") if getattr(resp, "headers", None) is not None else None
+        if declared is not None and str(declared).isdigit() and int(declared) > max_bytes:
+            raise ValueError(f"image TMDB trop volumineuse ({int(declared)} octets, maximum {max_bytes})")
+        chunks: list[bytes] = []
+        size = 0
+        # ``read1`` : une seule réception au plus par appel (``read(n)`` attend n octets, octet après octet sans
+        # limite tant que chacun arrive avant le délai socket) ; délai socket ramené au temps restant.
+        read = getattr(resp, "read1", None) or resp.read
+        while True:
+            remaining = limit - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
+            _limit_socket_timeout(resp, min(timeout, remaining))
+            try:
+                chunk = read(_TMDB_IMAGE_CHUNK)
+            except (TimeoutError, OSError) as exc:
+                if time.monotonic() >= limit:
+                    raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)") from exc
+                raise
+            if time.monotonic() > limit:  # réponse (fin comprise) arrivée après l'échéance : refusée
+                raise TimeoutError(f"téléchargement de l'image TMDB trop long (plus de {deadline:g} s)")
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError(f"image TMDB trop volumineuse (plus de {max_bytes} octets)")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _limit_socket_timeout(resp: object, seconds: float) -> None:
+    """Délai de la prochaine réception de la socket sous-jacente (``HTTPResponse.fp.raw._sock``), si accessible."""
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    if sock is not None:
+        try:
+            sock.settimeout(max(0.05, seconds))
+        except OSError:
+            pass
+
+
+def download_tmdb_cover(url: str, filename: str, target_dir: Path) -> Path:
+    """
+    Télécharge une cover depuis l'URL TMDB et la place dans target_dir (:func:`fetch_tmdb_image`).
+
+    Retourne le chemin du fichier téléchargé.
+    Lève une OSError, urllib.error.URLError, TimeoutError ou ValueError en cas d'échec réseau/disque.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
     dest = target_dir / normalized_tmdb_cover_filename(filename)
-    req = urllib.request.Request(
-        url,
-        headers={
-            "Accept": "image/*,*/*;q=0.8",
-            "User-Agent": APP_USER_AGENT,
-        },
-    )
-    with _urlopen_image(req, timeout=30) as resp:
-        dest.write_bytes(resp.read())
+    dest.write_bytes(fetch_tmdb_image(url))
     return dest
 
 

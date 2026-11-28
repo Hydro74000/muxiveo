@@ -12,6 +12,13 @@ core/output_commit.py — Candidat unique, réservation de destination et public
   départ : publication sans écrasement. Présente : remplacement seulement si
   c'est toujours le fichier relevé au départ. Sinon :class:`OutputChangedError`
   et la destination comme le candidat sont conservés.
+- :class:`ExistingPolicy` décide, sous le verrou de la réservation, du sort
+  d'une destination présente : remplacement admis (``--force``), refus
+  (:class:`OutputExistsError`), ou état confirmé par l'utilisateur exigé
+  (:class:`OutputStateChangedError` si la destination a changé depuis).
+- :func:`publish_document`, :func:`publish_file`, :func:`publish_unique` :
+  documents et copies publiés sous réservation (jamais d'écrasement non
+  autorisé, même entre processus concurrents).
 """
 
 from __future__ import annotations
@@ -23,8 +30,10 @@ import os
 import secrets
 import sys
 import threading
-from dataclasses import dataclass
+import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from core.file_lock import FileLock
 
@@ -68,6 +77,28 @@ class OutputPublicationError(OutputCommitError):
             f"Publication sûre impossible vers {output} sur ce système de fichiers. "
             f"Résultat conservé dans {candidate}."
         )
+
+
+class OutputRefusedError(RuntimeError):
+    """Réservation refusée avant toute écriture (aucun candidat créé)."""
+
+    def __init__(self, output: Path, message: str) -> None:
+        self.output = Path(output)
+        super().__init__(message)
+
+
+class OutputExistsError(OutputRefusedError):
+    """Destination présente sans autorisation de remplacement."""
+
+    def __init__(self, output: Path, message: str | None = None) -> None:
+        super().__init__(output, message or f"Sortie déjà existante : {output} (utiliser --force)")
+
+
+class OutputStateChangedError(OutputRefusedError):
+    """Destination créée, modifiée ou reciblée depuis sa confirmation par l'utilisateur."""
+
+    def __init__(self, output: Path) -> None:
+        super().__init__(output, f"La destination {output} a changé depuis la confirmation : rien n'a été écrit.")
 
 
 def candidate_pattern(output: Path) -> Path:
@@ -125,6 +156,10 @@ class _Snapshot:
     mtime_ns: int
     entry_ino: int
     resolved: str
+    #: Changement d'état (POSIX : ctime ; Windows : ChangeTime NTFS — toute écriture ou modification des droits, non
+    #: réglable par ``utime``) et droits : une réécriture de même taille au mtime restauré reste détectée.
+    ctime_ns: int = 0
+    mode: int = 0
 
 
 def _snapshot(path: Path) -> _Snapshot | None:
@@ -133,7 +168,91 @@ def _snapshot(path: Path) -> _Snapshot | None:
         entry = os.lstat(path)
     except FileNotFoundError:
         return None
-    return _Snapshot(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, entry.st_ino, destination_key(path))
+    changed = _windows_change_time(path) if sys.platform == "win32" else st.st_ctime_ns
+    return _Snapshot(st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, entry.st_ino, destination_key(path),
+                     changed, st.st_mode)
+
+
+def _windows_change_time(path: Path) -> int:
+    """Windows : ``ChangeTime`` NTFS (``FILE_BASIC_INFO``), modifiée par toute écriture ou changement d'attributs ;
+    ``st_ctime`` y est la date de création. 0 si illisible (comparaison alors sur les autres champs)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = [("CreationTime", ctypes.c_longlong), ("LastAccessTime", ctypes.c_longlong),
+                    ("LastWriteTime", ctypes.c_longlong), ("ChangeTime", ctypes.c_longlong),
+                    ("FileAttributes", wintypes.DWORD)]
+
+    kernel32 = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    create = kernel32.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+                       wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    # FILE_READ_ATTRIBUTES, partage lecture / écriture / suppression, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS.
+    handle = create(str(path), 0x80, 0x7, None, 3, 0x02000000, None)
+    if not handle or handle == wintypes.HANDLE(-1).value:
+        return 0
+    try:
+        query = kernel32.GetFileInformationByHandleEx
+        query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        query.restype = wintypes.BOOL
+        info = _FileBasicInfo()
+        if not query(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):  # FileBasicInfo
+            return 0
+        return int(info.ChangeTime)
+    finally:
+        close = kernel32.CloseHandle
+        close.argtypes = [wintypes.HANDLE]  # jamais tronqué à 32 bits
+        close(handle)
+
+
+@dataclass(frozen=True)
+class ConfirmedState:
+    """État d'une destination tel que montré à l'utilisateur : chemin saisi, destination canonique (même
+    absente) et instantané du fichier (None : absent). Un lien reciblé change ``resolved`` ou l'entrée."""
+
+    path: Path
+    resolved: str
+    snapshot: _Snapshot | None
+
+
+def capture_state(path: Path) -> ConfirmedState:
+    """État actuel de ``path`` (à relever avant de demander la confirmation de remplacement)."""
+    absolute = Path(path).expanduser().absolute()
+    return ConfirmedState(absolute, destination_key(absolute), _snapshot(absolute))
+
+
+@dataclass(frozen=True)
+class ExistingPolicy:
+    """Sort d'une destination présente, décidé sous le verrou de la réservation."""
+
+    mode: Literal["allow", "refuse", "expect"] = "allow"
+    confirmed: ConfirmedState | None = field(default=None, compare=False)
+
+    @classmethod
+    def allow(cls) -> "ExistingPolicy":
+        """Remplacement admis (``--force``, comportement historique des workflows)."""
+        return cls("allow")
+
+    @classmethod
+    def refuse(cls) -> "ExistingPolicy":
+        """Destination présente refusée (:class:`OutputExistsError`)."""
+        return cls("refuse")
+
+    @classmethod
+    def expect(cls, confirmed: ConfirmedState) -> "ExistingPolicy":
+        """État confirmé par l'utilisateur exigé jusqu'à la publication."""
+        return cls("expect", confirmed)
+
+    @classmethod
+    def from_force(cls, force: bool) -> "ExistingPolicy":
+        return cls.allow() if force else cls.refuse()
+
+    @property
+    def refuses_existing(self) -> bool:
+        """Vrai si une destination déjà présente est refusée d'avance (pré-contrôle rapide permis)."""
+        return self.mode == "refuse"
 
 
 _ACTIVE_LOCK = threading.Lock()
@@ -159,11 +278,19 @@ class OutputReservation:
         self._lock_dir = Path(lock_dir) if lock_dir is not None else default_lock_dir()
         self._locks: list[FileLock] = []
         self.initial: _Snapshot | None = None
+        self.policy = ExistingPolicy.allow()
+        self._confirmed: ConfirmedState | None = None
 
     @classmethod
-    def acquire(cls, output: Path, *, lock_dir: Path | None = None) -> "OutputReservation":
-        """Réserve ``output`` ou lève :class:`OutputBusyError` sans attendre."""
+    def acquire(cls, output: Path, *, lock_dir: Path | None = None,
+                existing: ExistingPolicy | None = None) -> "OutputReservation":
+        """Réserve ``output`` ou lève :class:`OutputBusyError` sans attendre.
+
+        ``existing`` (défaut : remplacement admis) : :class:`OutputExistsError` ou
+        :class:`OutputStateChangedError` levées sous le verrou, avant toute écriture.
+        """
         reservation = cls(output, lock_dir=lock_dir)
+        reservation.policy = existing or ExistingPolicy.allow()
         reservation._acquire()
         return reservation
 
@@ -185,6 +312,7 @@ class OutputReservation:
                     raise OutputBusyError(self.output)
                 self._locks.append(lock)
             self.initial = _snapshot(self.output)
+            self._check_policy()
             with _ACTIVE_LOCK:
                 if self.key in _ACTIVE or self.path_key in _ACTIVE_PATHS:
                     raise OutputBusyError(self.output)
@@ -194,6 +322,19 @@ class OutputReservation:
             # Hors du mutex : release() prend lui-même ce verrou.
             self.release()
             raise
+
+    def _check_policy(self) -> None:
+        policy = self.policy
+        if policy.mode == "refuse" and self.initial is not None:
+            raise OutputExistsError(self.output)
+        if policy.mode == "expect":
+            confirmed = policy.confirmed
+            # Destination effectivement réservée = cible confirmée, et chemin confirmé inchangé
+            # (fichier, entrée d'un lien, cible d'un lien de dossier).
+            if (confirmed is None or self.key != confirmed.resolved
+                    or capture_state(confirmed.path) != confirmed):
+                raise OutputStateChangedError(self.output)
+            self._confirmed = confirmed
 
     def release(self) -> None:
         """Libère la destination (idempotent, appelable depuis tout thread)."""
@@ -217,6 +358,9 @@ class OutputReservation:
         candidate = Path(candidate)
         if destination_key(self.output) != self.key:
             raise OutputChangedError(self.output, candidate)
+        if self._confirmed is not None and capture_state(self._confirmed.path) != self._confirmed:
+            # Chemin confirmé reciblé ou modifié pendant le traitement : rien n'est publié.
+            raise OutputChangedError(self.output, candidate)
         current = _snapshot(self.output)
         if self.initial is None:
             if current is not None:
@@ -228,6 +372,8 @@ class OutputReservation:
             os.replace(candidate, self.output)
         # La destination est désormais celle produite par ce job.
         self.initial = _snapshot(self.output)
+        if self._confirmed is not None:
+            self._confirmed = capture_state(self._confirmed.path)
 
 
 def active_reservation(output: Path) -> OutputReservation | None:
@@ -306,9 +452,66 @@ def _rename_no_clobber(candidate: Path, output: Path) -> None:
         raise OutputPublicationError(output, candidate) from OSError(code, os.strerror(code))
 
 
+def publish_document(path: Path, content: bytes, *, force: bool, mode: int | None = None) -> Path:
+    """Écrit un petit document (JSON, texte) sous réservation : sans ``force``, jamais d'écrasement, même entre
+    écrivains concurrents (:class:`OutputBusyError`, :class:`OutputExistsError`).
+
+    Candidat ``fsync`` puis publication ; supprimé sur toute erreur (document régénérable). Destination apparue
+    pendant l'écriture (écrivain externe sans verrou) : conservée, :class:`OutputExistsError`. ``mode`` : droits
+    du document publié (défaut 0600, comme :func:`core.atomic_io.atomic_write_bytes`).
+    """
+    path = Path(path).expanduser()
+    with OutputReservation.acquire(path, existing=ExistingPolicy.from_force(force)) as reservation:
+        candidate = reserve_candidate(path)
+        try:
+            with open(candidate, "wb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(candidate, 0o600 if mode is None else mode)
+            try:
+                reservation.publish(candidate)
+            except OutputChangedError as exc:
+                raise OutputExistsError(path, f"{path} est apparu pendant l'écriture : il est conservé.") from exc
+        finally:
+            candidate.unlink(missing_ok=True)
+    return path
+
+
+def publish_file(source: Path, path: Path, *, force: bool = False) -> Path:
+    """Copie ``source`` vers ``path`` sous réservation (règles de :func:`publish_document`) ; source intacte."""
+    path = Path(path).expanduser()
+    with OutputReservation.acquire(path, existing=ExistingPolicy.from_force(force)) as reservation:
+        candidate = reserve_candidate(path)
+        try:
+            shutil.copyfile(source, candidate)
+            shutil.copystat(source, candidate)
+            try:
+                reservation.publish(candidate)
+            except OutputChangedError as exc:
+                raise OutputExistsError(path, f"{path} est apparu pendant l'écriture : il est conservé.") from exc
+        finally:
+            candidate.unlink(missing_ok=True)
+    return path
+
+
+def publish_unique(source: Path, directory: Path, name: str, *, attempts: int = 10_000) -> Path:
+    """Copie ``source`` dans ``directory`` sous ``name``, sinon ``<stem>-1<suffixe>``, ``-2``… : nom jamais pris
+    à un autre fichier ni à une livraison concurrente. La source reste en place (à supprimer par l'appelant)."""
+    directory = Path(directory)
+    first = directory / name
+    for index in range(attempts):
+        target = first if index == 0 else directory / f"{first.stem}-{index}{first.suffix}"
+        try:
+            return publish_file(source, target)
+        except (OutputExistsError, OutputBusyError):
+            continue
+    raise FileExistsError(errno.EEXIST, "Aucun nom libre", str(first))
+
+
 __all__ = [
-    "CANDIDATE_SUFFIX", "OutputBusyError", "OutputChangedError", "OutputCommitError",
-    "OutputPublicationError", "OutputReservation",
-    "active_reservation", "candidate_pattern", "default_lock_dir", "destination_key",
-    "publish_candidate", "reserve_candidate",
+    "CANDIDATE_SUFFIX", "ConfirmedState", "ExistingPolicy", "OutputBusyError", "OutputChangedError",
+    "OutputCommitError", "OutputExistsError", "OutputPublicationError", "OutputRefusedError", "OutputReservation",
+    "OutputStateChangedError", "active_reservation", "candidate_pattern", "capture_state", "default_lock_dir",
+    "destination_key", "publish_candidate", "publish_document", "publish_file", "publish_unique", "reserve_candidate",
 ]

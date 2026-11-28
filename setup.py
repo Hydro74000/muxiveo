@@ -44,10 +44,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from core import ini_syntax
+from core.atomic_io import atomic_rewrite_text
 from core.ui_language import system_ui_language
+from core import nvencc_install
 from core.github_release import THIRD_PARTY_TOOLS, asset_sha256, file_sha256, release_api_url, requested_tag
 from core.version import APP_CONFIG_DIR_NAME
-from core.python_requirements import installed_version, is_excluded, read_requirements, unsatisfied_requirements
+from core.python_requirements import installed_version, read_requirements, rejection_reason, unsatisfied_requirements
 
 # ---------------------------------------------------------------------------
 # Terminal colours (no external deps)
@@ -146,7 +149,6 @@ WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
-    "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
     "muxiveo_rife": ("muxiveo-rife.exe",),
 }
@@ -163,8 +165,10 @@ WINDOWS_CONFIG_TOOL_ORDER: tuple[str, ...] = (
     "mediainfo",
     "dovi_tool",
     "hdr10plus_tool",
-    "eac3to",
 )
+
+# Outils retirés de Muxiveo (lus par aucun traitement) : leurs lignes [tools] sont élaguées.
+REMOVED_CONFIG_TOOLS: frozenset[str] = frozenset({"eac3to"})
 
 # Outils qui écrivent dans les dossiers protégés (Windows CFA allowlist).
 WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
@@ -172,8 +176,7 @@ WINDOWS_CFA_WRITER_TOOLS: tuple[str, ...] = (
 )
 
 # Dépendances nécessaires aux fonctions principales de Muxiveo sous Windows.
-# eac3to reste volontairement facultatif. NVEncC n'est requis que lorsqu'un
-# matériel NVIDIA compatible est disponible.
+# NVEncC n'est requis que lorsqu'un matériel NVIDIA compatible est disponible.
 WINDOWS_REQUIRED_TOOLS: tuple[str, ...] = (
     "ffmpeg",
     "ffprobe",
@@ -345,15 +348,6 @@ GITHUB_TOOLS: dict[str, dict] = {
     },
 }
 
-# Tools with no automated install path (optional)
-MANUAL_TOOLS: dict[str, dict] = {
-    "eac3to": {
-        "desc": "Advanced audio conversion (Windows only, optional)",
-        "note": "Download from: https://forum.doom9.org/showthread.php?t=125966",
-        "platforms": ["Windows"],
-    },
-}
-
 # ---------------------------------------------------------------------------
 # Command runner
 # ---------------------------------------------------------------------------
@@ -399,6 +393,8 @@ def run(cmd: list[str], dry_run: bool = False, check: bool = True,
     info(f"$ {display}")
     if dry_run:
         return None
+    # Commande de l'installeur (argv construit par ce script), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         cmd,
         capture_output=capture,
@@ -595,46 +591,11 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
 
 
 def _tools_section_bounds(lines: list[str]) -> tuple[int, int]:
-    start = -1
-    end = len(lines)
-
-    for index, line in enumerate(lines):
-        if line.strip().lower() == "[tools]":
-            start = index
-            break
-
-    if start == -1:
-        return -1, len(lines)
-
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            end = index
-            break
-
-    return start, end
+    return ini_syntax.section_bounds(lines, "tools")
 
 
 def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
-    start = -1
-    end = len(lines)
-    target = f"[{section.lower()}]"
-
-    for index, line in enumerate(lines):
-        if line.strip().lower() == target:
-            start = index
-            break
-
-    if start == -1:
-        return -1, len(lines)
-
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            end = index
-            break
-
-    return start, end
+    return ini_syntax.section_bounds(lines, section)
 
 
 def _normalize_windows_backslashes(value: str) -> str:
@@ -660,18 +621,14 @@ def _sanitize_windows_tools_lines(lines: list[str]) -> list[str]:
     if OS != "Windows":
         return lines
 
-    start, end = _tools_section_bounds(lines)
-    if start == -1:
-        return lines
-
-    for index in range(start + 1, end):
-        stripped = lines[index].strip()
-        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
+    for option in ini_syntax.options(lines, "tools"):
+        if option.multiline:
             continue
-        lhs, rhs = stripped.split("=", 1)
-        normalized = _normalize_windows_backslashes(rhs.strip())
-        if normalized != rhs.strip():
-            lines[index] = f"{lhs.strip()} = {normalized}"
+        index, key, value = option.start, option.key, option.value
+        normalized = _normalize_windows_backslashes(value)
+        if normalized != value:
+            line = lines[index]
+            lines[index] = f"{line[:len(line) - len(line.lstrip())]}{key} = {normalized}"
     return lines
 
 
@@ -702,58 +659,52 @@ def _update_ini_tools_section(
     if not tool_values and not prune_keys:
         return
     replace_keys = {key.lower() for key in (replace_keys or set())}
-    prune_keys = {key.lower() for key in (prune_keys or set())}
+    # Toute écriture de [tools] élague aussi les outils retirés de Muxiveo.
+    prune_keys = {key.lower() for key in (prune_keys or set())} | REMOVED_CONFIG_TOOLS
 
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
-    lines = _sanitize_windows_tools_lines(text.splitlines())
-    start, end = _tools_section_bounds(lines)
+    text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+    lines = _sanitize_windows_tools_lines(ini_syntax.ini_lines(text))
 
-    if start == -1:
+    if _tools_section_bounds(lines)[0] == -1:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.extend(["[tools]"])
-        start = len(lines) - 1
-        end = len(lines)
+        lines.append("[tools]")
 
     if prune_keys:
-        for index in range(end - 1, start, -1):
-            stripped = lines[index].strip()
-            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
-                continue
-            lhs, _rhs = stripped.split("=", 1)
-            if lhs.strip().lower() not in prune_keys:
-                continue
-            del lines[index]
-            end -= 1
+        lines = ini_syntax.remove_options(lines, "tools", prune_keys)
 
-    insert_at = _section_insert_index(lines, start, end)
     for key, value in tool_values.items():
         rendered = _normalize_windows_backslashes(value)
-        updated = False
-        for index in range(start + 1, end):
-            stripped = lines[index].strip()
-            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
-                continue
-            lhs, rhs = stripped.split("=", 1)
-            if lhs.strip().lower() != key.lower():
-                continue
-            if not rhs.strip() or key.lower() in replace_keys:
-                lines[index] = f"{key} = {rendered}"
-            updated = True
-            break
-
-        if not updated:
-            lines.insert(insert_at, f"{key} = {rendered}")
-            insert_at += 1
-            end += 1
+        reason = ini_syntax.unwritable_reason(rendered)
+        if reason is not None:
+            warn(f"{key}: path not written to config.ini ({reason}): {rendered}")
+            continue
+        option = ini_syntax.find_option(lines, "tools", key)
+        if option is None:
+            start, end = _tools_section_bounds(lines)
+            lines.insert(_section_insert_index(lines, start, end),
+                         ini_syntax.option_line(lines, "tools", key, rendered))
+        elif (not option.value and not option.multiline) or key.lower() in replace_keys:
+            # Valeur remplacée avec ses lignes de continuation (sinon orphelines), même indentation.
+            lines[option.start:option.end] = [ini_syntax.option_line(lines, "tools", key, rendered, option)]
 
     lines = _sanitize_windows_tools_lines(lines)
 
     if dry_run:
         return
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _write_config_ini(path, lines, original=text)
+
+
+def _write_config_ini(path: Path, lines: list[str], *, original: str) -> bool:
+    """Remplace config.ini, sauf si le chargeur de Muxiveo lisait l'original et ne lirait plus le résultat."""
+    rendered = "\n".join(lines).rstrip() + "\n"
+    reason = ini_syntax.rewrite_refusal(original if path.exists() else None, rendered)
+    if reason is not None:
+        warn(f"config.ini not rewritten ({reason}): {path}")
+        return False
+    atomic_rewrite_text(path, rendered)
+    return True
 
 
 def _system_language_code() -> str:
@@ -794,38 +745,24 @@ def initialize_config_ini_language(
     info(f"UI language: {detected}")
 
     text = ini_path.read_text(encoding="utf-8-sig") if ini_path.exists() else ""
-    lines = text.splitlines()
-    start, end = _section_bounds(lines, "ui")
-
-    if start == -1:
+    lines = ini_syntax.ini_lines(text)
+    if _section_bounds(lines, "ui")[0] == -1:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.extend(["[ui]"])
-        start = len(lines) - 1
-        end = len(lines)
+        lines.append("[ui]")
 
-    updated = False
-    for index in range(start + 1, end):
-        stripped = lines[index].strip()
-        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
-            continue
-        lhs, _rhs = stripped.split("=", 1)
-        if lhs.strip().lower() != "language":
-            continue
-        lines[index] = f"language = {detected}"
-        updated = True
-        break
-
-    if not updated:
-        lines.insert(end, f"language = {detected}")
+    option = ini_syntax.find_option(lines, "ui", "language")
+    if option is None:
+        lines.insert(_section_bounds(lines, "ui")[1], ini_syntax.option_line(lines, "ui", "language", detected))
+    else:
+        lines[option.start:option.end] = [ini_syntax.option_line(lines, "ui", "language", detected, option)]
 
     if dry_run:
         ok(f"[dry-run] config.ini UI language would be set to {detected}")
         return
 
-    ini_path.parent.mkdir(parents=True, exist_ok=True)
-    ini_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    ok(f"config.ini UI language set to {detected}")
+    if _write_config_ini(ini_path, lines, original=text):
+        ok(f"config.ini UI language set to {detected}")
 
 
 def _windows_winget_root() -> Path:
@@ -899,9 +836,6 @@ def _windows_default_tool_candidates(tool_name: str, prefix: Path) -> list[Path]
             for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / exe_name)
-        elif tool_name == "eac3to":
-            for exe_name in exe_names:
-                candidates.append(base_dir / "eac3to" / exe_name)
 
     return _dedupe_paths(candidates)
 
@@ -974,7 +908,7 @@ def _existing_ini_tool_values(path: Path) -> dict[str, str]:
         default_section="DEFAULT",
     )
     if path.exists():
-        parser.read(path, encoding="utf-8")
+        parser.read(path, encoding="utf-8-sig")
     if not parser.has_section("tools"):
         return {}
     return {
@@ -1060,10 +994,7 @@ def install_python_packages(dry_run: bool, force: bool = False) -> None:
         if requirement.distribution not in pending:
             ok(f"{requirement.distribution} {installed_version(requirement.distribution)} already installed")
     for requirement, version in unsatisfied:
-        state = "missing" if version is None else (
-            f"{version} excluded (known defect)" if is_excluded(version, requirement) else f"{version} too old"
-        )
-        warn(f"{requirement.spec}: {state}")
+        warn(f"{requirement.spec}: {rejection_reason(version, requirement)}")  # raison déclarée comprise
 
     if not unsatisfied:
         ok("All Python packages already satisfied")
@@ -1378,6 +1309,8 @@ def _windows_controlled_folder_access_state() -> int | None:
         return None
 
     script = "$p=Get-MpPreference; [int]$p.EnableControlledFolderAccess"
+    # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         [ps, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
@@ -1551,6 +1484,8 @@ exit 0
             str(targets_path),
         ]
         if _windows_is_admin():
+            # PowerShell résolu, script de l'installeur et chemins en arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -1571,6 +1506,8 @@ exit 0
                 "-Verb RunAs -Wait -PassThru; "
                 "exit $proc.ExitCode"
             )
+            # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 [ps, "-NoProfile", "-NonInteractive", "-Command", launcher],
                 capture_output=True,
@@ -1704,6 +1641,8 @@ def _windows_fetch_text(url: str) -> str:
         )
         env = os.environ.copy()
         env["MR_URL"] = url
+        # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [ps, "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
@@ -1720,6 +1659,8 @@ def _windows_fetch_text(url: str) -> str:
     curl = shutil.which("curl.exe") or shutil.which("curl")
     if not curl:
         raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    # curl résolu par shutil.which, URL HTTPS de la release, argv, sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         [curl, "-fsSL", "-H", "User-Agent: Muxiveo-setup/1.0", url],
         capture_output=True,
@@ -1746,6 +1687,8 @@ def _windows_download_file(url: str, dest: Path) -> None:
         env = os.environ.copy()
         env["MR_URL"] = url
         env["MR_DEST"] = str(dest)
+        # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [ps, "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
@@ -1762,7 +1705,10 @@ def _windows_download_file(url: str, dest: Path) -> None:
     curl = shutil.which("curl.exe") or shutil.which("curl")
     if not curl:
         raise RuntimeError("No PowerShell/curl fallback available on Windows")
+    # curl résolu par shutil.which, URL HTTPS de la release, argv, sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         [curl, "-fL", "-H", "User-Agent: Muxiveo-setup/1.0", "-o", str(dest), url],
         capture_output=True,
         text=True,
@@ -2009,6 +1955,8 @@ def _extract_deb_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
     extract_dir.mkdir(parents=True, exist_ok=True)
     dpkg_deb = shutil.which("dpkg-deb")
     if dpkg_deb:
+        # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         subprocess.run(
             [dpkg_deb, "-x", str(archive_path), str(extract_dir)],
             check=True,
@@ -2025,6 +1973,8 @@ def _extract_deb_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
         cwd_backup = os.getcwd()
         try:
             os.chdir(extract_dir)
+            # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.run([ar, "x", str(archive_path)], check=True)
             data_tarball = next(
                 (p for p in extract_dir.glob("data.tar.*")), None,
@@ -2073,7 +2023,10 @@ def _extract_rpm_binary(archive_path: Path, binary_name: str, dest_dir: Path) ->
     try:
         os.chdir(extract_dir)
         with open(archive_path, "rb") as fp:
+            # rpm2cpio | cpio de l'installeur (outil résolu par shutil.which, argv), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             r = subprocess.Popen([rpm2cpio], stdin=fp, stdout=subprocess.PIPE)
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             c = subprocess.Popen([cpio, "-idm", "--quiet"], stdin=r.stdout)
             if r.stdout:
                 r.stdout.close()
@@ -2109,6 +2062,8 @@ def _install_windows_nvencc_zip(archive_path: Path, dest_dir: Path) -> Path:
         "Expand-Archive -LiteralPath $env:MR_ARCHIVE "
         "-DestinationPath $env:MR_EXTRACT -Force"
     )
+    # PowerShell résolu, script fixe (valeurs par l'environnement ou entre apostrophes protégées), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
@@ -2206,6 +2161,8 @@ def _try_native_pkg_install(
         if dry_run:
             info(f"[dry-run] Would run: apt install -y {archive_path}")
             return True
+        # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         rc = subprocess.run(
             sudo + [apt, "install", "-y", str(archive_path)],
             check=False,
@@ -2219,6 +2176,8 @@ def _try_native_pkg_install(
         if dry_run:
             info(f"[dry-run] Would run: dnf install -y {archive_path}")
             return True
+        # Commande de l'installeur (outil résolu par shutil.which, argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         rc = subprocess.run(
             sudo + [dnf, "install", "-y", str(archive_path)],
             check=False,
@@ -2275,7 +2234,7 @@ def _detect_tool_path(tool_name: str, prefix: Path | None = None) -> str | None:
 def check_windows_required_tools(prefix: Path) -> ToolPresenceReport:
     """Report the health of Muxiveo's required Windows dependencies.
 
-    This deliberately excludes optional eac3to and all setup-only helpers.
+    This deliberately excludes setup-only helpers.
     """
     required = windows_required_tool_names()
     found: dict[str, str] = {}
@@ -2312,6 +2271,11 @@ def ensure_windows_required_tools(
         install_github_tools(prefix, dry_run, force=force, tool_names=github_missing)
     autofill_windows_config_ini(prefix, dry_run, force=force)
     return check_windows_required_tools(prefix)
+
+def _nvencc_log(level: str, message: str) -> None:
+    """Journal de l'étape NVEncC partagée vers la sortie du setup."""
+    {"WARN": warn, "ERROR": warn, "OK": ok}.get(level, info)(message)
+
 
 def install_github_tools(
     prefix: Path,
@@ -2388,6 +2352,18 @@ def install_github_tools(
             info(f"[dry-run] Would download and install {exe} to {dest}")
             detected_tool_paths[exe] = str(dest)
             ok(f"{exe} installed → {dest}")
+            continue
+
+        if exe == "nvencc" and OS == "Linux":
+            # Étape partagée avec l'AllInc NoVidia et la page Extensions (core/nvencc_install.py) :
+            # .deb via apt, .rpm via dnf, sinon (distribution immuable, élévation refusée) dossier utilisateur.
+            try:
+                installed_nvencc = nvencc_install.install(log=_nvencc_log)
+            except nvencc_install.NvenccInstallError as exc:
+                warn(f"{exe}: {exc}. Skipping.")
+                continue
+            detected_tool_paths[exe] = str(installed_nvencc)
+            ok(f"{exe} installed → {installed_nvencc}")
             continue
 
         # Décision par outil : le préfixe peut être accessible alors que son

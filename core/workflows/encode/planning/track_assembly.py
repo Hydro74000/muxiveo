@@ -7,15 +7,17 @@ from typing import Mapping
 from core.workflows.encode.models import EncodeConfig
 
 from .plan_models import EncodePlan, ResolvedTrackAssembly
+from core.workflows.common.timeline_sync import SyncInput
 
 
 def build_track_input_paths(
     *,
     leading_inputs: Sequence[Path | str] = (),
     all_sources: Sequence[Path] = (),
-    sync_inputs: Sequence[Path | str] = (),
+    sync_inputs: Sequence[SyncInput] = (),
 ) -> tuple[Path | str, ...]:
-    return tuple([*leading_inputs, *all_sources, *sync_inputs])
+    sync_paths = [item if isinstance(item, (Path, str)) else item.path for item in sync_inputs]
+    return tuple([*leading_inputs, *all_sources, *sync_paths])
 
 
 def resolve_track_assembly(

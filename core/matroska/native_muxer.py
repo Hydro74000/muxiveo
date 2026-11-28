@@ -77,6 +77,7 @@ from .ids import (
     CUE_TIME_ID,
     CUE_TRACK_ID,
     CUE_TRACK_POSITIONS_ID,
+    DEFAULT_DURATION_ID,
     DEFAULT_TIMESTAMP_SCALE_NS,
     DISPLAY_HEIGHT_ID,
     DISPLAY_WIDTH_ID,
@@ -443,6 +444,7 @@ def _build_video_track_entry(
     colour_element: bytes = b"",
     display_width: int | None = None,
     display_height: int | None = None,
+    default_duration_ns: int = 0,
 ) -> bytes:
     video_children = [
         uint_element(PIXEL_WIDTH_ID, pixel_width),
@@ -457,6 +459,12 @@ def _build_video_track_entry(
 
     video_master = element(VIDEO_ID, b"".join(video_children))
 
+    # DefaultDuration : sans lui, les lecteurs estiment la cadence sur les
+    # premiers paquets en ordre de décodage (images B : 24,417 i/s au lieu de
+    # 23,976) et la dernière image prend l'écart de décodage comme durée.
+    default_duration = (
+        uint_element(DEFAULT_DURATION_ID, default_duration_ns) if default_duration_ns > 0 else b""
+    )
     children = b"".join([
         uint_element(TRACK_NUMBER_ID, track_number),
         uint_element(TRACK_UID_ID, track_uid),
@@ -464,6 +472,7 @@ def _build_video_track_entry(
         uint_element(FLAG_ENABLED_ID, 1),
         uint_element(FLAG_DEFAULT_ID, 1),
         uint_element(FLAG_LACING_ID, 0),
+        default_duration,
         string_element(LANGUAGE_ID, language),
         ascii_element(CODEC_ID_ID, "V_MPEGH/ISO/HEVC"),
         binary_element(CODEC_PRIVATE_ID, codec_private),
@@ -473,6 +482,23 @@ def _build_video_track_entry(
         children += uint_element(MAX_BLOCK_ADDITION_ID_ID, 1)
         children += _build_dovi_block_addition_mapping(dovi_record)
     return element(TRACK_ENTRY_ID, children)
+
+
+
+_MATROSKA_SUFFIXES = frozenset({".mkv", ".mk3d", ".webm"})
+
+
+def _source_default_duration_ns(source: Path) -> int:
+    """DefaultDuration de la première piste vidéo d'une source Matroska, 0 sinon."""
+    if source.suffix.lower() not in _MATROSKA_SUFFIXES:
+        return 0
+    from .reader import MatroskaReader
+    try:
+        tracks = MatroskaReader(source).tracks()
+    except (OSError, ValueError, RuntimeError):
+        return 0
+    video = next((track for track in tracks if track.track_type == TRACK_TYPE_VIDEO), None)
+    return video.default_duration_ns if video is not None else 0
 
 
 # --- Tracks ----------------------------------------------------------------
@@ -724,6 +750,10 @@ class MatroskaNativeMuxer:
             buffered_aus=buffered_aus,
             au_iterator=au_iterator,
             pts_seq=pts_seq,
+            default_duration_ns=(
+                _source_default_duration_ns(source_for_timestamps)
+                or pts_seq.nominal_frame_duration_ns
+            ),
             output=output,
             codec_private=codec_private,
             pixel_width=pixel_width,
@@ -760,6 +790,7 @@ class MatroskaNativeMuxer:
         display_width: int | None = None,
         display_height: int | None = None,
         allow_frame_count_mismatch: bool = False,
+        default_duration_ns: int = 0,
     ) -> MatroskaNativeMuxResult:
         import itertools
         from io import BytesIO
@@ -778,6 +809,7 @@ class MatroskaNativeMuxer:
             colour_element=colour_element,
             display_width=display_width,
             display_height=display_height,
+            default_duration_ns=default_duration_ns,
         )
         stream = BytesIO(track_entry_raw)
         entry_element = read_element(stream, limit=len(track_entry_raw))
@@ -788,6 +820,7 @@ class MatroskaNativeMuxer:
             number=track_number, uid=track_uid, track_type=TRACK_TYPE_VIDEO,
             codec_id="V_MPEGH/ISO/HEVC", codec_private=codec_private,
             language_bcp47="", language=language, name="", raw_entry=raw_entry,
+            default_duration_ns=default_duration_ns,
         )
         mux_track = MatroskaMuxTrack(
             source=output, source_track=source_track,

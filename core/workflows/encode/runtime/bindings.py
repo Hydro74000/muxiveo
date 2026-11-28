@@ -18,6 +18,8 @@ def _connect_terminal_hook(signals: TaskSignals, hook: Callable[..., object]) ->
 class SignalBindingServiceCallbacks:
     write_nfo: Callable[[Path], None]
     remove_path: Callable[[Path], None] = remove_path
+    #: Échec : True si le dossier de travail est gardé pour l'utilisateur (rien à supprimer).
+    retain_failed: Callable[[list[Path]], bool] | None = None
 
 
 class SignalBindingService:
@@ -64,7 +66,14 @@ class SignalBindingService:
                 except OSError:
                     pass
 
-        _connect_terminal_hook(signals, _cleanup)
+        def _failed(*_args) -> None:
+            retain = self._callbacks.retain_failed
+            if not done["cleaned"] and retain is not None and retain(cleanup_paths):
+                done["cleaned"] = True
+                return
+            _cleanup()
+
+        signals.connect_terminal(finished=_cleanup, failed=_failed, cancelled=_cleanup, direct=True)
 
     def bind_nfo_write(self, signals: TaskSignals, output: Path) -> None:
         def _write(*_args) -> None:

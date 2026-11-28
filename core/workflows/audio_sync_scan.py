@@ -134,9 +134,27 @@ def _ponctual_shift(samples, drift_threshold_ms: float) -> float | None:
 
 
 def _stream_spec(track) -> str:
-    """Flux FFmpeg de la piste : index absolu (entier) ou spécificateur tel que `0:a:1`."""
+    """Flux FFmpeg de la piste : index absolu (entier ou chaîne numérique) ou spécificateur tel que `0:a:1`."""
     index = track.stream_index
-    return f"0:{index}" if isinstance(index, int) else str(index)
+    if isinstance(index, int):
+        return f"0:{index}"
+    raw = str(index).strip()
+    if raw.isdigit():
+        return f"0:{raw}"
+    return raw
+
+
+def _warn(warn, log, message: str, **fields) -> None:
+    """Avertissement de l'analyse : ``warn(message, **champs)`` (code et données structurées), sinon ``log(message)``."""
+    if warn is not None:
+        warn(message, **fields)
+    else:
+        log(message)
+
+
+def _zones(ranges_ms) -> list[dict[str, float]]:
+    """Zones à relire sur l'axe de sortie, publiables (``start_ms`` / ``end_ms``)."""
+    return [{"start_ms": round(float(start), 1), "end_ms": round(float(stop), 1)} for start, stop in ranges_ms]
 
 
 class AudioSyncScanner:
@@ -621,13 +639,16 @@ class AudioSyncScanner:
         message = (f"Synchro incertaine ({reason}) : décalage des mesures ponctuelles {shift:+d} ms "
                    f"({len(samples)}/{total} fenêtres concordantes, écart {spread:.0f} ms).")
         if abs(shift) < _UNCERTAIN_NEGLIGIBLE_MS and not calibration.converts_audio:
-            (warn or log)(f"{message} Moins de {_UNCERTAIN_NEGLIGIBLE_MS} ms : aucune correction appliquée ; "
-                          "vérifier à l'écoute dans le Synchro Studio si besoin.")
+            _warn(warn, log, f"{message} Moins de {_UNCERTAIN_NEGLIGIBLE_MS} ms : aucune correction appliquée ; "
+                             "vérifier à l'écoute dans le Synchro Studio si besoin.",
+                  code="sync_uncertain", shift_ms=shift, windows=[len(samples), total], spread_ms=round(spread, 1))
             return replace(calibration, segments=(SyncSegment(0, 0.0),))
         if not self.accept_coherent:
             raise AudioSyncReviewRequired(message, calibration, ((0.0, self.duration(donor) * 1000.0),),
                                           kind="samples", windows=(len(samples), total), spread_ms=spread)
-        (warn or log)(f"{message} Acceptée, à vérifier à l'écoute.")
+        whole = AudioSyncReviewRequired(message, calibration, ((0.0, self.duration(donor) * 1000.0),))
+        _warn(warn, log, f"{message} Acceptée, à vérifier à l'écoute.", code="sync_unverified", kind="samples",
+              zones=_zones(whole.output_ranges_ms()), windows=[len(samples), total], spread_ms=round(spread, 1))
         return calibration
 
     def scan(self, reference: AudioSyncTrack, donor: AudioSyncTrack, *, detect_cuts=False,
@@ -923,6 +944,7 @@ class AudioSyncScanner:
             zones = format_sync_ranges(proposal.output_ranges_ms())
             if not self.accept_coherent:
                 raise AudioSyncReviewRequired(f"{proposal} Zones à relire : {zones}.", calibration, unverified)
-            (warn or log)(f"Synchro cohérente acceptée malgré {len(unverified)} zone(s) sans correspondance "
-                          f"(même décalage de part et d'autre) : {zones}.")
+            _warn(warn, log, f"Synchro cohérente acceptée malgré {len(unverified)} zone(s) sans correspondance "
+                             f"(même décalage de part et d'autre) : {zones}.",
+                  code="sync_unverified", kind="gaps", zones=_zones(proposal.output_ranges_ms()))
         return calibration

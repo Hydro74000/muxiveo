@@ -236,7 +236,7 @@ def run_case(root: Path, source: Path, stream: dict, video: VideoEncodeSettings,
     directory.mkdir()
     output = directory / "output.mkv"
     source_duration = int(stream["nb_read_frames"])/float(Fraction(stream["avg_frame_rate"]))
-    workflow = EncodeWorkflow(ffmpeg_threads=threads, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_threads=threads, generate_nfo=False,
                               nvencc_bin=shutil.which("nvencc"), rife_bin=rife_bin)
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
                           copy_subtitles=False, keep_chapters=False, work_dir=directory,

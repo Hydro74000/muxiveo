@@ -6,6 +6,9 @@ Modes :
   AppImage Linux (défaut)
     Muxiveo-<arch>.AppImage          outils installés au 1er lancement
     Muxiveo-<arch>_allinc.AppImage   tous les outils embarqués (--allinc)
+    Muxiveo-<arch>_allinc_novidia.AppImage
+                                     idem sans NVEncC (--allinc --novidia) : installé
+                                     au 1er lancement si un GPU NVIDIA est détecté
 
   Installateur Windows (--windows)
     Muxiveo-Setup.exe                construit via Wine + PyInstaller + NSIS
@@ -35,6 +38,7 @@ Usage :
 
 Options :
     --allinc             Embarque tous les outils externes dans l'AppImage
+    --novidia            Avec --allinc : variante sans NVEncC (marqueur _ALLINC_NOVIDIA)
     --skip-pyinstaller   Réutilise le bundle PyInstaller existant dans dist/
     --arch ARCH          Architecture cible AppImage : x86_64 (défaut) ou aarch64
     --version TAG        Suffixe de version pour le fichier final (défaut: APP_VERSION)
@@ -64,12 +68,18 @@ from pathlib import Path
 
 from core.file_types import build_desktop_mime_type_string
 from core.github_release import github_release_asset, release_asset, verify_download
-from core.python_requirements import read_requirements, unsatisfied_requirements
+from core.python_requirements import (
+    BUILD_REQUIREMENTS_FILE,
+    read_requirements,
+    rejection_lines,
+    unsatisfied_requirements,
+)
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
     RECORDED_ONLY,
     VERIFIED_GITHUB_DIGEST,
     ToolManifest,
+    ffmpeg_build_details,
 )
 from core.version import (
     APP_APPSTREAM_ID,
@@ -141,6 +151,8 @@ def err(msg: str)  -> None: print(_c("31",   f"  ✘  {msg}"), file=sys.stderr)
 
 def run(cmd: list[str | Path], **kwargs) -> None:
     info(" ".join(str(c) for c in cmd))
+    # Commande du packaging (argv construit par ce script), sans shell.
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
     subprocess.run([str(c) for c in cmd], check=True, **kwargs)
 
 
@@ -248,16 +260,26 @@ def ensure_build_deps() -> None:
     # ── Dépendances Python ────────────────────────────────────────────────
     missing_py: list[str] = []
 
-    if importlib.util.find_spec("PyInstaller") is None:
-        missing_py.append("pyinstaller")
+    # Outils de build : requirements-build.txt (mêmes règles que requirements.txt, aucune version figée) ;
+    # PyInstaller non importable : toujours réinstallé.
+    build_requirements = read_requirements(BUILD_REQUIREMENTS_FILE)
+    build_rejected = unsatisfied_requirements(build_requirements)
+    build_unsatisfied = {requirement.distribution for requirement, _ in build_rejected}
+    for requirement in build_requirements:
+        absent = requirement.distribution.lower() == "pyinstaller" and importlib.util.find_spec("PyInstaller") is None
+        if requirement.distribution in build_unsatisfied or absent:
+            missing_py.append(requirement.spec)
 
     requirements = read_requirements()
-    unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}
+    rejected = unsatisfied_requirements(requirements)
+    unsatisfied = {requirement.distribution for requirement, _ in rejected}
     for requirement in requirements:
         if requirement.distribution in unsatisfied or importlib.util.find_spec(requirement.module) is None:
             missing_py.append(requirement.spec)
 
     if missing_py:
+        for line in rejection_lines([*build_rejected, *rejected]):
+            info(line)
         info(f"Paquets Python absents ou incompatibles : {', '.join(missing_py)}")
         _pip_install(missing_py)
 
@@ -615,34 +637,42 @@ def _extract_from_tar(archive: Path, binary_names: list[str], dest_dir: Path) ->
 
 def _dl_ffmpeg(tools_dir: Path, arch: str) -> None:
     """
-    Télécharge ffmpeg/ffprobe depuis BtbN/FFmpeg-Builds (master, GPL static).
+    Télécharge ffmpeg/ffprobe depuis FFmpeg-Builds/FFmpeg-Builds (ex-BtbN) (master, GPL static).
 
     Ces builds incluent NVENC, VAAPI, QSV, AMF, libsvtav1.
     Ce sont des binaires statiques — aucune lib externe à embarquer.
-    URL directe : github.com/BtbN/FFmpeg-Builds/releases/download/latest/
+    URL directe : github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/
                   ffmpeg-master-latest-linux64-gpl.tar.xz
     """
-    step("Téléchargement ffmpeg + ffprobe (BtbN/FFmpeg-Builds, master GPL static)")
+    step("Téléchargement ffmpeg + ffprobe (FFmpeg-Builds/FFmpeg-Builds, master GPL static)")
 
     _arch_tag = {"x86_64": "linux64", "aarch64": "linuxarm64"}.get(arch, f"linux{arch}")
     filename = f"ffmpeg-master-latest-{_arch_tag}-gpl.tar.xz"
     info(f"Asset : {filename}")
     # Release roulante « latest » : SHA-256 publié par l'API GitHub vérifié,
     # archive consignée dans le manifeste (le build du jour change).
-    asset = github_release_asset("BtbN/FFmpeg-Builds", "latest", filename)
+    asset = github_release_asset("FFmpeg-Builds/FFmpeg-Builds", "latest", filename)
 
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ffmpeg.tar.xz"
         _download(asset.url, archive, timeout=120)
         verify_download(asset, archive)
         _extract_from_tar(archive, ["ffmpeg", "ffprobe"], tools_dir)
+        # Build réelle consignée (la release « latest » change chaque jour) : sonde
+        # exécutée sur l'hôte, « inconnue » pour une architecture non exécutable.
+        details = ffmpeg_build_details(tools_dir / "ffmpeg")
+        details["ffprobe_build"] = ffmpeg_build_details(tools_dir / "ffprobe")["build"]
+        details["release"] = f"{asset.repo}@{asset.tag}"
+        if asset.updated_at:
+            details["asset_updated_at"] = asset.updated_at
         TOOL_MANIFEST.add(
-            "ffmpeg", version=f"{asset.repo}@{asset.tag}", source=asset.url,
+            "ffmpeg", version=details["build"], source=asset.url,
             verification=VERIFIED_GITHUB_DIGEST, archive=archive,
-            files=[tools_dir / "ffmpeg", tools_dir / "ffprobe"],
+            files=[tools_dir / "ffmpeg", tools_dir / "ffprobe"], details=details,
         )
+        info(f"Build FFmpeg embarquée : {details['build']}")
 
-    ok("ffmpeg + ffprobe (BtbN master GPL) installés")
+    ok("ffmpeg + ffprobe (FFmpeg-Builds master GPL) installés")
 
 
 def _mediainfo_latest_version() -> str:
@@ -798,6 +828,8 @@ def _dl_nvencc(tools_dir: Path, arch: str) -> None:
             return
         extract_dir = tmp_path / "nvencc_extracted"
         extract_dir.mkdir()
+        # Commande du packaging (argv construit par ce script), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         subprocess.run([dpkg_deb, "-x", str(archive), str(extract_dir)], check=True)
         # Copie binaire (le .deb installe sous /usr/bin/NVEncC selon la version).
         binary_candidates = [
@@ -860,8 +892,8 @@ def _bundle_licenses(appdir: Path) -> None:
     ok(f"Fichiers de licence embarqués dans {dest}")
 
 
-def bundle_tools(appdir: Path, arch: str) -> None:
-    """Télécharge tous les outils externes et les place dans usr/bin/tools/."""
+def bundle_tools(appdir: Path, arch: str, nvencc: bool = True) -> None:
+    """Télécharge les outils externes et les place dans usr/bin/tools/ (NVEncC seulement si ``nvencc``)."""
     step("Téléchargement des outils externes (mode all-inclusive)")
     tools_dir = appdir / "usr" / "bin" / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
@@ -871,7 +903,8 @@ def bundle_tools(appdir: Path, arch: str) -> None:
     _dl_mediainfo(tools_dir, arch)
     _dl_dovi_tool(tools_dir, arch)
     _dl_hdr10plus_tool(tools_dir, arch)
-    _dl_nvencc(tools_dir, arch)
+    if nvencc:
+        _dl_nvencc(tools_dir, arch)
     _dl_muxiveo_rife(tools_dir, arch)
     _bundle_licenses(appdir)
     manifest = TOOL_MANIFEST.write(tools_dir)
@@ -902,7 +935,7 @@ def _clean_appdir(path: Path) -> None:
         )
 
 
-def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -> Path:
+def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64", novidia: bool = False) -> Path:
     step("Construction de l'AppDir")
 
     appdir = APPDIR
@@ -938,7 +971,10 @@ def build_appdir(bundle_dir: Path, allinc: bool = False, arch: str = "x86_64") -
     # Marqueur all-inclusive lu par launcher.py au démarrage
     if allinc:
         (usr_bin / "_ALLINC").touch()
-        bundle_tools(appdir, arch)
+        if novidia:
+            # Variante sans NVEncC : étape NVEncC du setup au 1er lancement (launcher.py).
+            (usr_bin / "_ALLINC_NOVIDIA").touch()
+        bundle_tools(appdir, arch, nvencc=not novidia)
     else:
         _bundle_licenses(appdir)
 
@@ -1059,10 +1095,11 @@ def build_appimage(
     arch: str,
     allinc: bool = False,
     version_tag: str | None = None,
+    novidia: bool = False,
 ) -> Path:
     step("Création de l'AppImage")
 
-    suffix = "_allinc" if allinc else ""
+    suffix = _variant_suffix(allinc, novidia)
     output = _versioned_output_path(ROOT / f"{APP_DISPLAY_NAME}-{arch}{suffix}.AppImage", version_tag)
     if output.exists():
         output.unlink()
@@ -1073,6 +1110,7 @@ def build_appimage(
         arch,
         allinc=allinc,
         version_tag=version_tag,
+        novidia=novidia,
     )
     env["UPDATE_INFORMATION"] = update_information
     info(f"UPDATE_INFORMATION: {update_information}")
@@ -1096,10 +1134,22 @@ def build_appimage(
     return output
 
 
+def _variant_suffix(allinc: bool, novidia: bool = False) -> str:
+    """Suffixe de variante du nom de l'AppImage.
+
+    ``_allinc_novidia`` (séparateur « _ ») : jamais capté par le motif zsync ``…_allinc-*`` des AppImage
+    all-inclusive déjà installées, qui restent sur la variante avec NVEncC.
+    """
+    if not allinc:
+        return ""
+    return "_allinc_novidia" if novidia else "_allinc"
+
+
 def _appimage_update_information(
     arch: str,
     allinc: bool = False,
     version_tag: str | None = None,
+    novidia: bool = False,
 ) -> str:
     """
     Chaîne UPDATE_INFORMATION AppImage pour GitHub Releases.
@@ -1109,7 +1159,7 @@ def _appimage_update_information(
     directement la release cible et le nom exact du .zsync pour éviter toute
     configuration manuelle dans Gear Lever.
     """
-    suffix = "_allinc" if allinc else ""
+    suffix = _variant_suffix(allinc, novidia)
     normalized_tag = _normalize_version_tag(version_tag)
     reuse_channel = normalized_tag == "latest" or normalized_tag.startswith("latest-")
     release = normalized_tag if reuse_channel and _APPIMAGE_UPDATE_RELEASE == "latest" else _APPIMAGE_UPDATE_RELEASE
@@ -1181,6 +1231,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--novidia",
+        action="store_true",
+        help=(
+            "Avec --allinc : variante sans NVEncC, Muxiveo-<arch>_allinc_novidia.AppImage. "
+            "Au premier lancement, NVEncC est installé si un GPU NVIDIA est détecté."
+        ),
+    )
+    p.add_argument(
         "--skip-pyinstaller",
         action="store_true",
         help="Réutilise le bundle PyInstaller existant dans dist/Muxiveo/",
@@ -1219,7 +1277,11 @@ def main() -> None:
     args = parse_args()
     arch = args.arch
     allinc = args.allinc
+    novidia = args.novidia
     version_tag = args.version
+    if novidia and not allinc:
+        err("--novidia exige --allinc.")
+        sys.exit(1)
 
     print(_c("1;34", """
 ╔══════════════════════════════════════════╗
@@ -1227,7 +1289,10 @@ def main() -> None:
 ╚══════════════════════════════════════════╝
 """))
     info(f"Architecture  : {arch}")
-    info(f"Mode          : {'all-inclusive (outils embarqués)' if allinc else 'standard (outils installés au 1er lancement)'}")
+    mode = "standard (outils installés au 1er lancement)"
+    if allinc:
+        mode = "all-inclusive sans NVEncC (outils embarqués)" if novidia else "all-inclusive (outils embarqués)"
+    info(f"Mode          : {mode}")
     info(f"Racine projet : {ROOT}")
 
     ensure_build_deps()
@@ -1242,7 +1307,7 @@ def main() -> None:
     else:
         bundle_dir = build_onedir()
 
-    appdir = build_appdir(bundle_dir, allinc=allinc, arch=arch)
+    appdir = build_appdir(bundle_dir, allinc=allinc, arch=arch, novidia=novidia)
     appimagetool = get_appimagetool(arch)
     appimage_path = build_appimage(
         appimagetool,
@@ -1250,6 +1315,7 @@ def main() -> None:
         arch,
         allinc=allinc,
         version_tag=version_tag,
+        novidia=novidia,
     )
     final_appimage = _copy_final_file_if_requested(appimage_path, args.dest, version_tag=version_tag)
 

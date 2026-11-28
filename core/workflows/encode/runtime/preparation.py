@@ -6,15 +6,17 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
-from core.workdir import capture_process_work_dir
+from core.workdir import ProcessWorkDir, capture_process_work_dir
 from typing import Callable
 
 from PySide6.QtCore import Qt
 
 from core.runner import TaskCancelledError, TaskSignals
+from core.workflows.encode.hdr10plus_output import generates_hdr10plus
 from core.workflows.encode.models import EncodeConfig, EncodeError
 from core.workflows.encode.mux_backend import PIPELINE_FFMPEG_DIRECT, PIPELINE_MULTI_VIDEO, EncodeMuxDecision
 from core.workflows.encode.planning.plan_models import EncodePlan
+from core.workflows.common.metadata import duplicate_default_track_warnings, output_track_label
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,10 @@ class EncodePreparationRunnerCallbacks:
     resolve_dovi_sources: Callable[[EncodeConfig], EncodeConfig] | None = None
     #: Préparation Dolby Vision au lancement (repli dovi_tool, RPU P5, sonde NVEncC).
     prepare_dovi_sources: Callable[..., EncodeConfig] | None = None
+    #: GUI : dossier de travail à garder en cas d'échec, jusqu'à la décision de l'utilisateur.
+    request_failed_work_dir_retention: Callable[[ProcessWorkDir], None] | None = None
+    #: Échec : True si le dossier de travail est gardé pour l'utilisateur (rien à supprimer).
+    retain_failed_work_dir: Callable[[list[Path]], bool] | None = None
 
 
 class EncodePreparationRunner:
@@ -64,8 +70,9 @@ class EncodePreparationRunner:
     def __init__(self, callbacks: EncodePreparationRunnerCallbacks) -> None:
         self._cb = callbacks
 
-    def run_async_preparation(self, config: EncodeConfig) -> TaskSignals:
+    def run_async_preparation(self, config: EncodeConfig, *, retain_failed_work_dir: bool = False) -> TaskSignals:
         signals = TaskSignals()
+        retain_kwargs = {"retain_failed_work_dir": True} if retain_failed_work_dir else {}
         executor = ThreadPoolExecutor(max_workers=1)
         active_inner: dict[str, TaskSignals | None] = {"signals": None}
         original_cancel = signals.cancel
@@ -87,6 +94,7 @@ class EncodePreparationRunner:
                     config,
                     validate=False,
                     prep_signals=signals,
+                    **retain_kwargs,
                 )
                 active_inner["signals"] = inner
 
@@ -121,6 +129,7 @@ class EncodePreparationRunner:
         *,
         validate: bool,
         prep_signals: TaskSignals | None = None,
+        retain_failed_work_dir: bool = False,
     ) -> TaskSignals:
         cb = self._cb
         cb.check_cancelled(prep_signals)
@@ -150,14 +159,22 @@ class EncodePreparationRunner:
             fallback_name="encode_job",
         )
         owned = capture_process_work_dir(process_work_dir, root=work_root)
+        if retain_failed_work_dir and owned is not None and cb.request_failed_work_dir_retention is not None:
+            cb.request_failed_work_dir_retention(owned)
         try:
             return self._run_prepared(config, work_root, process_work_dir, prep_signals)
-        except BaseException:
-            if owned is not None:
+        except BaseException as exc:
+            retained = (
+                isinstance(exc, Exception)
+                and not isinstance(exc, TaskCancelledError)
+                and cb.retain_failed_work_dir is not None
+                and cb.retain_failed_work_dir([process_work_dir])
+            )
+            if owned is not None and not retained:
                 try:
                     owned.remove()
-                except OSError as exc:
-                    cb.log("WARN", f"Nettoyage incomplet du workspace : {exc}")
+                except OSError as cleanup_exc:
+                    cb.log("WARN", f"Nettoyage incomplet du workspace : {cleanup_exc}")
             raise
 
     def dry_run(self, config: EncodeConfig) -> EncodeConfig:
@@ -183,7 +200,7 @@ class EncodePreparationRunner:
             return cb.normalize_dynamic_hdr_multi(config, **kwargs)
         if not cb.is_video_passthrough(config) or cb.wants_dovi_profile_normalization(config):
             return cb.normalize_dynamic_hdr_config(config, **kwargs)
-        if cb.wants_dynamic_hdr_copy(config) and not dry_run:
+        if cb.wants_dynamic_hdr_copy(config) and not dry_run and not generates_hdr10plus(config.video):
             cb.log(
                 "INFO",
                 "Codec COPY : injection DoVi/HDR10+ ignorée — "
@@ -303,6 +320,7 @@ class EncodePreparationRunner:
                 else "Routage du workflow (encode vidéo interpolé puis assemblage)",
             )
             plan = cb.build_encode_plan(prepared_config)
+            log_default_flag_warnings(cb.log, plan)
             if prep_signals is not None:
                 cb.bind_output_hooks(
                     prep_signals,
@@ -339,6 +357,7 @@ class EncodePreparationRunner:
             # l'assembleur natif matérialise l'audio et écrit la sortie.
             cb.log_step(4, "Routage du workflow (encode découpé puis assemblage natif)")
             plan = cb.build_encode_plan(prepared_config)
+            log_default_flag_warnings(cb.log, plan)
             if prep_signals is not None:
                 cb.bind_output_hooks(
                     prep_signals,
@@ -389,6 +408,7 @@ class EncodePreparationRunner:
             )
 
         plan = cb.build_encode_plan(prepared_config)
+        log_default_flag_warnings(cb.log, plan)
         signals = (
             cb.run_with_metadata_inject(
                 prepared_config,
@@ -413,3 +433,16 @@ class EncodePreparationRunner:
                 include_nfo=native_mux and prepared_config.write_nfo,
             )
         return signals
+
+
+def log_default_flag_warnings(log: Callable[[str, str], None], plan: EncodePlan) -> None:
+    """WARN si plusieurs pistes d'un même type sont marquées par défaut (flags inchangés)."""
+    for message in duplicate_default_track_warnings(
+        (
+            item.track_type,
+            bool(item.flags is not None and item.flags.default),
+            output_track_label(position, item.language, item.name),
+        )
+        for position, item in enumerate(plan.track_metadata, start=1)
+    ):
+        log("WARN", message)

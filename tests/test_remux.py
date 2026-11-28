@@ -121,6 +121,8 @@ Exécution :
 
 from __future__ import annotations
 
+import copy
+
 import colorsys
 import json
 from threading import Event
@@ -2658,6 +2660,595 @@ class TestRemuxPanelDecisionProfiles:
         assert by_field["codec_atmos"]["required"] is False
         dialog.close()
 
+    def test_profile_editor_keeps_clear_actions_through_edit_save_and_reload(self, qt_app, tmp_path):
+        """Effacements capturés (titre, langue) : conservés par l'éditeur, la sauvegarde et le rechargement."""
+        from core.profiles.decision import (
+            DecisionProfileManager, apply_decision_profile, remux_config_to_decision_profile,
+        )
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        def fresh():
+            return _track(1, "audio", file_id="fid", language="fr-FR", title="Audio original",
+                          orig_language="fr-FR", orig_title="Audio original")
+
+        cleared = fresh()
+        cleared.title = cleared.language = ""
+        config = RemuxConfig(sources=[SourceInput(path=tmp_path / "s.mkv", file_index=0, tracks=[cleared])],
+                             output=tmp_path / "o.mkv", track_order=[(0, 1, cleared.entry_id)])
+        manager = DecisionProfileManager(tmp_path / "profiles")
+        dialog = DecisionProfileEditorDialog(manager=manager, profile=remux_config_to_decision_profile(
+            config, name="Effacer"))
+        assert dialog._title_clear.isChecked() and dialog._action_language_clear.isChecked()
+        assert not dialog._title_pattern.isEnabled() and not dialog._action_language.isEnabled()
+        dialog._action_order.setValue(7)  # autre champ modifié
+        actions = dialog.profile()["rules"][0]["actions"]
+        assert {"type": "set_title", "value": ""} in actions
+        assert {"type": "set_language", "value": ""} in actions
+        manager.save(dialog.profile())
+        dialog.close()
+
+        reloaded = DecisionProfileEditorDialog(manager=manager, profile=manager.load("Effacer"))
+        target = fresh()
+        apply_decision_profile(reloaded.profile(), [target])
+        assert (target.title, target.language) == ("", "")
+        reloaded._title_clear.setChecked(False)  # décoché : plus aucune action de titre
+        assert reloaded._title_pattern.isEnabled()
+        assert not [a for a in reloaded.profile()["rules"][0]["actions"] if a["type"] == "set_title"]
+        reloaded._action_language.setText("en-US")
+        reloaded._action_language_clear.setChecked(True)  # coché : la valeur saisie n'est pas écrite
+        assert {"type": "set_language", "value": ""} in reloaded.profile()["rules"][0]["actions"]
+        reloaded.close()
+
+    @pytest.mark.parametrize("actions", [
+        [{"type": "set_title", "value": ""}, {"type": "set_language", "value": ""},
+         {"type": "create_audio_variant", "codec": "ac3"}],
+        [{"type": "set_title", "value": "A", "write_mode": "override"}, {"type": "create_audio_variant", "codec": "ac3"},
+         {"type": "set_title", "value": "B"}],
+        [{"type": "create_audio_variant", "codec": "ac3", "title": "AC3"}, {"type": "set_title", "value": "X"},
+         {"type": "create_audio_variant", "codec": "eac3", "title": "EAC3"}],
+    ], ids=["clear-then-clone", "repeated-around-clone", "several-clones"])
+    def test_profile_editor_keeps_action_order_occurrences_and_parameters(self, qt_app, tmp_path, actions):
+        """Règle mêlant actions gérées et clonages : ressortie à l'identique, résultat d'application inchangé."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        def fresh():
+            return [_track(1, "audio", file_id="fid", codec="DTS", language="fr-FR", title="Audio original",
+                           orig_language="fr-FR", orig_title="Audio original")]
+
+        def outcome(profile):
+            return [(t.codec, t.title, t.language) for t in apply_decision_profile(profile, fresh()).tracks]
+
+        profile = {"version": 1, "kind": "decision-profile", "name": "Mixte", "rules": [{
+            "id": "audio", "scope": "all", "match": {"all": [{"field": "type", "op": "is", "value": "audio",
+                                                               "required": True}]},
+            "actions": copy.deepcopy(actions)}]}
+        manager = DecisionProfileManager(tmp_path / "profiles")
+        dialog = DecisionProfileEditorDialog(manager=manager, profile=profile)
+        assert dialog.profile()["rules"][0]["actions"] == actions
+        again = DecisionProfileEditorDialog(manager=manager, profile=dialog.profile())  # deuxième passage
+        assert again.profile()["rules"][0]["actions"] == actions
+        assert outcome(again.profile()) == outcome(profile)
+        again._action_order.setValue(3)  # champ sans rapport modifié
+        edited = again.profile()["rules"][0]["actions"]
+        assert edited == [*actions, {"type": "set_order_priority", "value": 3}]
+        assert outcome(again.profile())[1:] == outcome(profile)[1:]
+        dialog.close()
+        again.close()
+
+    def test_profile_editor_replaces_an_edited_field_in_place(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        actions = [{"type": "set_title", "value": "A"}, {"type": "create_audio_variant", "codec": "ac3"},
+                   {"type": "set_title", "value": "B"}]
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"), profile={
+            "version": 1, "kind": "decision-profile", "name": "P", "rules": [{
+                "id": "r", "match": {"all": []}, "actions": actions}]})
+        dialog._title_pattern.setText("C")
+        assert dialog.profile()["rules"][0]["actions"] == [
+            {"type": "set_title", "value": "C"}, {"type": "create_audio_variant", "codec": "ac3"}]
+        dialog._title_pattern.setText("A")  # valeur de chargement : occurrences d'origine rétablies
+        assert dialog.profile()["rules"][0]["actions"] == actions
+        dialog._title_clear.setChecked(True)
+        assert dialog.profile()["rules"][0]["actions"][0] == {"type": "set_title", "value": ""}
+        dialog.close()
+
+    def test_profile_editor_keeps_captured_criteria_and_edits_the_file_language(self, qt_app, tmp_path):
+        """Règle capturée : ``file_language`` affiché et réécrit sur le même champ, critères non représentés
+        (canaux) conservés ; capture → éditeur → sauvegarde → rechargement → application."""
+        from core.profiles.decision import (
+            DecisionProfileManager, apply_decision_profile, remux_config_to_decision_profile,
+        )
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        def fresh():
+            return _track(1, "audio", file_id="fid", codec="DTS", language="fr-FR", title="Audio original",
+                          orig_language="fr-FR", orig_title="Audio original")
+
+        original = fresh()
+        original.title = original.language = ""
+        variant = clone_track_entry(original)
+        variant.codec = "AC3"
+        variant.flag_enabled = False
+        config = RemuxConfig(sources=[SourceInput(path=tmp_path / "s.mkv", file_index=0,
+                                                  tracks=[original, variant])],
+                             output=tmp_path / "o.mkv",
+                             track_order=[(0, 1, original.entry_id), (0, 1, variant.entry_id)])
+        captured = remux_config_to_decision_profile(config, name="Capture")
+        manager = DecisionProfileManager(tmp_path / "profiles")
+        dialog = DecisionProfileEditorDialog(manager=manager, profile=captured)
+        assert dialog.profile()["rules"] == captured["rules"]  # rien modifié : règles identiques
+        assert dialog._match_language.text() == "fr-FR"
+        dialog._match_codec.setText("DTS | AC3")  # critère réellement modifié : les autres repris à l'identique
+        match = dialog.profile()["rules"][0]["match"]["all"]
+        original = captured["rules"][0]["match"]["all"]
+        assert [item for item in match if item.get("field") != "codec" and "any" not in item] == [
+            item for item in original if item.get("field") != "codec"]
+        assert "language" not in {item.get("field") for item in match}
+        manager.save(dialog.profile())
+        dialog.close()
+
+        reloaded = DecisionProfileEditorDialog(manager=manager, profile=manager.load("Capture"))
+        result = apply_decision_profile(reloaded.profile(), [fresh()], from_current_state=True)
+        assert result.report["missing_rules"] == []
+        assert [(t.title, t.language, t.flag_enabled, t.is_new) for t in result.tracks] == [
+            ("", "", True, False), ("", "", False, True)]
+        reloaded.close()
+
+    def test_profile_editor_codec_change_keeps_the_other_captured_criteria(self, qt_app, tmp_path):
+        """Audit 20 : sous-titre capturé (titre vidé), codec modifié → titre du fichier toujours préféré, langue du
+        fichier conservée ; deuxième application au tableau vidé : rien de manquant, rien de décoché."""
+        from core.profiles.decision import (
+            DecisionProfileManager, apply_decision_profile, remux_config_to_decision_profile,
+        )
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        def subs():
+            return [TrackEntry(mkv_tid=i, track_type="subtitle", codec="SUBRIP", display_info="", language="fr-FR",
+                               title=t, file_id="fid", orig_language="fr-FR", orig_title=t)
+                    for i, t in ((3, "Complets"), (4, "Forcés"))]
+
+        table = subs()
+        for track in table:
+            track.title = ""
+        config = RemuxConfig(sources=[SourceInput(path=tmp_path / "s.mkv", file_index=0, tracks=table)],
+                             output=tmp_path / "o.mkv", track_order=[(0, t.mkv_tid, t.entry_id) for t in table])
+        captured = remux_config_to_decision_profile(config, name="Subs")
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"), profile=captured)
+        dialog._match_codec.setText("SUBRIP | ASS")
+        profile = dialog.profile()
+        match = profile["rules"][0]["match"]["all"]
+        by_field = {item.get("field"): item for item in match}
+        assert by_field["file_title"] == {"field": "file_title", "op": "is", "value": "Complets", "required": False}
+        assert by_field["file_language"]["value"] == "fr-FR"
+        assert [item.get("field") for item in match].index("file_title") > [
+            item.get("field") for item in match].index("file_language")  # positions conservées
+        first = apply_decision_profile(profile, subs(), from_current_state=True)
+        for track in first.tracks:
+            track.title = ""
+        second = apply_decision_profile(profile, first.tracks, from_current_state=True)
+        for result in (first, second):
+            assert result.report["missing_rules"] == [] and result.report["ambiguous_matches"] == []
+            assert all(track.enabled for track in result.tracks)
+        dialog.close()
+
+    @pytest.mark.parametrize("match", [
+        {"all": [{"field": "type", "op": "is", "value": "audio", "required": True},
+                 {"field": "language", "op": "is", "value": "en-US", "required": True},
+                 {"field": "file_language", "op": "is", "value": "fr-FR", "required": True, "weight": 30},
+                 {"any": [{"field": "codec", "op": "is", "value": "DTS"},
+                          {"field": "channels", "op": "is", "value": "5.1"}]},
+                 {"not": {"field": "title", "op": "contains", "value": "comment"}},
+                 {"field": "codec", "op": "is", "value": "DTS", "required": False}]},
+        {"any": [{"field": "language", "op": "is", "value": "fr-FR"}, {"field": "codec", "op": "is", "value": "AC3"}]},
+        {"field": "language", "op": "is", "value": "fr-FR", "required": True},
+    ], ids=["mixed-all", "root-any", "root-condition"])
+    def test_profile_editor_preserves_criteria_it_does_not_edit(self, qt_app, tmp_path, match):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        profile = {"version": 1, "kind": "decision-profile", "name": "P", "rules": [{
+            "id": "r", "match": copy.deepcopy(match), "actions": [{"type": "set_enabled", "value": True}]}]}
+        manager = DecisionProfileManager(tmp_path / "profiles")
+        dialog = DecisionProfileEditorDialog(manager=manager, profile=profile)
+        assert dialog.profile()["rules"][0]["match"] == match  # ouvert sans modification : identique
+        dialog._match_flags.setText("default")  # contrôle absent de la règle : critère ajouté en fin
+        edited = dialog.profile()["rules"][0]["match"]
+        if "all" in match and set(match) == {"all"}:
+            assert edited["all"][:len(match["all"])] == match["all"] and len(edited["all"]) == len(match["all"]) + 1
+        else:
+            assert edited["all"][0] == match and len(edited["all"]) == 2  # racine non représentable : conservée
+        dialog._match_flags.setText("")  # retour à la valeur de chargement
+        assert dialog.profile()["rules"][0]["match"] == match
+        reopened = DecisionProfileEditorDialog(manager=manager, profile=dialog.profile())
+        assert reopened.profile()["rules"][0]["match"] == match
+        dialog.close()
+        reopened.close()
+
+    @staticmethod
+    def _video(mkv_tid: int, display_info: str) -> TrackEntry:
+        return TrackEntry(mkv_tid=mkv_tid, track_type="video", codec="HEVC", display_info=display_info,
+                          language="und", title="", file_id="fid", orig_language="und")
+
+    def _editor(self, tmp_path, match):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        return DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"), profile={
+            "version": 1, "kind": "decision-profile", "name": "V", "rules": [{
+                "id": "v", "scope": "best", "match": copy.deepcopy(match),
+                "actions": [{"type": "set_title", "value": "Choisie"}]}]})
+
+    def test_profile_editor_height_edit_keeps_a_required_weighted_width(self, qt_app, tmp_path):
+        """Audit 21 : hauteur seule renseignée → largeur obligatoire et pondérée inchangée, sélection inchangée."""
+        from core.profiles.decision import apply_decision_profile
+
+        width = {"field": "width", "op": "is", "value": 1280, "required": True, "weight": 30}
+        match = {"all": [{"field": "type", "op": "is", "value": "video", "required": True}, width]}
+        dialog = self._editor(tmp_path, match)
+        dialog._match_height.setValue(720)
+        edited = dialog.profile()["rules"][0]["match"]["all"]
+        assert edited[:2] == match["all"]
+        assert edited[2] == {"field": "height", "op": "is", "value": 720, "required": False}
+        for profile in ({"version": 1, "kind": "decision-profile", "name": "V",
+                         "rules": [{"id": "v", "scope": "best", "match": match,
+                                    "actions": [{"type": "set_title", "value": "Choisie"}]}]}, dialog.profile()):
+            result = apply_decision_profile(profile, [self._video(0, "3840x2160")])
+            assert [t.title for t in result.tracks] == [""]  # 4K jamais retenue (largeur obligatoire)
+        dialog._match_height.setValue(0)  # retour à la valeur de chargement
+        assert dialog.profile()["rules"][0]["match"] == match
+        dialog.close()
+
+    def test_profile_editor_updates_captured_resolution_in_place_and_keeps_video_bits(self, qt_app, tmp_path):
+        """Règle vidéo capturée : ``resolution`` mise à jour en place (métadonnées gardées, aucun doublon),
+        ``video_flags_hex`` intact tant que les cases HDR ne changent pas ; seule la case HDR modifiée bascule son
+        bit ; sélection identique sur plusieurs vidéos candidates."""
+        from core.profiles.decision import (
+            VIDEO_FLAG_DOLBY_VISION, apply_decision_profile, remux_config_to_decision_profile,
+        )
+        from core.profiles.keywords import parse_video_flags
+
+        uhd = self._video(0, "3840x2160  HDR10  10 bits")
+        config = RemuxConfig(sources=[SourceInput(path=tmp_path / "s.mkv", file_index=0, tracks=[uhd])],
+                             output=tmp_path / "o.mkv", track_order=[(0, 0, uhd.entry_id)])
+        captured = remux_config_to_decision_profile(config, name="V")
+        rule = captured["rules"][0]
+        rule["match"]["all"].append({"field": "width", "op": "is", "value": 3840, "required": False, "weight": 7})
+        resolution = next(i for i in rule["match"]["all"] if i["field"] == "resolution")
+        resolution.update(required=True, weight=25)
+        flags_before = next(i for i in rule["match"]["all"] if i["field"] == "video_flags_hex")
+        dialog = self._editor(tmp_path, rule["match"])
+
+        dialog._match_height.setValue(1600)
+        edited = {i["field"]: i for i in dialog.profile()["rules"][0]["match"]["all"]}
+        assert [i["field"] for i in dialog.profile()["rules"][0]["match"]["all"]] == [
+            i["field"] for i in rule["match"]["all"]]  # aucun ajout, positions gardées
+        assert edited["resolution"]["value"]["height"] == 1600 and edited["resolution"]["weight"] == 25
+        assert edited["resolution"]["required"] is True and edited["width"] == rule["match"]["all"][-1]
+        assert edited["video_flags_hex"] == flags_before
+        dialog._match_width.setValue(3000)
+        edited = {i["field"]: i for i in dialog.profile()["rules"][0]["match"]["all"]}
+        assert edited["width"] == {**rule["match"]["all"][-1], "value": 3000}  # largeur indépendante en place
+        dialog._match_width.setValue(3840)
+        dialog._match_height.setValue(2160)
+        assert dialog.profile()["rules"][0]["match"] == rule["match"]  # retour aux valeurs initiales
+
+        dialog._video_dolby_vision.setChecked(True)
+        flags_after = next(i for i in dialog.profile()["rules"][0]["match"]["all"] if i["field"] == "video_flags_hex")
+        before_bits, after_bits = parse_video_flags(flags_before["value"]), parse_video_flags(flags_after["value"])
+        assert after_bits == before_bits | VIDEO_FLAG_DOLBY_VISION  # bits non édités (profondeur…) conservés
+        dialog._video_dolby_vision.setChecked(False)
+
+        dialog._match_title.setText("rien")  # autre critère modifié
+        dialog._match_title.setText("")
+        candidates = [self._video(0, "1920x1080"), self._video(1, "3840x2160  HDR10  10 bits"),
+                      self._video(2, "3840x1600  HDR10  10 bits")]
+        for profile in ({**captured, "rules": [rule]}, dialog.profile()):
+            result = apply_decision_profile(profile, copy.deepcopy(candidates))
+            assert [t.mkv_tid for t in result.tracks if t.entry_id in result.report["written_fields"]] == [1]
+        dialog.close()
+
+    def test_profile_editor_height_edit_changes_only_the_height_of_resolution(self, qt_app, tmp_path):
+        """Audit 22 : ``resolution`` 3840×2160 + largeur indépendante 1280 ; hauteur seule modifiée → 3840×720
+        (la largeur affichée par l'autre critère ne contamine pas ``resolution``) ; sélection attendue."""
+        from core.profiles.decision import apply_decision_profile
+
+        resolution = {"field": "resolution", "op": "is", "required": True, "weight": 30,
+                      "value": {"width": 3840, "height": 2160, "bucket": "uhd"}}
+        width = {"field": "width", "op": "is", "value": 1280, "required": False, "weight": 1}
+        match = {"all": [{"field": "type", "op": "is", "value": "video", "required": True}, resolution, width]}
+        dialog = self._editor(tmp_path, match)
+        dialog._match_height.setValue(720)
+        edited = dialog.profile()["rules"][0]["match"]["all"]
+        assert edited[1] == {**resolution, "value": {"width": 3840, "height": 720, "bucket": "uhd"}}
+        assert edited[2] == width and len(edited) == 3
+        result = apply_decision_profile(dialog.profile(), [self._video(0, "1280x720"), self._video(1, "3840x720")])
+        assert [t.mkv_tid for t in result.tracks if t.entry_id in result.report["written_fields"]] == [1]
+        dialog.close()
+
+    @pytest.mark.parametrize("cleared", ["width", "height"])
+    def test_profile_editor_clearing_one_dimension_keeps_an_applicable_condition(self, qt_app, tmp_path, cleared):
+        """Audit 22 : dimension vidée d'une ``resolution`` obligatoire → condition sur l'autre dimension, mêmes
+        ``required`` et ``weight`` ; toujours applicable à la vidéo 3840×2160."""
+        from core.profiles.decision import apply_decision_profile
+
+        resolution = {"field": "resolution", "op": "is", "required": True, "weight": 30,
+                      "value": {"width": 3840, "height": 2160, "bucket": "uhd"}}
+        dialog = self._editor(tmp_path, {"all": [{"field": "type", "op": "is", "value": "video", "required": True},
+                                                 resolution]})
+        (dialog._match_width if cleared == "width" else dialog._match_height).setValue(0)
+        remaining = "height" if cleared == "width" else "width"
+        edited = dialog.profile()["rules"][0]["match"]["all"]
+        assert edited[1] == {"field": remaining, "op": "is", "required": True, "weight": 30,
+                             "value": 2160 if remaining == "height" else 3840}
+        result = apply_decision_profile(dialog.profile(), [self._video(0, "3840x2160")])
+        assert [t.title for t in result.tracks] == ["Choisie"]
+        dialog.close()
+
+    def test_profile_editor_keeps_rule_metadata_it_does_not_edit(self, qt_app, tmp_path):
+        """Audit 23 : profil ouvert puis repris sans modification (chaque règle visitée) → règles identiques :
+        groupe personnalisé désactivé, alias historique de mode d'écriture, clés absentes ; résultat inchangé."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        profile = {"version": 1, "kind": "decision-profile", "name": "Méta",
+                   "groups": [{"id": "custom", "enabled": False}],
+                   "rules": [
+                       {"id": "masquee", "group_id": "custom", "match": audio,
+                        "actions": [{"type": "set_title", "value": "Groupe désactivé"}]},
+                       {"id": "avant", "priority": 10, "match": audio,
+                        "actions": [{"type": "set_title", "value": "Avant"}]},
+                       {"id": "apres", "priority": 0, "write_mode": "replace", "match": audio,
+                        "actions": [{"type": "set_title", "value": "Après"}]},
+                   ]}
+
+        def outcome(candidate):
+            track = _track(1, "audio", file_id="fid", title="Origine")
+            return [t.title for t in apply_decision_profile(candidate, [track]).tracks]
+
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        for row in range(len(profile["rules"])):
+            dialog._rule_list.setCurrentRow(row)
+        assert dialog.profile()["rules"] == profile["rules"]
+        assert outcome(dialog.profile()) == outcome(profile) == ["Après"]
+        dialog._rule_list.setCurrentRow(0)
+        assert dialog._rule_group.currentData() == "custom"  # groupe personnalisé affiché, non remplacé
+        dialog._rule_priority.setValue(5)  # métadonnée modifiée : seule elle change
+        rule = dialog.profile()["rules"][0]
+        assert rule == {**profile["rules"][0], "priority": 5}
+        dialog.close()
+
+    def test_profile_editor_restores_rule_metadata_reverted_to_its_initial_value(self, qt_app, tmp_path):
+        """Audit 24 : métadonnée modifiée puis ramenée à sa valeur de chargement → valeur d'origine dans le profil
+        (clé absente comprise), cohérente avec le contrôle affiché."""
+        from core.profiles.decision import apply_decision_profile
+
+        rule = {"id": "r", "group_id": "custom", "write_mode": "replace",
+                "match": {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]},
+                "actions": [{"type": "set_title", "value": "Renommé"}]}
+        dialog = self._editor(tmp_path, rule["match"])
+        dialog._profile["rules"][0] = copy.deepcopy(rule)
+        dialog._load_rule(dialog._profile["rules"][0])
+        dialog._rule_enabled.setChecked(False)
+        dialog._rule_priority.setValue(5)
+        dialog._set_combo_data(dialog._rule_group, "video")
+        dialog._set_combo_data(dialog._rule_write_mode, "priority")
+        dialog._store_current_rule()
+        assert dialog._profile["rules"][0]["enabled"] is False and dialog._profile["rules"][0]["priority"] == 5
+        dialog._rule_enabled.setChecked(True)
+        dialog._rule_priority.setValue(0)
+        dialog._set_combo_data(dialog._rule_group, "custom")
+        dialog._set_combo_data(dialog._rule_write_mode, "replace")
+        assert dialog.profile()["rules"][0] == rule  # enabled / priority absents, group et alias d'origine
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        assert [t.title for t in apply_decision_profile(dialog.profile(), [track]).tracks] == ["Renommé"]
+        dialog.close()
+
+    @pytest.mark.parametrize("write_mode, priorities, expected", [
+        ("override", (10, 9), "A"), ("priority", (10, 9), "B"), ("override", (10, 8), "A"), ("priority", (10, 8), "B"),
+        ("priority", (9, 9), "B"),
+    ])
+    def test_profile_editor_rule_move_swaps_execution_order(self, qt_app, tmp_path, write_mode, priorities, expected):
+        """Audits 25–26 : règle A descendue sous B → ordre d'exécution échangé (priorités échangées, ou A juste sous B
+        si elles sont égales), jamais d'égalité ni de conflit ; ajustement conservé aux sélections suivantes."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio,
+                  "actions": [{"type": "set_title", "value": rule_id.upper()}]}
+                 for rule_id, priority in zip(("a", "b"), priorities)]
+        if write_mode != "priority":
+            for rule in rules:
+                rule["write_mode"] = write_mode
+        profile = {"version": 1, "kind": "decision-profile", "name": "Ordre", "rules": rules}
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        moved = [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]]
+        assert [rule_id for rule_id, _priority in moved] == ["b", "a"] and moved[0][1] > moved[1][1]
+        assert dialog._rule_priority.value() == moved[1][1]  # contrôle cohérent avec la règle
+        dialog._rule_list.setCurrentRow(0)
+        dialog._rule_list.setCurrentRow(1)  # nouvelles sélections : rien n'est restauré
+        assert [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]] == moved
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        result = apply_decision_profile(dialog.profile(), [track])
+        assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == [expected]
+        dialog.close()
+
+    def test_profile_editor_rule_move_with_equal_priorities_never_collides_with_a_third_rule(self, qt_app,
+                                                                                             tmp_path):
+        """Audit 27 : A(10), B(10), C(9) ; A descendue sous B → niveau 9 occupé par C : C décalée, ordre B > A > C,
+        profil toujours valide (titre A)."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        profile = {"version": 1, "kind": "decision-profile", "name": "Trois", "rules": [
+            {"id": "a", "priority": 10, "scope": "all", "match": audio,
+             "actions": [{"type": "set_title", "value": "A"}]},
+            {"id": "b", "priority": 10, "scope": "all", "match": audio,
+             "actions": [{"type": "set_flags", "value": {"commentary": True}}]},
+            {"id": "c", "priority": 9, "scope": "all", "match": audio,
+             "actions": [{"type": "set_title", "value": "C"}]},
+        ]}
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        priorities = [(rule["id"], rule["priority"]) for rule in dialog.profile()["rules"]]
+        assert priorities == [("b", 9), ("a", 8), ("c", 7)]
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        result = apply_decision_profile(dialog.profile(), [track])
+        assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == ["A"]
+        dialog.close()
+
+    @pytest.mark.parametrize("priorities, row, delta", [((10, 9, 9), 0, 1), ((10, 10, 9), 2, -1), ((10, 9, 8), 2, -1)])
+    def test_profile_editor_rule_move_never_creates_a_priority_tie(self, qt_app, tmp_path, priorities, row, delta):
+        """Audit 28 : quelles que soient les priorités, la règle déplacée occupe seule son niveau (aucune égalité, donc
+        aucun conflit) ; elle passe juste après / avant sa voisine ; les autres gardent leur ordre relatif."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        actions = ({"type": "set_title", "value": "A"}, {"type": "set_flags", "value": {"commentary": True}},
+                   {"type": "set_title", "value": "C"})
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio, "actions": [action]}
+                 for rule_id, priority, action in zip("abc", priorities, actions)]
+        profile = {"version": 1, "kind": "decision-profile", "name": "Trois", "rules": rules}
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        assert apply_decision_profile(profile, [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(row)
+        dialog._move_current_rule(delta)
+        moved = dialog.profile()["rules"]
+        mover = moved[row + delta]
+        neighbor = moved[row]
+        others = [rule for rule in moved if rule is not mover]
+        assert all(int(rule["priority"]) != int(mover["priority"]) for rule in others)
+        assert (int(mover["priority"]) < int(neighbor["priority"])) is (delta > 0)
+        third = next(rule for rule in rules if rule["id"] not in {mover["id"], neighbor["id"]})
+        new_third = next(rule for rule in moved if rule["id"] == third["id"])
+        for rule in (mover, neighbor):  # aucune des deux ne passe sous une règle qu'elle dominait
+            old_rule = next(item for item in rules if item["id"] == rule["id"])
+            if int(old_rule["priority"]) > int(third["priority"]):
+                assert int(rule["priority"]) > int(new_third["priority"])
+        assert int(neighbor["priority"]) != int(new_third["priority"])
+        assert apply_decision_profile(dialog.profile(), [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog.close()
+
+    @pytest.mark.parametrize("priorities", [(10, 9, 9), (10, 10, 9), (10, 9, 8), (9, 9, 9)])
+    def test_profile_editor_rule_move_keeps_a_valid_profile_with_three_concurrent_writers(self, qt_app, tmp_path,
+                                                                                          priorities):
+        """Audit 29 : trois règles écrivant le titre ; un profil valide le reste après déplacement de A sous B (aucun
+        conflit masqué révélé)."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio,
+                  "actions": [{"type": "set_title", "value": rule_id.upper()}]}
+                 for rule_id, priority in zip("abc", priorities)]
+        profile = {"version": 1, "kind": "decision-profile", "name": "Titres", "rules": rules}
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        valid_before = apply_decision_profile(profile, [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        result = apply_decision_profile(dialog.profile(), [copy.deepcopy(track)])
+        if valid_before:
+            assert result.report["conflicts"] == []
+        moved = {rule["id"]: rule["priority"] for rule in dialog.profile()["rules"]}
+        assert moved["b"] > moved["a"]
+        dialog.close()
+
+    def test_profile_editor_rule_move_keeps_valid_a_four_writer_profile_with_repeated_values(self, qt_app, tmp_path):
+        """Audit 30 : A10 X, B9 Y, C9 Y, D9 X (valide) ; A descendue sous B → toujours valide."""
+        from core.profiles.decision import DecisionProfileManager, apply_decision_profile
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        rules = [{"id": rule_id, "priority": priority, "scope": "all", "match": audio,
+                  "actions": [{"type": "set_title", "value": value}]}
+                 for rule_id, priority, value in (("a", 10, "X"), ("b", 9, "Y"), ("c", 9, "Y"), ("d", 9, "X"))]
+        profile = {"version": 1, "kind": "decision-profile", "name": "Quatre", "rules": rules}
+        track = _track(1, "audio", file_id="fid", title="Origine")
+        assert apply_decision_profile(profile, [copy.deepcopy(track)]).report["conflicts"] == []
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        result = apply_decision_profile(dialog.profile(), [copy.deepcopy(track)])
+        assert result.report["conflicts"] == [] and [t.title for t in result.tracks] == ["Y"]
+        dialog.close()
+
+    def test_profile_editor_rule_move_across_group_priorities_only_reorders_the_list(self, qt_app, tmp_path):
+        """Audit 29 : règles de groupes de priorités différentes → priorités inchangées, message explicite (l'ordre
+        d'exécution suit les groupes)."""
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        audio = {"all": [{"field": "type", "op": "is", "value": "audio", "required": True}]}
+        profile = {"version": 1, "kind": "decision-profile", "name": "Groupes",
+                   "groups": [{"id": "g1", "priority": 10}, {"id": "g2", "priority": 1}],
+                   "rules": [{"id": "a", "group_id": "g1", "priority": 10, "match": audio,
+                              "actions": [{"type": "set_title", "value": "A"}]},
+                             {"id": "b", "group_id": "g2", "priority": 9, "match": audio,
+                              "actions": [{"type": "set_title", "value": "B"}]}]}
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"),
+                                             profile=copy.deepcopy(profile))
+        dialog._rule_list.setCurrentRow(0)
+        dialog._move_current_rule(1)
+        rules = dialog.profile()["rules"]
+        assert [(rule["id"], rule["priority"]) for rule in rules] == [("b", 9), ("a", 10)]
+        from core.i18n import translate_text
+
+        assert not dialog._move_note.isHidden() and dialog._move_note.text() == translate_text(
+            "Règles de groupes différents : l'ordre d'exécution suit la priorité des groupes ; seul l'ordre "
+            "affiché change.")
+        dialog.close()
+
+    def test_profile_editor_toggles_only_the_edited_bit_of_each_video_mask(self, qt_app, tmp_path):
+        """Audit 25 : deux masques ``video_flags_hex`` (HDR + HDR10+, HDR seul) ; Dolby Vision cochée → seul son bit
+        ajouté à chacun ; sélection conforme au masque conservé."""
+        from core.profiles.decision import apply_decision_profile
+
+        first = {"field": "video_flags_hex", "op": "is", "value": "0x00000050", "required": True, "weight": 20}
+        second = {"field": "video_flags_hex", "op": "is", "value": "0x00000010", "required": False, "weight": 19}
+        match = {"all": [{"field": "type", "op": "is", "value": "video", "required": True}, first, second]}
+        dialog = self._editor(tmp_path, match)
+        dialog._video_dolby_vision.setChecked(True)
+        edited = dialog.profile()["rules"][0]["match"]["all"]
+        assert edited[1] == {**first, "value": "0x000000D0"} and edited[2] == {**second, "value": "0x00000090"}
+        candidates = [self._video(0, "3840x2160  Dolby Vision"), self._video(1, "3840x2160  Dolby Vision + HDR10+")]
+        result = apply_decision_profile(dialog.profile(), candidates)
+        assert [t.mkv_tid for t in result.tracks if t.entry_id in result.report["written_fields"]] == [1]
+        dialog._video_dolby_vision.setChecked(False)
+        assert dialog.profile()["rules"][0]["match"] == match
+        dialog.close()
+
+    def test_profile_editor_language_edit_replaces_every_displayed_language_condition(self, qt_app, tmp_path):
+        from core.profiles.decision import DecisionProfileManager
+        from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
+
+        match = {"all": [{"field": "language", "op": "is", "value": "en-US", "required": True},
+                         {"field": "codec", "op": "is", "value": "DTS", "required": False},
+                         {"field": "file_language", "op": "is", "value": "fr-FR", "required": True}]}
+        dialog = DecisionProfileEditorDialog(manager=DecisionProfileManager(tmp_path / "profiles"), profile={
+            "version": 1, "kind": "decision-profile", "name": "P", "rules": [{"id": "r", "match": match,
+                                                                            "actions": []}]})
+        dialog._match_language.setText("de-DE")
+        assert dialog.profile()["rules"][0]["match"]["all"] == [
+            {"field": "file_language", "op": "is", "value": "de-DE", "required": True},
+            {"field": "codec", "op": "is", "value": "DTS", "required": False}]
+        dialog.close()
+
     def test_profile_editor_no_commentary_template_prefills_visible_criteria(self, qt_app, tmp_path):
         from core.profiles.decision import DecisionProfileManager
         from ui.panels.remux_panel.profile_editor import DecisionProfileEditorDialog
@@ -3324,6 +3915,21 @@ class TestAttachmentPreviewFormatting:
         content = _pretty_text_attachment_content(txt_path)
 
         assert content == "line 1\nline 2"
+
+    def test_pretty_text_attachment_content_never_expands_a_dtd(self, tmp_path, monkeypatch):
+        """Pièce jointe XML/NFO d'un fichier non fiable déclarant des entités (bombe d'expansion) :
+        affichée telle quelle, jamais analysée."""
+        from ui.panels.remux_panel.widgets import attachments
+
+        bomb = ('<?xml version="1.0"?>\n<!DOCTYPE lolz [<!ENTITY lol "lol">'
+                '<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>\n<lolz>&lol2;</lolz>')
+        nfo_path = tmp_path / "movie.nfo"
+        nfo_path.write_text(bomb, encoding="utf-8")
+        parsed: list[bytes] = []
+        monkeypatch.setattr(attachments.minidom, "parseString", lambda data: parsed.append(data))
+
+        assert _pretty_text_attachment_content(nfo_path) == bomb
+        assert parsed == []
 
 
 class TestMatroskaAttachmentExtractor:

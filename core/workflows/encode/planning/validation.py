@@ -16,11 +16,13 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
 )
 from core.workflows.encode.domain.codecs import bit_depth_error, extra_params_syntax_error, preset_problem
+from core.hdr_formats import MASTER_DISPLAY_BODY, MAX_CLL_BODY, optional_text_pattern
 from core.workflows.encode.models import EncodeConfig, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import PlannedVideoTrack
 
-_MASTER_DISPLAY_RE = re.compile(r"^G\(\d+,\d+\)B\(\d+,\d+\)R\(\d+,\d+\)WP\(\d+,\d+\)L\(\d+,\d+\)$")
-_MAX_CLL_RE = re.compile(r"^\d+,\d+$")
+# Motif complet partagé avec la lecture des requêtes (vide accepté, espaces ASCII autour) : même règle partout.
+_MASTER_DISPLAY_RE = re.compile(optional_text_pattern(MASTER_DISPLAY_BODY))
+_MAX_CLL_RE = re.compile(optional_text_pattern(MAX_CLL_BODY))
 
 
 def is_dir_writable(path: Path) -> bool:
@@ -62,6 +64,7 @@ def validate_encode_config(
                 tonemap_to_sdr=bool(video.tonemap_to_sdr),
                 copy_dv=bool(video.copy_dv),
                 copy_hdr10plus=bool(video.copy_hdr10plus),
+                generate_hdr10plus=bool(getattr(video, "generate_hdr10plus", False)),
                 master_display=str(video.master_display or ""),
                 max_cll=str(video.max_cll or ""),
                 static_hdr_analysis_request=str(
@@ -92,6 +95,11 @@ def validate_encode_config(
                 f"Piste vidéo #{index} — le tone-mapping HDR → SDR est incompatible "
                 "avec la copie Dolby Vision / HDR10+."
             )
+        if video.tonemap_to_sdr and video.generate_hdr10plus:
+            errors.append(
+                f"Piste vidéo #{index} — le tone-mapping HDR → SDR est incompatible "
+                "avec la génération HDR10+."
+            )
         if video.copy_dv and not supports_dovi(video.codec):
             if str(video.codec or "").startswith("nvencc_"):
                 errors.append(
@@ -103,7 +111,7 @@ def validate_encode_config(
                     f"Piste vidéo #{index} — L'encodeur '{video.codec}' ne supporte pas l'injection Dolby Vision. "
                     "Suggestion : choisissez un encodeur HEVC (x265, NVEncC, NVENC, QSV, VAAPI, AMF) ou 'copy' (passthrough)."
                 )
-        if video.copy_hdr10plus and not supports_hdr10plus(video.codec):
+        if (video.copy_hdr10plus or video.generate_hdr10plus) and not supports_hdr10plus(video.codec):
             errors.append(
                 f"Piste vidéo #{index} — Le codec '{video.codec}' ne supporte pas l'injection HDR10+."
             )
@@ -153,12 +161,12 @@ def validate_encode_config(
 
     for index, video in enumerate(planned_video_tracks, start=1):
         if video.inject_hdr_meta and not video.tonemap_to_sdr:
-            if video.master_display and not _MASTER_DISPLAY_RE.match(video.master_display.strip()):
+            if video.master_display and not _MASTER_DISPLAY_RE.fullmatch(video.master_display):
                 errors.append(
                     f"Piste vidéo #{index} — format master_display invalide. "
                     "Attendu : G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)"
                 )
-            if video.max_cll and not _MAX_CLL_RE.match(video.max_cll.strip()):
+            if video.max_cll and not _MAX_CLL_RE.fullmatch(video.max_cll):
                 errors.append(
                     f"Piste vidéo #{index} — format MaxCLL invalide. Attendu : MaxCLL,MaxFALL  ex. 1000,400"
                 )
@@ -182,6 +190,7 @@ def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
     for index, video in enumerate(videos, start=1):
         if video.codec == "copy":
             continue
+        errors.extend(f"Piste vidéo #{index} — {problem}" for problem in filter_field_errors(video))
         depth_problem = bit_depth_error(video)
         if depth_problem:
             errors.append(f"Piste vidéo #{index} — {depth_problem}")
@@ -200,3 +209,37 @@ def video_settings_errors(videos: list[VideoEncodeSettings]) -> list[str]:
         if problem:
             errors.append(f"Piste vidéo #{index} — paramètres avancés invalides : {problem}.")
     return errors
+
+
+#: Valeurs des champs texte insérés tels quels dans le graphe de filtres FFmpeg (``yadif=mode:parité:deint``) : toute
+#: autre valeur (« , », « : », « ; », « [ »…) ajouterait un filtre ou une option, quelle que soit sa provenance
+#: (bloc ``encode``, preset, document).
+YADIF_FIELD_VALUES: dict[str, frozenset[str]] = {
+    "yadif_mode": frozenset({"send_frame", "send_field", "send_frame_nospatial", "send_field_nospatial",
+                             "0", "1", "2", "3"}),
+    "yadif_parity": frozenset({"auto", "tff", "bff", "-1", "0", "1"}),
+    "yadif_deint": frozenset({"all", "interlaced", "0", "1"}),
+}
+
+
+def filter_field_errors(video: VideoEncodeSettings) -> list[str]:
+    """Champs texte de filtres hors de leurs valeurs (YADIF ; algorithme de tone mapping selon le moteur), sur les
+    réglages effectifs d'une piste (bloc ``encode``, preset ou interface)."""
+    from core.workflows.encode.catalog import NVENCC_VIDEO_CODECS, TONEMAP_ALGORITHMS
+    from core.workflows.encode.runtime.nvencc import _LIBPLACEBO_TONEMAP_FUNCTIONS
+
+    problems: list[str] = []
+    filters = video.filters
+    if filters.yadif_enabled:
+        for name, allowed in YADIF_FIELD_VALUES.items():
+            value = str(getattr(filters, name) or "").strip()
+            if value and value not in allowed:
+                problems.append(f"{name} « {value} » invalide (attendu : {', '.join(sorted(allowed))})")
+    if video.tonemap_to_sdr:
+        algorithm = str(video.tonemap_algorithm or "").strip()
+        nvencc = video.codec in NVENCC_VIDEO_CODECS
+        allowed_algorithms = _LIBPLACEBO_TONEMAP_FUNCTIONS if nvencc else frozenset(TONEMAP_ALGORITHMS)
+        if algorithm and algorithm not in allowed_algorithms:
+            problems.append(f"algorithme de tone mapping « {algorithm} » invalide "
+                            f"(attendu : {', '.join(sorted(allowed_algorithms))})")
+    return problems

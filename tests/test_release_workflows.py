@@ -190,6 +190,10 @@ def test_generate_release_notes_includes_installer_links(tmp_path):
     (artifacts / "Muxiveo-Setup-AllInc-4.1.0.exe").touch()
     (artifacts / "Muxiveo-x86_64_allinc-4.1.0.AppImage").touch()
     (artifacts / "Muxiveo-x86_64_allinc-4.1.0.AppImage.zsync").touch()
+    (artifacts / "Muxiveo-Setup-AllInc_NoVidia-4.1.0.exe").touch()
+    (artifacts / "Muxiveo-Setup-4.1.0.exe").touch()
+    (artifacts / "Muxiveo-x86_64_allinc_novidia-4.1.0.AppImage").touch()
+    (artifacts / "Muxiveo-x86_64_allinc_novidia-4.1.0.AppImage.zsync").touch()
     (artifacts / "Muxiveo-4.1.0.dmg").touch()
     (artifacts / "Muxiveo-4.1.0-source.zip").touch()
 
@@ -226,6 +230,13 @@ def test_generate_release_notes_includes_installer_links(tmp_path):
     assert "### 📥 Téléchargements / Direct Downloads" in content
     assert "- 🪟 **Windows (Allinc setup)** : [Muxiveo-Setup-AllInc-4.1.0.exe](https://github.com/Hydro74000/muxiveo/releases/download/v4.1.0/Muxiveo-Setup-AllInc-4.1.0.exe)" in content
     assert "- 🐧 **Linux (AppImage)** : [Muxiveo-x86_64_allinc-4.1.0.AppImage](https://github.com/Hydro74000/muxiveo/releases/download/v4.1.0/Muxiveo-x86_64_allinc-4.1.0.AppImage)" in content
+    base = "https://github.com/Hydro74000/muxiveo/releases/download/v4.1.0/"
+    assert ("- 🪟 **Windows (Allinc setup, sans NVEncC / without NVEncC)** : "
+            f"[Muxiveo-Setup-AllInc_NoVidia-4.1.0.exe]({base}Muxiveo-Setup-AllInc_NoVidia-4.1.0.exe)") in content
+    assert ("- 🐧 **Linux (AppImage, sans NVEncC / without NVEncC)** : "
+            f"[Muxiveo-x86_64_allinc_novidia-4.1.0.AppImage]({base}Muxiveo-x86_64_allinc_novidia-4.1.0.AppImage)") in content
+    assert "installé au premier lancement si un GPU NVIDIA est détecté" in content
+    assert content.index("Muxiveo-Setup-AllInc-4.1.0.exe") < content.index("Muxiveo-Setup-AllInc_NoVidia-4.1.0.exe")
     assert "- 🍏 **macOS (DMG)** : [Muxiveo-4.1.0.dmg](https://github.com/Hydro74000/muxiveo/releases/download/v4.1.0/Muxiveo-4.1.0.dmg)" in content
 
     downloads_pos = content.index("### 📥 Téléchargements / Direct Downloads")

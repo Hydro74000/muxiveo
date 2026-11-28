@@ -17,13 +17,14 @@ Signaux exposés :
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
-    QHBoxLayout, QLabel, QLayout, QLineEdit, QPushButton,
+    QHBoxLayout, QLabel, QLayout, QLineEdit, QMessageBox, QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -33,11 +34,12 @@ from core.file_types import build_qt_filter, is_accepted
 from core.i18n import apply_translations, translate_text
 from core.frame_count import reliable_frame_count
 from core.workflows.encode.runtime.frame_count_guard import MetadataAdjustment
+from core.workflows.merge_dovi_align.session import AlignmentMode, AlignmentOptions
 from core.workflows.merge_dovi import (
     DoviProfile, FrameCountResult, HdrState,
-    MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
+    MergeDoviFailure, MergeDoviWorkflow, StepResult, WorkflowStep, probe_hdr_state,
 )
-from ui.confirm import confirm_overwrite, ValidationOverridePrompt
+from ui.confirm import confirm_output, ValidationOverridePrompt
 from ui.shutdown import defer_close
 from ui.desktop import open_external
 from ui.operation_bar import OperationState
@@ -391,20 +393,41 @@ class _ConfigSection(QWidget):
         r1l.addWidget(self._profile_combo, stretch=1)
         cl.addWidget(row1)
 
-        # Politique explicite si Film 2 a quelques trames de plus que Film 1 :
-        # décochée par défaut (comptages identiques exigés), non mémorisée.
-        self._trim_tail_cb = QCheckBox(
-            "Écart de 1 à 4 trames : retirer l'excédent de métadonnées en fin de flux"
+        # Alignement des métadonnées de Film 2 sur l'image de Film 1 (Automatique par défaut, non mémorisé).
+        row_align = QWidget()
+        row_align.setStyleSheet("background: transparent; border: none;")
+        ral = QHBoxLayout(row_align)
+        ral.setContentsMargins(0, 0, 0, 0)
+        ral.setSpacing(12)
+        lbl_align = QLabel("Alignement des métadonnées :")
+        lbl_align.setFixedWidth(160)
+        lbl_align.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: 12px; background: transparent; border: none;")
+        ral.addWidget(lbl_align)
+        self._align_combo = QComboBox()
+        self._align_combo.addItem("Automatique  —  analyse de l'image, corrections vérifiées (recommandé)",
+                                  AlignmentMode.AUTO)
+        self._align_combo.addItem("Strict  —  comptages identiques exigés, aucune analyse", AlignmentMode.STRICT)
+        self._align_combo.setToolTip(
+            "Automatique : Muxiveo compare l'image des deux films, retrouve les images en plus ou en moins "
+            "(début, fin, milieu), adapte la zone active (L5) au cadrage de Film 1 et aligne le L6 sur son "
+            "HDR10, puis vérifie les plans sur l'image : refus seulement si les deux films ne se correspondent "
+            "pas globalement, tout écart local étant signalé au journal. Film 1 est lu entièrement.\n"
+            "Strict : les deux films doivent avoir exactement le même nombre d'images ; aucune vérification "
+            "de l'alignement."
         )
-        self._trim_tail_cb.setToolTip(
-            "Si Film 2 a 1 à 4 trames de plus que Film 1, les métadonnées DoVi / HDR10+ "
-            "excédentaires sont retirées à la fin, en supposant le début des deux films aligné.\n"
-            "Aucune métadonnée n'est jamais inventée : si Film 2 est plus court, l'injection est refusée.\n"
-            "Un comptage identique ne prouve pas l'alignement temporel."
+        self._align_combo.setStyleSheet(self._profile_combo.styleSheet())
+        ral.addWidget(self._align_combo, stretch=1)
+        cl.addWidget(row_align)
+
+        self._verify_cb = QCheckBox("Vérifier Film 2 image par image (plus lent)")
+        self._verify_cb.setToolTip(
+            "Lit aussi Film 2 entièrement : tous les plans sont vérifiés sur l'image (sinon un par minute) et "
+            "les écarts de quelques images sont recherchés image par image."
         )
-        # Style commun : indicateur visible (coché, grisé) dans les deux thèmes.
-        self._trim_tail_cb.setStyleSheet(_checkbox_style())
-        cl.addWidget(self._trim_tail_cb)
+        self._verify_cb.setStyleSheet(_checkbox_style())
+        cl.addWidget(self._verify_cb)
+        self._align_combo.currentIndexChanged.connect(lambda _: self._update_align_options())
+        self._update_align_options()
 
         # État HDR des deux films + conséquence du profil choisi
         self._hdr_hint = QLabel()
@@ -469,8 +492,19 @@ class _ConfigSection(QWidget):
 
     @property
     def metadata_adjustment(self) -> MetadataAdjustment:
-        """Politique choisie explicitement par l'utilisateur pour un écart de trames."""
-        return MetadataAdjustment.TRIM_TAIL if self._trim_tail_cb.isChecked() else MetadataAdjustment.EXACT
+        """Politique du mode Strict : comptages identiques exigés."""
+        return MetadataAdjustment.EXACT
+
+    @property
+    def alignment_options(self) -> AlignmentOptions:
+        """Mode d'alignement et option D6 choisis dans le panneau."""
+        mode = self._align_combo.currentData() or AlignmentMode.AUTO
+        auto = mode is AlignmentMode.AUTO
+        return AlignmentOptions(mode=mode, verify_film2=auto and self._verify_cb.isChecked())
+
+    def _update_align_options(self) -> None:
+        auto = (self._align_combo.currentData() or AlignmentMode.AUTO) is AlignmentMode.AUTO
+        self._verify_cb.setEnabled(auto)
 
     def set_hdr_states(self, film1: HdrState | None, film2: HdrState | None) -> None:
         """Mémorise l'état HDR des deux films (None = inconnu) et met à jour l'indication."""
@@ -526,6 +560,7 @@ _STEP_LABELS: dict[WorkflowStep, str] = {
     WorkflowStep.EXTRACT_PARALLEL:  "Extractions",
     WorkflowStep.SDR_TO_HDR10:      "Conversion SDR → HDR10",
     WorkflowStep.CONVERT_DOVI:      "Conversion P7/P5 → P8.1",
+    WorkflowStep.ALIGN:             "Alignement",
     WorkflowStep.CHECK_METADATA:    "Contrôle métadonnées",
     WorkflowStep.INJECT_DOVI:       "Injection DoVi",
     WorkflowStep.INJECT_HDR10PLUS:  "Injection HDR10+",
@@ -828,12 +863,17 @@ class MergeDoviPanel(QWidget):
     op_progress_pct = Signal(int)
     op_progress = Signal(str)
     tool_output = Signal(str, str)
+    #: Alignement forcé accepté (décision DC) : relance par la barre d'exécution, même chemin que « Lancer ».
+    forced_rerun_requested = Signal()
 
     def __init__(self, config: AppConfig, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._config    = config
         self._workflow: MergeDoviWorkflow | None = None
         self._running   = False
+        #: Lancement suivant en alignement forcé (une fois, jamais mémorisé).
+        self._force_metadata_only = False
+        self._global_controls = False
         self._build_ui()
         apply_translations(self)
         self._init_workflow()
@@ -993,7 +1033,8 @@ class MergeDoviPanel(QWidget):
             return
 
         output_path = MergeDoviWorkflow.output_path_for(film1, self._config_section.output_dir)
-        if not confirm_overwrite(self, output_path):
+        existing = confirm_output(self, output_path)
+        if existing is None:
             return
 
         self._result_section.hide_result()
@@ -1019,6 +1060,19 @@ class MergeDoviPanel(QWidget):
         )
 
         assert self._workflow is not None
+        # Outils relus à chaque lancement : un chemin enregistré dans Paramètres vaut sans redémarrage.
+        self._workflow.set_tool_bins(
+            mediainfo=self._config.tool_mediainfo, ffmpeg=self._config.tool_ffmpeg,
+            ffprobe=self._config.tool_ffprobe, dovi_tool=self._config.tool_dovi_tool,
+            hdr10plus_tool=self._config.tool_hdr10plus,
+        )
+        alignment = self._config_section.alignment_options
+        if self._force_metadata_only and alignment.auto:
+            # Décision DC : demandé par la fenêtre d'échec, pour ce lancement seulement.
+            alignment = replace(alignment, metadata_only=True)
+            self.log_message.emit("WARN", translate_text(
+                "Alignement forcé sur les coupes des métadonnées de Film 2 : décalage non vérifié sur l'image."))
+        self._force_metadata_only = False
         try:
             self._workflow.start(
                 film1        = film1,
@@ -1027,6 +1081,8 @@ class MergeDoviPanel(QWidget):
                 output_dir   = self._config_section.output_dir,
                 dovi_profile = self._config_section.dovi_profile,
                 metadata_adjustment = self._config_section.metadata_adjustment,
+                existing     = existing,
+                alignment    = alignment,
             )
         except OSError as exc:
             # Dossier de travail non créable (droits, disque) : rien n'a démarré.
@@ -1125,7 +1181,7 @@ class MergeDoviPanel(QWidget):
         self._set_idle_state()
         self.op_state_changed.emit("cancelled", translate_text("Annulé."))
 
-    def _on_workflow_failed(self, step: WorkflowStep, message: str) -> None:
+    def _on_workflow_failed(self, step: WorkflowStep, message: str, detail: object = None) -> None:
         step_label = translate_text(_STEP_LABELS[step])
         local_message = translate_text(message)
         self._step_progress.set_error(step, local_message)
@@ -1140,6 +1196,39 @@ class MergeDoviPanel(QWidget):
         )
         self._set_idle_state()
         self.op_state_changed.emit("failed", translate_text("Échec."))
+        cancelled = bool(getattr(self._workflow, "_cancelled", False))  # annulation demandée pendant le nettoyage
+        if (isinstance(detail, MergeDoviFailure) and detail.code == "film2_undecodable"
+                and detail.metadata_alignment_possible and not cancelled):
+            # Après le passage au repos de la barre d'exécution : la relance suit le chemin de « Lancer ».
+            QTimer.singleShot(0, lambda: self._offer_forced_alignment(local_message))
+
+    def _offer_forced_alignment(self, cause: str) -> None:
+        """Film 2 indécodable (décision DC) : proposer l'alignement forcé sur les coupes des métadonnées."""
+        if self._running or not self._ask_forced_alignment(cause):
+            return
+        self._force_metadata_only = True
+        try:
+            if self._global_controls:
+                self.forced_rerun_requested.emit()
+            else:
+                self._on_run()
+        finally:
+            self._force_metadata_only = False   # lancement refusé : jamais reporté sur un « Lancer » suivant
+
+    def _ask_forced_alignment(self, cause: str) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle(translate_text("Film 2 non décodable"))
+        box.setText(translate_text(
+            "L'image de Film 2 ne peut pas être lue : l'alignement n'a pas pu être vérifié."))
+        box.setInformativeText(translate_text(
+            "Cause : {cause}\n\nL'alignement peut être forcé sur les seules coupes des métadonnées de Film 2. "
+            "Risque : un décalage éventuel entre les deux films ne sera pas vérifié sur l'image.", cause=cause))
+        force = box.addButton(translate_text("Forcer l'alignement sur les métadonnées"),
+                              QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(translate_text("Annuler"), QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is force
 
     # ------------------------------------------------------------------
     # Utilitaires
@@ -1150,6 +1239,7 @@ class MergeDoviPanel(QWidget):
 
     def use_global_controls(self) -> None:
         self._local_actions.hide()
+        self._global_controls = True
 
     def operation_state(self) -> OperationState:
         film1, film2 = self._file_section.film1, self._file_section.film2

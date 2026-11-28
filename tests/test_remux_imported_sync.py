@@ -330,5 +330,5 @@ def test_audio_resync_replaces_target_own_calibration(chain, tmp_path):
     mapped = {item.track.entry_id: item.track.time_shift_ms for item in resolve_mapped_tracks(panel.collect_config())}
     assert mapped[own.entry_id] == 2500
     assert ("INFO", translate_text(
-        "Nouvelle synchro audio de la piste #{idx} : sa synchro propre importée est remplacée, "
+        "Nouvelle synchro audio de la piste #{idx} : sa synchro propre est remplacée, "
         "elle suit de nouveau sa source.", idx=own.mkv_tid)) in logs

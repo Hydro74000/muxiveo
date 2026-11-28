@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,13 +28,16 @@ from core.workflows.encode.domain import (
     video_codec_args_bitrate,
 )
 from core.workflows.encode.interpolation import (
+    RESTORE_DECODE_FORMAT,
     InterpolationSource,
     build_decode_stage,
     build_rife_stage,
     decode_normalization_rate,
+    restore_args_for,
 )
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.runtime_helpers import VideoPreparationResourcePolicy, VideoTrackPrepSpec
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,8 @@ class VideoOnlyCommandBuilderCallbacks:
     interpolation_source: Callable[[VideoEncodeSettings, Path], InterpolationSource] | None = None
     # Accélération NVIDIA (TensorRT) : dossier de l'extension et cache des moteurs ("" = Vulkan seul).
     rife_trt_args: Callable[[], tuple[str, str]] | None = None
+    # Jeton des sondes d'une opération headless (capacités du moteur, cache froid) ; None : interface.
+    probe_cancel_event: Callable[[], threading.Event | None] | None = None
 
 
 _RAW_VIDEO_SUFFIXES = frozenset({".hevc", ".h265", ".265", ".x265", ".h264", ".264", ".avc"})
@@ -95,7 +101,7 @@ class VideoOnlyCommandBuilder:
         thread_count: int | None = None,
     ) -> list[str]:
         cb = self._cb
-        if video.interpolates():
+        if video.uses_engine():
             return self._build_interpolated_base_cmd(
                 video=video,
                 source=source,
@@ -109,10 +115,11 @@ class VideoOnlyCommandBuilder:
         cmd.extend(hardware_input_args(video, callbacks=cb.codec_domain_callbacks()))
         cmd.extend(raw_input_rate_args(video, source))
         append_ffmpeg_input_args(cmd, source)
-        vf = build_encoder_vf(video, callbacks=cb.codec_domain_callbacks(), hw_decoded=video.fel_context is None)
+        domain_callbacks = cb.codec_domain_callbacks()
+        vf = build_encoder_vf(video, callbacks=domain_callbacks, hw_decoded=video.fel_context is None)
         if vf:
             cmd.extend(["-vf", vf])
-        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count)))
+        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count), callbacks=domain_callbacks))
         cmd.extend(["-map", f"0:{int(stream_index)}"])
         return cmd
 
@@ -135,7 +142,7 @@ class VideoOnlyCommandBuilder:
         """
         cb = self._cb
         if not cb.rife_bin or cb.interpolation_source is None:
-            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
+            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, débruitage MVO-R2).")
         domain = cb.codec_domain_callbacks()
         info = cb.interpolation_source(video, source)
         settings = video.interpolation
@@ -148,7 +155,11 @@ class VideoOnlyCommandBuilder:
         # après YADIF « une image par champ » ; les trames dupliquées deviennent des
         # paires figées, recopiées par RIFE.
         rate = decode_normalization_rate(info, video)
-        decode_vf = ",".join(part for part in (build_vf(video), f"fps={rate}" if rate else "") if part)
+        decode_vf = ",".join(part for part in (
+            build_vf(video),
+            f"fps={rate}" if rate else "",
+            f"format={RESTORE_DECODE_FORMAT}" if video.restores() else "",
+        ) if part)
         decode = build_decode_stage(
             cb.ffmpeg_bin,
             source,
@@ -157,6 +168,7 @@ class VideoOnlyCommandBuilder:
             pre_input_args=decode_pre,
         )
         trt_plugin, trt_cache = cb.rife_trt_args() if cb.rife_trt_args else ("", "")
+        probe_cancel = cb.probe_cancel_event() if cb.probe_cancel_event else None
         rife = build_rife_stage(
             cb.rife_bin,
             factor=settings.factor,
@@ -169,6 +181,9 @@ class VideoOnlyCommandBuilder:
             tta=settings.tta_passes(),
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
+            interpolate=video.interpolates(),
+            restore_args=restore_args_for(video, info, rife_bin=cb.rife_bin, cancel_event=probe_cancel),
+            cancel_event=probe_cancel,
         )
 
         encoder_offset_s = info.start_offset_s + (offset_ms / 1000.0 if offset_ms > 0 else 0.0)
@@ -178,15 +193,20 @@ class VideoOnlyCommandBuilder:
         if encoder_offset_s > 0:
             cmd.extend(["-itsoffset", f"{encoder_offset_s:.6f}"])
         cmd.extend(["-f", "yuv4mpegpipe", "-i", "pipe:0"])
+        # Position chroma : FEL la pose lui-même (with_fel_input) ; sinon option explicite,
+        # hevc_nvenc ignorant celle des images.
+        chroma = video.fel_context is None
+        if chroma:
+            cmd.extend(["-chroma_sample_location", info.chroma_location])
         # Le y4m ne transporte pas le marquage couleur : posé sur les images
         # (setparams) avant les éventuels format/upload matériels de l'encodeur.
         vf = ",".join(part for part in (
-            info.setparams_filter(hdr_transfer=output_hdr_transfer(video)),
+            info.setparams_filter(hdr_transfer=output_hdr_transfer(video), chroma=chroma),
             build_encoder_vf(video, callbacks=domain, piped_frames=True),
         ) if part)
         if vf:
             cmd.extend(["-vf", vf])
-        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count)))
+        cmd.extend(encoder_thread_args(video, cb.ffmpeg_thread_args(thread_count), callbacks=domain))
         cmd.extend(["-map", "0:0"])
         return PipelineCommand(cmd, [decode, rife])
 
@@ -234,7 +254,7 @@ class VideoOnlyCommandBuilder:
             self.append_video_codec_and_hdr_args(
                 cmd, video, bitrate_kbps=cb.size_to_bitrate_kbps_for_video(config, video),
             )
-            cmd.extend(["-an", "-sn", "-dn", str(output_path)])
+            cmd.extend(["-an", "-sn", "-dn", *matroska_output_args(cmd[0], output_path), str(output_path)])
             return [cmd]
         if video.quality_mode == QualityMode.SIZE:
             bitrate = cb.size_to_bitrate_kbps_for_video(config, video)
@@ -261,7 +281,7 @@ class VideoOnlyCommandBuilder:
             if passlog_prefix is not None:
                 pass2.extend(["-passlogfile", str(passlog_prefix)])
             pass2.extend(["-pass", "2"])
-            pass2.extend(["-an", "-sn", "-dn", str(output_path)])
+            pass2.extend(["-an", "-sn", "-dn", *matroska_output_args(pass2[0], output_path), str(output_path)])
             return [pass1, pass2]
 
         cmd = self.build_video_track_base_cmd(
@@ -272,7 +292,7 @@ class VideoOnlyCommandBuilder:
             thread_count=thread_count,
         )
         self.append_video_codec_and_hdr_args(cmd, video)
-        cmd.extend(["-an", "-sn", "-dn", str(output_path)])
+        cmd.extend(["-an", "-sn", "-dn", *matroska_output_args(cmd[0], output_path), str(output_path)])
         return [cmd]
 
     def build_video_only_mkv_commands(
@@ -311,7 +331,7 @@ class VideoOnlyCommandBuilder:
             self.append_video_codec_and_hdr_args(pass2, video, bitrate_kbps=bitrate)
             if passlog_prefix is not None:
                 pass2.extend(["-passlogfile", str(passlog_prefix)])
-            pass2.extend(["-pass", "2", "-fps_mode", "passthrough", "-an", "-sn", "-dn", str(output_mkv)])
+            pass2.extend(["-pass", "2", "-fps_mode", "passthrough", "-an", "-sn", "-dn", *matroska_output_args(pass2[0], output_mkv), str(output_mkv)])
             return [pass1, pass2]
 
         cmd = self.build_video_track_base_cmd(
@@ -319,7 +339,7 @@ class VideoOnlyCommandBuilder:
             offset_ms=offset_ms, thread_count=thread_count,
         )
         self.append_video_codec_and_hdr_args(cmd, video)
-        cmd.extend(["-fps_mode", "passthrough", "-an", "-sn", "-dn", str(output_mkv)])
+        cmd.extend(["-fps_mode", "passthrough", "-an", "-sn", "-dn", *matroska_output_args(cmd[0], output_mkv), str(output_mkv)])
         return [cmd]
 
     def build_video_only_cmd(self, config: EncodeConfig, output_hevc: Path) -> list[str]:
@@ -453,8 +473,10 @@ class TwoPassLogCleanupService:
 
     @staticmethod
     def cleanup(cwd: Path | None) -> None:
-        base_dir = cwd or Path.cwd()
-        for path in base_dir.glob("ffmpeg2pass-*.log*"):
+        """Journaux de deux passes du dossier de travail ; sans dossier, rien (jamais le dossier courant)."""
+        if cwd is None:
+            return
+        for path in cwd.glob("ffmpeg2pass-*.log*"):
             try:
                 path.unlink(missing_ok=True)
             except OSError:

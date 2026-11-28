@@ -77,10 +77,13 @@ def hdr_warnings(video: VideoEncodeSettings) -> list[str]:
             f"HDR demandé sur une source détectée SDR (transfert {video.source_color_transfer}) : "
             "la sortie sera signalée PQ / BT.2020."
         )
-    dynamic = video.copy_dv or video.copy_hdr10plus
+    from core.workflows.encode.hdr10plus_output import outputs_hdr10plus
+
+    hdr10plus = outputs_hdr10plus(video)
+    dynamic = video.copy_dv or hdr10plus
     if dynamic and not video.inject_hdr_meta and output_transfer:
         kinds = " / ".join(
-            name for name, enabled in (("Dolby Vision", video.copy_dv), ("HDR10+", video.copy_hdr10plus)) if enabled
+            name for name, enabled in (("Dolby Vision", video.copy_dv), ("HDR10+", hdr10plus)) if enabled
         )
         warnings.append(
             f"{kinds} sans HDR10 statique (MDCV / MaxCLL) : rendu possiblement délavé "

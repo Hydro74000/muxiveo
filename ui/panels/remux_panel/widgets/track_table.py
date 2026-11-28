@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import QRect, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPainter, QPalette
 from PySide6.QtWidgets import (
@@ -258,7 +260,7 @@ class _CheckAllHeader(QHeaderView):
 class _TrackTable(QTableWidget):
     order_changed = Signal()
     check_all_requested = Signal(bool)  # case « tout cocher » de l'en-tête
-    extract_requested = Signal(object)  # TrackEntry
+    extract_requested = Signal(object, str)  # TrackEntry, couche (stream | el | bl | rpu | hdr10plus)
     audio_sync_requested = Signal(object)  # TrackEntry
     audio_deep_sync_requested = Signal(object)  # TrackEntry — analyse continue forcée
     subtitle_sync_requested = Signal(object)  # TrackEntry
@@ -317,6 +319,10 @@ class _TrackTable(QTableWidget):
         super().__init__(0, len(self._HEADERS), parent)
         self._filter_selected = False
         self._audio_sync_available = False
+        # Pistes recalées face à une piste de leur fichier : annulables même à 0 ms (lien actif).
+        self._linked_sync_entry_ids: set[str] = set()
+        # Couches extractibles d'une piste vidéo [(couche, libellé)], fournies par le panneau.
+        self._extract_layers: Callable[[TrackEntry], list[tuple[str, str]]] = lambda _entry: []
         self._auto_sync_cancelable_entry_ids: set[str] = set()
         self._sync_rewrite_enabled = False
         self._sync_rewrite_advanced_audio_enabled = False
@@ -723,6 +729,16 @@ class _TrackTable(QTableWidget):
             )
             sync_btn.clicked.connect(lambda _=None, e=entry: self.subtitle_sync_requested.emit(e))
             layout.addWidget(sync_btn)
+        elif entry.track_type in {"audio", "subtitle"} and not (entry.cuts_count > 0 and entry.sync_calibration):
+            # Fichier seul : pas de synchro automatique, recalage dans le Synchro Studio.
+            studio_btn = self._make_action_button(
+                tooltip=translate_text("Ouvrir le Synchro Studio (forme d'onde, sous-titres, écoute, ajustement)")
+                if entry.track_type == "subtitle"
+                else translate_text("Ouvrir le Synchro Studio (forme d'onde, écoute, ajustement)"),
+                icon=_waveform_icon(_C.ACCENT, 13),
+            )
+            studio_btn.clicked.connect(lambda _=None, e=entry: self._open_sync_studio(e))
+            layout.addWidget(studio_btn)
 
         edit_btn = self._make_action_button(
             tooltip="Éditer les métadonnées de cette piste",
@@ -814,6 +830,8 @@ class _TrackTable(QTableWidget):
     def _has_cancelable_auto_sync(self, entry: TrackEntry) -> bool:
         if entry.track_type not in {"audio", "subtitle"}:
             return False
+        if entry.entry_id in self._linked_sync_entry_ids:
+            return True
         if entry.entry_id not in self._auto_sync_cancelable_entry_ids:
             return False
         # Coupures sans décalage de départ : la synchro reste annulable.
@@ -1135,6 +1153,10 @@ class _TrackTable(QTableWidget):
             self.blockSignals(False)
 
 
+    def set_extract_layers_provider(self, provider: Callable[[TrackEntry], list[tuple[str, str]]]) -> None:
+        """Couches proposées dans « Extraire » d'une piste vidéo (RPU, HDR10+, EL / BL d'un profil 7)."""
+        self._extract_layers = provider
+
     def set_audio_sync_available(self, available: bool) -> None:
         available = bool(available)
         if self._audio_sync_available == available:
@@ -1151,11 +1173,16 @@ class _TrackTable(QTableWidget):
     def set_auto_sync_cancelable_entries(
         self,
         entry_ids: set[str] | list[str] | tuple[str, ...],
+        linked_entry_ids: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> None:
+        """`linked_entry_ids` : pistes recalées dans leur fichier, annulables même sans décalage."""
         normalized = {str(entry_id) for entry_id in entry_ids if str(entry_id or "").strip()}
-        if self._auto_sync_cancelable_entry_ids == normalized:
+        linked = (self._linked_sync_entry_ids if linked_entry_ids is None
+                  else {str(entry_id) for entry_id in linked_entry_ids if str(entry_id or "").strip()})
+        if self._auto_sync_cancelable_entry_ids == normalized and self._linked_sync_entry_ids == linked:
             return
         self._auto_sync_cancelable_entry_ids = normalized
+        self._linked_sync_entry_ids = linked
         for row in range(self.rowCount()):
             item0 = self.item(row, self.COL_CHECK)
             if item0 is None:
@@ -1237,8 +1264,15 @@ class _TrackTable(QTableWidget):
         if entry.track_type == "video":
             menu = QMenu(self)
             action_hdr = menu.addAction(translate_text("Inspecter le HDR…"))
-            if menu.exec(self.viewport().mapToGlobal(pos)) is action_hdr:
+            extract_menu = menu.addMenu(translate_text("Extraire"))
+            layer_actions = {extract_menu.addAction(translate_text("Flux vidéo…")): "stream"}
+            for layer, label in self._extract_layers(entry):
+                layer_actions[extract_menu.addAction(label)] = layer
+            chosen = menu.exec(self.viewport().mapToGlobal(pos))
+            if chosen is action_hdr:
                 self.hdr_inspect_requested.emit(entry)
+            elif chosen in layer_actions:
+                self.extract_requested.emit(entry, layer_actions[chosen])
         elif entry.track_type == "subtitle":
             menu = QMenu(self)
             action_extract = menu.addAction(translate_text("Extraire…"))
@@ -1249,13 +1283,15 @@ class _TrackTable(QTableWidget):
             if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
                 action_cancel = menu.addAction(translate_text("Annuler la synchro"))
-            elif self._audio_sync_available:
-                action_sync = menu.addAction(translate_text("Synchroniser cette piste de sous-titres…"))
+            else:
+                if self._audio_sync_available:
+                    action_sync = menu.addAction(translate_text("Synchroniser cette piste de sous-titres…"))
+                # Studio toujours proposé : recalage face à une autre piste, du même fichier compris.
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
 
             chosen = menu.exec(self.viewport().mapToGlobal(pos))
             if chosen is action_extract:
-                self.extract_requested.emit(entry)
+                self.extract_requested.emit(entry, "stream")
             elif action_studio is not None and chosen is action_studio:
                 self._open_sync_studio(entry)
             elif action_cancel is not None and chosen is action_cancel:
@@ -1264,6 +1300,7 @@ class _TrackTable(QTableWidget):
                 self.subtitle_sync_requested.emit(entry)
         elif entry.track_type == "audio":
             menu = QMenu(self)
+            action_extract = menu.addAction(translate_text("Extraire…"))
             action_studio = None
             action_sync = None
             action_deep = None
@@ -1272,14 +1309,18 @@ class _TrackTable(QTableWidget):
             if self._has_cancelable_auto_sync(entry) or entry.sync_calibration:
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
                 action_cancel = menu.addAction(translate_text("Annuler la synchro"))
-            elif self._audio_sync_available:
-                action_sync = menu.addAction(translate_text("Synchronisation automatique…"))
-                action_deep = menu.addAction(translate_text("Synchronisation approfondie…"))
+            else:
+                if self._audio_sync_available:
+                    action_sync = menu.addAction(translate_text("Synchronisation automatique…"))
+                    action_deep = menu.addAction(translate_text("Synchronisation approfondie…"))
+                # Studio toujours proposé : recalage face à une autre piste, du même fichier compris.
                 action_studio = menu.addAction(translate_text("Synchro Studio…"))
 
             if not menu.isEmpty():
                 chosen = menu.exec(self.viewport().mapToGlobal(pos))
-                if action_studio is not None and chosen is action_studio:
+                if chosen is action_extract:
+                    self.extract_requested.emit(entry, "stream")
+                elif action_studio is not None and chosen is action_studio:
                     self._open_sync_studio(entry)
                 elif action_cancel is not None and chosen is action_cancel:
                     self.auto_sync_cancel_requested.emit(entry)

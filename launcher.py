@@ -113,6 +113,27 @@ def _is_allinc() -> bool:
     return (Path(sys.executable).parent / "_ALLINC").exists()
 
 
+def _is_allinc_novidia() -> bool:
+    """
+    Variante all-inclusive sans NVEncC (marqueur _ALLINC_NOVIDIA posé par le packaging) :
+    NVEncC est installé au premier lancement si un GPU NVIDIA est détecté.
+    """
+    return _is_allinc() and (Path(sys.executable).parent / "_ALLINC_NOVIDIA").exists()
+
+
+def _run_novidia_nvencc_step() -> None:
+    """Étape NVEncC du premier lancement de l'AllInc NoVidia (core/nvencc_install.py), jamais bloquante."""
+    try:
+        from core.nvencc_install import first_run_step  # noqa: PLC0415
+    except ImportError as exc:
+        print(f"  NVEncC : étape indisponible ({exc})", file=sys.stderr)
+        return
+    try:
+        first_run_step(log=lambda level, message: print(f"  [{level}] {message}"))
+    except Exception as exc:  # noqa: BLE001 — NVEncC facultatif : le premier lancement continue
+        print(f"  NVEncC non installé ({exc}) : installation possible depuis la page Extensions.", file=sys.stderr)
+
+
 def _windows_config_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     if appdata:
@@ -226,6 +247,8 @@ def _restart_current_app() -> bool:
             cmd = [sys.executable]
         else:
             cmd = [sys.executable, str(Path(__file__).resolve())]
+        # Relance de l'application elle-même (interpréteur ou exécutable figé), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         subprocess.Popen(cmd)
         return True
     except Exception:
@@ -448,6 +471,9 @@ def _run_first_time_setup(install_dir: Path) -> int:
             _setup.initialize_config_ini_language(
                 dry_run, force=force, ini_path=install_dir / "config.ini"
             )
+            if _is_allinc_novidia():
+                # Une seule fois : config.ini est créé à la fin du premier lancement.
+                _run_novidia_nvencc_step()
         else:
             if _os == "Linux":
                 distro = _setup.detect_linux_distro()

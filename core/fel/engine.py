@@ -157,10 +157,11 @@ class CaptureSession:
             self._finalizer()
 
 
-def _base_only_frames(statistics: str) -> int:
-    """Images sans RPU ni EL recomposées sans résiduel (plugin ≥ 0.2.1), 0 si absent ou illisible."""
+def _base_only_frames(statistics: str, key: str = "bl_only_frames") -> int:
+    """Images recomposées sans résiduel, 0 si absent ou illisible. ``bl_only_frames`` : sans RPU ni EL
+    (plugin ≥ 0.2.1) ; ``el_unavailable_frames`` : flux commençant avant la première IRAP de l'EL (≥ 0.6.1)."""
     try:
-        value = json.loads(statistics).get("bl_only_frames", 0)
+        value = json.loads(statistics).get(key, 0)
     except (ValueError, AttributeError):
         return 0
     return value if type(value) is int and value > 0 else 0
@@ -569,6 +570,14 @@ class FelProducer:
                                 "WARN",
                                 f"FEL — {base_only} image(s) source sans RPU ni couche EL : recomposée(s) sans "
                                 "résiduel, avec la courbe du RPU précédent.",
+                            )
+                        unavailable = _base_only_frames(timings, "el_unavailable_frames")
+                        if unavailable:
+                            self.source.device_plan.log(
+                                "WARN",
+                                f"FEL — {unavailable} image(s) au début du flux, avant la première image clé de la "
+                                "couche EL (extrait coupé au milieu d'un GOP EL) : recomposée(s) sans résiduel, "
+                                "avec le RPU de l'image.",
                             )
             except RuntimeError:
                 # L'émetteur Qt peut déjà être fermé pendant l'annulation.

@@ -25,15 +25,18 @@ jobs:
         if: runner.os == 'Linux'
         uses: ./.github/actions/apt-install
         with:
-          packages: ffmpeg mediainfo libegl1 libopengl0
+          packages: mediainfo libegl1 libopengl0
       - name: Install media tools (macOS)
         if: runner.os == 'macOS'
         run: brew install ffmpeg mediainfo
+      - name: Install FFmpeg master (Linux, Windows)
+        if: runner.os != 'macOS'
+        uses: ./.github/actions/ffmpeg-master
       - name: Install media tools (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/choco-install
         with:
-          packages: ffmpeg mediainfo-cli
-          commands: ffmpeg ffprobe mediainfo
+          packages: mediainfo-cli
+          commands: mediainfo
       - run: python -m pytest tests/test_sync_hybrid.py tests/test_hybrid_matrix.py tests/test_cadence.py tests/test_workflow_restore.py tests/test_cli.py tests/test_profiles_selectors.py tests/test_nfo_generation.py tests/test_i18n.py -q
 

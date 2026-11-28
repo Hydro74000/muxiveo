@@ -20,24 +20,31 @@ from __future__ import annotations
 import functools
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import TYPE_CHECKING
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.matroska.editors.dovi import minimum_dovi_level
 from core.matroska.reader import strict_demuxer_reads_tracks
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_detection, subprocess_text_kwargs
 from core.pipeline_command import PipelineCommand, command_stages
 from core.version import MVO_RIFE_CONTRACT
 
 if TYPE_CHECKING:
-    from core.workflows.encode.models import VideoEncodeSettings
+    from core.workflows.encode.models import RestoreSettings, VideoEncodeSettings
+
+# Images transmises au moteur sous Restauration : 10 bits (précision de sortie du réseau, tramage), 4:2:0
+RESTORE_DECODE_FORMAT = "yuv420p10le"
 
 @dataclass(frozen=True)
 class InterpolationPreset:
@@ -172,6 +179,8 @@ _RIFE_VERSION_RE = re.compile(r"muxiveo-rife (\d+)\.(\d+)\.(\d+)")
 
 _RIFE_MATRICES = {"bt709", "bt2020nc", "bt2020", "bt601", "smpte170m", "bt470bg", "smpte240m", "fcc"}
 _RIFE_CHROMA_LOCATIONS = {"left", "center", "topleft"}
+# Positions chroma (noms ffprobe) -> valeur H.273 de ``--chromaloc`` NVEncC.
+_NVENCC_CHROMA_LOCATIONS = {"left": 0, "center": 1, "topleft": 2}
 # Noms ffprobe -> NVEncC ; une valeur inconnue reste omise.
 _NVENCC_PRIMARIES = {
     **{name: name for name in ("bt709", "smpte170m", "bt470m", "bt470bg", "smpte240m", "film", "bt2020")},
@@ -215,14 +224,20 @@ class InterpolationSource:
     primaries: str = ""
     transfer: str = ""
     colorspace: str = ""
+    # Dimensions du flux source (0 si inconnues), avant recadrage et redimensionnement
+    width: int = 0
+    height: int = 0
 
-    def setparams_filter(self, *, hdr_pq: bool = False, hdr_transfer: str = "") -> str:
+    def setparams_filter(self, *, hdr_pq: bool = False, hdr_transfer: str = "", chroma: bool = False) -> str:
         """Filtre ``setparams`` posant le marquage couleur sur les images y4m.
 
         Depuis ffmpeg 7, l'encodeur lit ces propriétés sur les images : les options
         de sortie ``-color_*`` ne suffisent plus. ``hdr_pq`` : sortie HDR10 (BT.2020/PQ) ;
-        ``hdr_transfer`` : "pq" ou "hlg" (BT.2020 + transfert correspondant).
+        ``hdr_transfer`` : "pq" ou "hlg" (BT.2020 + transfert correspondant) ; ``chroma`` :
+        position chroma transmise au moteur reposée aussi (le y4m 10 bits ne la porte pas,
+        une source « topleft » était sinon signalée « left »).
         """
+        location = [("chroma_location", self.chroma_location)] if chroma else []
         if hdr_pq or hdr_transfer in {"pq", "hlg"}:
             trc = "arib-std-b67" if hdr_transfer == "hlg" else "smpte2084"
             values = [("color_primaries", "bt2020"), ("color_trc", trc), ("colorspace", "bt2020nc")]
@@ -232,9 +247,10 @@ class InterpolationSource:
                                                       ("color_trc", self.transfer),
                                                       ("colorspace", self.colorspace)) if value]
             if not values:
-                return ""
+                # « left » = position par défaut des décodeurs : rien à reposer.
+                return f"setparams=chroma_location={self.chroma_location}" if chroma and self.chroma_location != "left" else ""
             color_range = "pc" if self.color_range == "full" else "tv"
-        return "setparams=" + ":".join(f"{key}={value}" for key, value in values) + f":range={color_range}"
+        return "setparams=" + ":".join(f"{key}={value}" for key, value in (*values, ("range", color_range), *location))
 
     def nvencc_color_args(self) -> list[str]:
         """Options NVEncC rétablissant le marquage couleur de la source."""
@@ -243,6 +259,10 @@ class InterpolationSource:
                                                  ("--colormatrix", self.colorspace, _NVENCC_MATRICES))
                 if value in mapping for opt in (flag, mapping[value])]
         return [*args, "--colorrange", self.color_range] if args else []
+
+    def nvencc_chroma_args(self) -> list[str]:
+        """``--chromaloc`` NVEncC de la position chroma transmise au moteur (perdue par le pipe y4m)."""
+        return ["--chromaloc", str(_NVENCC_CHROMA_LOCATIONS[self.chroma_location])]
 
     @property
     def decode_rate(self) -> str:
@@ -321,6 +341,8 @@ def interpolation_source_from_probe(
         primaries=primaries,
         transfer=transfer,
         colorspace=colorspace,
+        width=int(_float_or_none(stream.get("width")) or 0),
+        height=int(_float_or_none(stream.get("height")) or 0),
     )
 
 
@@ -438,6 +460,91 @@ def build_decode_stage(
     return cmd
 
 
+def restore_transfer(source: InterpolationSource) -> str:
+    """Fonction de transfert des images transmises au moteur (après tone mapping éventuel) : pq | hlg | sdr."""
+    transfer = (source.transfer or "").strip().lower()
+    return "pq" if transfer == "smpte2084" else ("hlg" if transfer == "arib-std-b67" else "sdr")
+
+
+def restore_engine_args(
+    restore: RestoreSettings,
+    *,
+    transfer: str,
+    model_dir: str = "",
+    animation: bool = False,
+    dither: str = "auto",
+    sharpen: bool = False,
+    fast: bool | None = None,
+) -> list[str]:
+    """Options de Restauration de muxiveo-rife (``--restore`` …) ; ``dither`` « 8 » : sortie 10 bits destinée à un
+    encodeur 8 bits (codes multiples de 4, conversion exacte en aval) ; ``sharpen`` : le moteur accepte
+    ``--restore-sharpen`` (compensation de netteté appliquée si ``restore.sharpen``) ; ``fast`` : mode rapide résolu
+    (``restore_fast``), sinon celui du réglage (Auto → normal)."""
+    args = ["--restore", restore.level, "--transfer", transfer or "sdr"]
+    if restore.mode == "fast" if fast is None else fast:
+        args.append("--restore-fast")
+    if model_dir:
+        args.extend(["--restore-model", str(model_dir)])
+    if animation and restore.level == "auto":
+        args.append("--restore-animation")
+    if dither != "auto":
+        args.extend(["--restore-dither", dither])
+    if sharpen and restore.sharpen:
+        args.extend(["--restore-sharpen", f"{RESTORE_SHARPEN_STRENGTH:g}"])
+    return args
+
+
+RESTORE_FAST_AUTO_WIDTH = 2560  # mode Auto : rapide au-delà de cette largeur (images transmises au moteur)
+
+
+def restore_engine_width(video: VideoEncodeSettings, source: InterpolationSource) -> int:
+    """Largeur des images transmises au moteur (recadrage puis redimensionnement du décodage) ; 0 si inconnue."""
+    if source.width <= 0 or source.height <= 0:
+        return 0
+    from core.workflows.encode.domain.codecs import resolve_resize_dimensions
+    from core.workflows.encode.runtime.dovi_geometry import absolute_dovi_crop
+    crop = absolute_dovi_crop(video, (source.width, source.height))
+    width = source.width - crop.left - crop.right
+    height = source.height - crop.top - crop.bottom
+    return resolve_resize_dimensions(width, height, video.resize)[0] if width > 0 and height > 0 else 0
+
+
+def restore_fast(video: VideoEncodeSettings, source: InterpolationSource, capabilities: RifeCapabilities | None = None) -> bool:
+    """Mode rapide effectif : choix explicite, sinon (Auto) au-delà de ``RESTORE_FAST_AUTO_WIDTH`` si le moteur livre
+    les graphes rapides (capacités inconnues : supposés présents, comme pour la validation)."""
+    mode = video.restoration.mode
+    if mode != "auto":
+        return mode == "fast"
+    if capabilities is not None and "r2q" not in capabilities.restore_models:
+        return False
+    return restore_engine_width(video, source) > RESTORE_FAST_AUTO_WIDTH
+
+
+def restore_args_for(video: VideoEncodeSettings, source: InterpolationSource, *, model_dir: str = "",
+                     animation: bool = False, rife_bin: str = "",
+                     cancel_event: threading.Event | None = None) -> list[str]:
+    """Options de Restauration d'une piste ([] sans Restauration) : transfert des images transmises, contenu animé
+    (réglage « on », ou « auto » avec ``animation`` : genre TMDB), tramage 8 bits si la sortie est en 8 bits,
+    compensation de netteté si le moteur ``rife_bin`` la propose, statistiques des trames si MaxCLL/MaxFALL sont
+    mesurés sur l'image débruitée."""
+    if not video.restores():
+        return []
+    from core.workflows.encode.domain.codecs import resolve_output_bit_depth
+    settings = video.restoration
+    animated = settings.animation == "on" or (settings.animation == "auto" and animation)
+    args = restore_engine_args(settings, transfer=restore_transfer(source), model_dir=model_dir, animation=animated,
+                               dither="8" if resolve_output_bit_depth(video) == 8 else "auto",
+                               sharpen=bool(rife_bin) and settings.sharpen
+                               and rife_supports(rife_bin, "restore-sharpen", cancel_event),
+                               fast=restore_fast(video, source,
+                                                 rife_capabilities(rife_bin, cancel_event) if rife_bin else None))
+    if video.restore_statistics is not None:  # MaxCLL/MaxFALL de l'image débruitée (sources PQ)
+        args.extend(["--frame-statistics", str(video.restore_statistics)])
+        if video.restore_source_statistics is not None:
+            args.extend(["--source-statistics", str(video.restore_source_statistics)])
+    return args
+
+
 def build_rife_stage(
     rife_bin: str,
     *,
@@ -451,8 +558,14 @@ def build_rife_stage(
     tta: int = 1,
     trt_plugin: str = "",
     trt_cache: str = "",
+    interpolate: bool = True,
+    restore_args: Sequence[str] = (),
+    cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """Étage 2 : muxiveo-rife (y4m stdin → y4m stdout), facteur entier ou cadence cible.
+
+    ``restore_args`` (``restore_engine_args``) : Restauration avant l'interpolation ; ``interpolate=False`` :
+    Restauration seule (``--factor 1``, sans les options d'interpolation).
 
     ``mode="fast"`` : flux optique calculé à demi-résolution (``--uhd``) ;
     ``tta`` > 1 : moyenne de ``tta`` passes (sens inverse, miroirs), coût x ``tta``.
@@ -462,6 +575,22 @@ def build_rife_stage(
     elle est inutilisable (ne le passer qu'à un binaire qui prend en charge ``--trt-plugin``).
     Moteur, modèle et arguments supplémentaires : préréglage de l'extension (``presets.json``).
     """
+    if not interpolate:
+        cmd = [
+            str(rife_bin), "--factor", "1",
+            "--matrix", source.matrix,
+            "--range", source.color_range,
+            "--chroma-loc", source.chroma_location,
+            "--progress-interval", str(_RIFE_PROGRESS_INTERVAL_S),
+            *restore_args,
+        ]
+        if int(gpu) >= 0:
+            cmd.extend(["--gpu", str(int(gpu))])
+        if trt_plugin:
+            cmd.extend(["--trt-plugin", str(trt_plugin)])
+            if trt_cache:
+                cmd.extend(["--trt-cache", str(trt_cache)])
+        return cmd
     preset = interpolation_preset(quality, rife_bin)
     rate_args = ["--fps", str(target_fps)] if target_fps else ["--factor", str(Fraction(str(factor)))]
     cmd = [
@@ -477,6 +606,7 @@ def build_rife_stage(
     if preset.engine != "rife":
         cmd.extend(["--engine", preset.engine])
     cmd.extend(preset.args)
+    cmd.extend(restore_args)
     if preset.ultra:
         cmd.append("--ultra")
     elif mode == "fast" or preset.force_fast:
@@ -487,7 +617,7 @@ def build_rife_stage(
         cmd.extend(["--tta", str(int(tta))])
     # Cache des têtes RIFE : sorties identiques, réserve VRAM vérifiée par le moteur à chaque inférence,
     # sans effet en TensorRT ni sur v4.6 ; omis si le binaire ne le prend pas en charge.
-    if rife_supports(rife_bin, "feature-cache"):
+    if rife_supports(rife_bin, "feature-cache", cancel_event):  # jeton : sonde (cache froid) tuable
         cmd.append("--feature-cache")
     if trt_plugin:
         cmd.extend(["--trt-plugin", str(trt_plugin)])
@@ -513,6 +643,7 @@ class RifeCapabilities:
     options: frozenset[str] = frozenset()
     models: frozenset[str] | None = None  # None : binaire sans --capabilities (contrôle par dossier)
     selector_status: str = ""             # « ok », raison d'indisponibilité, ou "" (inconnu)
+    restore_models: frozenset[str] = frozenset()  # graphes de Restauration livrés (<exe>/restore-models/<nom>)
 
     @property
     def label(self) -> str:
@@ -538,7 +669,7 @@ def _option_min_version(option: str) -> str:
     return ".".join(map(str, RIFE_CAPABILITIES_MIN_VERSION))
 
 
-_RIFE_UPDATE_HINT = "mettre à jour l'extension Interpolation (page Extensions)"
+_RIFE_UPDATE_HINT = "mettre à jour le moteur vidéo MVO (page Extensions)"
 
 
 def rife_support_errors(
@@ -581,36 +712,161 @@ def rife_support_errors(
     return []
 
 
-def rife_supports(rife_bin: str, option: str) -> bool:
+RESTORE_MIN_VERSION = (1, 12, 0)  # premier muxiveo-rife à étage de Restauration (--restore)
+# Compensation de netteté (--restore-sharpen) : force du contre-accentuage temporel (décision 24 ; banc du 2026-11-11 :
+# détail + 0,044, grain + 0,016, pompage inchangé) ; le moteur ne rend jamais plus que ce que le débruitage a retiré.
+# Option du moteur détectée par ses capacités
+RESTORE_SHARPEN_STRENGTH = 1.0
+
+
+def restore_model_name(restore: RestoreSettings) -> str:
+    """Graphes de Restauration exigés par le réglage : r2 (flux au demi), r2q (mode rapide imposé, flux au quart) ; le
+    mode Auto n'exige que r2 (rapide seulement si r2q est livré)."""
+    return "r2q" if restore.mode == "fast" else "r2"
+
+
+def restore_support_errors(capabilities: RifeCapabilities | None, restore: RestoreSettings) -> list[str]:
+    """Restauration non prise en charge par le binaire (option ``restore``, graphes livrés).
+
+    Capacités illisibles (None) : aucun blocage ici, muxiveo-rife signalera lui-même une option inconnue.
+    """
+    if capabilities is None:
+        return []
+    label = capabilities.label
+    if capabilities.contract != MVO_RIFE_CONTRACT:
+        return [f"MVO-R2 : muxiveo-rife {label} (contrat {capabilities.contract}) incompatible avec "
+                f"cette version de Muxiveo ; {_RIFE_UPDATE_HINT}."]
+    if not capabilities.supports("restore"):
+        return [f"MVO-R2 : muxiveo-rife {'.'.join(map(str, RESTORE_MIN_VERSION))} ou plus récent requis "
+                f"(installé : {label}) ; {_RIFE_UPDATE_HINT}."]
+    model = restore_model_name(restore)
+    if model not in capabilities.restore_models:
+        mode = " du mode rapide" if restore.mode == "fast" else ""
+        return [f"MVO-R2 : graphes{mode} « {model} » absents de l'extension muxiveo-rife {label} ; "
+                f"{_RIFE_UPDATE_HINT}."]
+    return []
+
+
+def rife_supports(rife_bin: str, option: str, cancel_event: threading.Event | None = None) -> bool:
     """Vrai si le binaire déclare l'option (capacités illisibles : faux)."""
-    capabilities = rife_capabilities(rife_bin)
+    capabilities = rife_capabilities(rife_bin, cancel_event)
     return capabilities is not None and capabilities.supports(option)
 
 
-def rife_capabilities(rife_bin: str) -> RifeCapabilities | None:
-    """Capacités du binaire (None s'il est illisible) ; cache indexé sur l'identité du fichier."""
-    resolved = str(shutil.which(str(rife_bin)) or rife_bin)
+_T = TypeVar("_T")
+
+
+class _EngineProbeCache:
+    """Cache de session des sondes du moteur vidéo (``--version``, ``--capabilities``).
+
+    Clé : binaire + identité du fichier, jamais un jeton ; verrou encapsulé, sonde hors verrou. Une sonde menée avec
+    un jeton (opération headless) est tuable **et** mise en cache comme les autres : les appels suivants (commandes,
+    interface) ne sondent plus. Une sonde qui lève (annulation) n'est jamais mise en cache. Au-delà de ``maxsize``
+    entrées, la plus ancienne est oubliée (comme l'ancien ``lru_cache``).
+    """
+
+    def __init__(self, maxsize: int = 8) -> None:
+        self._lock = threading.Lock()
+        self._values: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, key: tuple[Any, ...], probe: Callable[[], _T],
+            cancel_event: threading.Event | None = None) -> _T:
+        _raise_if_cancelled(cancel_event)  # jeton levé : jamais une valeur, même en cache
+        with self._lock:
+            if key in self._values:
+                self._values.move_to_end(key)
+                return cast(_T, self._values[key])
+        value = probe()
+        _raise_if_cancelled(cancel_event)  # sonde revenue malgré le jeton : jamais mémorisée ni rendue
+        with self._lock:
+            self._values[key] = value
+            self._values.move_to_end(key)
+            while len(self._values) > self._maxsize:
+                self._values.popitem(last=False)
+        return value
+
+    def clear(self) -> None:
+        with self._lock:
+            self._values.clear()
+
+
+def _raise_if_cancelled(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProbeCancelledError("Sonde annulée.")
+
+
+_RIFE_VERSIONS = _EngineProbeCache()
+_RIFE_CAPABILITIES = _EngineProbeCache()
+
+
+def _file_identity(path: str) -> tuple[int, int, int]:
     try:
-        info = Path(resolved).stat()
-        identity = (info.st_ino, info.st_size, info.st_mtime_ns)
+        info = Path(path).stat()
     except OSError:
-        identity = (0, 0, 0)
-    return _rife_capabilities_cached(resolved, identity)
+        return (0, 0, 0)
+    return (info.st_ino, info.st_size, info.st_mtime_ns)
 
 
-@functools.lru_cache(maxsize=8)
-def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> RifeCapabilities | None:
-    version = _rife_version_cached(rife_bin, identity)
+#: Attente maximale du bail d'une sonde (vérification d'un retrait en cours, quelques millisecondes en pratique).
+_PROBE_LEASE_WAIT_S = 2.0
+
+
+def _engine_probe(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+    """Sonde du moteur (``run_detection``) : version de l'extension utilisée (binaire, accélération TensorRT)
+    louée le temps de la sonde, jamais retirée par un nettoyage concurrent ; version en cours de modification :
+    attente brève, puis ``OSError`` (sonde jamais lancée sans bail)."""
+    from core import plugins
+
+    trt = cmd[cmd.index("--trt-plugin") + 1] if "--trt-plugin" in cmd[:-1] else None
+    # Nom nu (``PATH``) : résolu ici, lancé et loué sous ce chemin (jamais un autre binaire que celui loué) ;
+    # introuvable : jamais lancé (un moteur installé entre deux recherches démarrerait sans bail).
+    if os.sep not in cmd[0] and (os.altsep is None or os.altsep not in cmd[0]):
+        resolved = shutil.which(cmd[0])
+        if resolved is None:
+            raise FileNotFoundError(f"Moteur vidéo introuvable : {cmd[0]}")
+        # Segment vide de ``PATH`` (dossier courant) : ``which`` rend encore un nom nu, qu'une nouvelle recherche
+        # au lancement pourrait résoudre ailleurs ; chemin absolu.
+        cmd = [os.path.abspath(resolved), *cmd[1:]]
+    deadline = time.monotonic() + _PROBE_LEASE_WAIT_S
+    while True:
+        try:
+            leases = plugins.leases_for(cmd[0], trt)
+            break
+        except plugins.PluginError as exc:
+            # Version en cours de modification (vérification brève) ou retirée : jamais de sonde sans bail.
+            if time.monotonic() > deadline:
+                raise OSError(f"Moteur vidéo en cours de modification : {exc}") from exc
+            time.sleep(0.05)
+    try:
+        return run_detection(cmd, **kwargs)
+    finally:
+        for lease in leases:
+            lease.release()
+
+
+def rife_capabilities(rife_bin: str, cancel_event: threading.Event | None = None) -> RifeCapabilities | None:
+    """Capacités du binaire (None s'il est illisible) ; cache de session indexé sur l'identité du fichier.
+
+    ``cancel_event`` (opération headless) : sondes ``--version`` / ``--capabilities`` tuées à l'annulation
+    (``ProbeCancelledError``, jamais mise en cache) ; résultat obtenu mis en cache comme sans jeton.
+    """
+    resolved = str(shutil.which(str(rife_bin)) or rife_bin)
+    identity = _file_identity(resolved)
+    return _RIFE_CAPABILITIES.get((resolved, identity), lambda: _rife_capabilities_probe(
+        resolved, _cached_rife_version(resolved, identity, cancel_event), cancel_event), cancel_event)
+
+
+def _rife_capabilities_probe(rife_bin: str, version: tuple[int, int, int] | None,
+                             cancel_event: threading.Event | None = None) -> RifeCapabilities | None:
     if version is None:
         return None
     if version < RIFE_CAPABILITIES_MIN_VERSION:
         return _legacy_capabilities(version)
     try:
         # Binaire RIFE configuré ; seul argument constant --capabilities, sans shell.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            [rife_bin, "--capabilities"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
-        )
+        result = _engine_probe([rife_bin, "--capabilities"], cancel_event=cancel_event, capture_output=True,
+                               check=False, timeout=15, **subprocess_text_kwargs())
         data = json.loads(result.stdout or "")
     except (OSError, ValueError, subprocess.SubprocessError):
         return _legacy_capabilities(version)
@@ -618,6 +874,8 @@ def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> 
         return _legacy_capabilities(version)
     selector = data.get("selector")
     selector = selector if isinstance(selector, dict) else {}
+    restore = data.get("restore")
+    restore = restore if isinstance(restore, dict) else {}
     contract = data.get("contract")
     return RifeCapabilities(
         version,
@@ -625,32 +883,31 @@ def _rife_capabilities_cached(rife_bin: str, identity: tuple[int, int, int]) -> 
         frozenset(str(o) for o in data.get("options") or [] if isinstance(o, str)),
         frozenset(str(m) for m in data.get("models") or [] if isinstance(m, str)),
         str(selector.get("status") or ""),
+        frozenset(str(m) for m in restore.get("models") or [] if isinstance(m, str)),
     )
 
 
-def rife_version(rife_bin: str) -> tuple[int, int, int] | None:
+def rife_version(rife_bin: str, cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
     """Version annoncée par ``muxiveo-rife --version`` (None si illisible).
 
     Cache indexé sur l'identité du fichier : un binaire remplacé sur place par
-    le setup est relu sans redémarrer l'application.
+    le setup est relu sans redémarrer l'application. ``cancel_event`` : sonde tuée à l'annulation.
     """
-    try:
-        info = Path(shutil.which(str(rife_bin)) or rife_bin).stat()
-        identity = (info.st_ino, info.st_size, info.st_mtime_ns)
-    except OSError:
-        identity = (0, 0, 0)
-    return _rife_version_cached(str(rife_bin), identity)
+    return _cached_rife_version(str(rife_bin), _file_identity(str(shutil.which(str(rife_bin)) or rife_bin)),
+                                cancel_event)
 
 
-@functools.lru_cache(maxsize=8)
-def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple[int, int, int] | None:
-    _ = identity
+def _cached_rife_version(rife_bin: str, identity: tuple[int, int, int],
+                         cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
+    return _RIFE_VERSIONS.get((rife_bin, identity), lambda: _rife_version_probe(rife_bin, cancel_event),
+                              cancel_event)
+
+
+def _rife_version_probe(rife_bin: str, cancel_event: threading.Event | None = None) -> tuple[int, int, int] | None:
     try:
         # Binaire RIFE configuré ; seul argument constant --version, sans shell.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            [str(rife_bin), "--version"], capture_output=True, check=False, timeout=15, **subprocess_text_kwargs()
-        )
+        result = _engine_probe([str(rife_bin), "--version"], cancel_event=cancel_event, capture_output=True,
+                               check=False, timeout=15, **subprocess_text_kwargs())
     except (OSError, subprocess.SubprocessError):
         return None
     match = _RIFE_VERSION_RE.search(result.stdout or "")
@@ -659,8 +916,8 @@ def _rife_version_cached(rife_bin: str, identity: tuple[int, int, int]) -> tuple
 
 def clear_rife_version_cache() -> None:
     """Vide les caches ``muxiveo-rife`` : versions, capacités, préréglages (tests)."""
-    _rife_version_cached.cache_clear()
-    _rife_capabilities_cached.cache_clear()
+    _RIFE_VERSIONS.clear()
+    _RIFE_CAPABILITIES.clear()
     _rife_presets_cached.cache_clear()
 
 
@@ -707,20 +964,23 @@ def _resolve_rife(rife_bin: str | None) -> str | None:
 
 def detect_gpu_acceleration(
     rife_bin: str | None, *, trt_plugin: str = "", gpu: int = -1, timeout: float = 90.0,
+    cancel_event: threading.Event | None = None,
 ) -> GpuAcceleration:
     """Flux optique NVIDIA et TensorRT (selon les capacités du binaire) sur le GPU d'encodage de muxiveo-rife.
 
     ``gpu`` : index Vulkan (-1 = GPU par défaut). ``trt_plugin`` : dossier de l'extension installée.
+    ``cancel_event`` : opération headless, liste des GPU tuée à l'annulation (``ProbeCancelledError``).
     """
-    return _probe_acceleration(rife_bin, trt_plugin, gpu, timeout)
+    return _probe_acceleration(rife_bin, trt_plugin, gpu, timeout, cancel_event)
 
 
-def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout: float) -> GpuAcceleration:
+def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout: float,
+                        cancel_event: threading.Event | None = None) -> GpuAcceleration:
     resolved = _resolve_rife(rife_bin)
     if not resolved:
         reason = "muxiveo-rife introuvable"
         return GpuAcceleration(NvofCapability(reason=reason), TrtCapability(reason=reason))
-    capabilities = rife_capabilities(resolved)
+    capabilities = rife_capabilities(resolved, cancel_event)
     installed = capabilities.label if capabilities else "?"
     if capabilities is None or not capabilities.supports("nvof"):
         reason = f"muxiveo-rife {_option_min_version('nvof')} ou plus récent requis (installé : {installed})"
@@ -732,9 +992,8 @@ def _probe_acceleration(rife_bin: str | None, trt_plugin: str, gpu: int, timeout
     try:
         # Binaire RIFE configuré ; arguments constants (et dossier de l'extension), sans shell.
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
-        )
+        result = _engine_probe(cmd, cancel_event=cancel_event, capture_output=True, check=False, timeout=timeout,
+                               **subprocess_text_kwargs())
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, cmd)
         payload = json.loads(result.stdout or "{}")
@@ -1018,11 +1277,12 @@ def resolve_frame_ratio(
     source: Path,
     stream_index: int,
 ) -> Fraction:
-    """Rapport de cadence effectif d'une piste (sonde ffprobe seulement pour une cadence cible)."""
+    """Trames encodées par trame source pour les métadonnées dynamiques (interpolation, YADIF une image par champ ;
+    ``VideoEncodeSettings.metadata_frame_ratio``) ; sonde ffprobe seulement pour une cadence cible."""
     if not video.interpolates():
-        return Fraction(1)
+        return video.metadata_frame_ratio()
     rate = probe_frame_rate(ffprobe_bin, source, stream_index) if video.interpolation.target_fps else None
-    return video.frame_ratio(rate)
+    return video.metadata_frame_ratio(rate)
 
 
 def required_dovi_level(ffprobe_bin: str, source: Path, stream_index: int, ratio: Fraction | int) -> int | None:
@@ -1099,6 +1359,17 @@ __all__ = [
     "rife_capabilities",
     "rife_support_errors",
     "rife_model_available",
+    "RESTORE_MIN_VERSION",
+    "RESTORE_FAST_AUTO_WIDTH",
+    "RESTORE_SHARPEN_STRENGTH",
+    "restore_model_name",
+    "restore_support_errors",
+    "restore_args_for",
+    "restore_engine_width",
+    "restore_fast",
+    "restore_engine_args",
+    "restore_transfer",
+    "RESTORE_DECODE_FORMAT",
     "rife_presets",
     "RifeCapabilities",
     "RIFE_CAPABILITIES_MIN_VERSION",

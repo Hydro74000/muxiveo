@@ -18,21 +18,33 @@ class CriteriaExpressionParser:
 
     _OPERATORS = {"&", "|", "(", ")", "!"}
 
+    #: Imbrication maximale (parenthèses, négations) : au-delà, refus explicite plutôt que pile épuisée.
+    MAX_DEPTH = 64
+
     def __init__(self, text: str) -> None:
         self._tokens = self._tokenize(text)
         self._index = 0
+        self._depth = 0
 
     @classmethod
     def _tokenize(cls, text: str) -> list[tuple[str, str]]:
         tokens: list[tuple[str, str]] = []
         source = str(text or "")
         current: list[str] = []
+        filled = False  # atome en cours non blanc (évite de rejoindre le préfixe à chaque caractère)
 
         def flush_atom() -> None:
+            nonlocal filled
             atom = "".join(current).strip()
             current.clear()
+            filled = False
             if atom:
                 tokens.append(("ATOM", atom))
+
+        def add(text: str) -> None:
+            nonlocal filled
+            current.append(text)
+            filled = filled or not text.isspace()
 
         cursor = 0
         while cursor < len(source):
@@ -40,11 +52,11 @@ class CriteriaExpressionParser:
             if char == "\\":
                 if cursor + 1 >= len(source):
                     raise CriteriaExpressionError("echappement final")
-                current.append(source[cursor + 1])
+                add(source[cursor + 1])
                 cursor += 2
                 continue
             if (
-                not "".join(current).strip()
+                not filled
                 and source[cursor:cursor + 3].lower() == "not"
                 and cursor + 3 < len(source)
                 and source[cursor + 3] == "("
@@ -84,11 +96,13 @@ class CriteriaExpressionParser:
                     cursor += 1
                 else:
                     raise CriteriaExpressionError("guillemet non ferme")
-                if not "".join(quoted).strip() and not current:
+                text = "".join(quoted)
+                if not text.strip() and not current:
                     raise CriteriaExpressionError("valeur vide")
-                current.extend(quoted)
+                if text:
+                    add(text)
                 continue
-            current.append(char)
+            add(char)
             cursor += 1
         flush_atom()
         if not tokens:
@@ -131,8 +145,17 @@ class CriteriaExpressionParser:
         token = self._peek()
         if token is not None and token[0] == "!":
             self._consume("!")
-            return ("not", self._parse_not())
+            return ("not", self._nested(self._parse_not))
         return self._parse_primary()
+
+    def _nested(self, parse: Callable[[], ExpressionAst]) -> ExpressionAst:
+        self._depth += 1
+        if self._depth > self.MAX_DEPTH:
+            raise CriteriaExpressionError(f"expression trop imbriquee (plus de {self.MAX_DEPTH} niveaux)")
+        try:
+            return parse()
+        finally:
+            self._depth -= 1
 
     def _parse_primary(self) -> ExpressionAst:
         token = self._peek()
@@ -145,7 +168,7 @@ class CriteriaExpressionParser:
             return ("leaf", atom)
         if token[0] == "(":
             self._consume("(")
-            node = self._parse_or()
+            node = self._nested(self._parse_or)
             self._consume(")")
             return node
         raise CriteriaExpressionError("valeur attendue")

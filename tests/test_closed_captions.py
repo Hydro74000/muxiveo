@@ -121,6 +121,8 @@ def caption_source(tmp_path):
         tuple(MatroskaMuxPacket(block.track_number, replace(block, payload=prefix + block.payload)
                                 if block.track_number == video.number else block, index)
               for index, block in enumerate(reader.blocks())),
+        # Échelle de la source (FFmpeg master : 10 µs par défaut, sonde neutralisée en test).
+        timestamp_scale_ns=reader.timestamp_scale_ns(),
     ))
     return output, plain
 

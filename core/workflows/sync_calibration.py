@@ -132,6 +132,9 @@ class SyncCalibration:
             raise ValueError("Format de calibration non pris en charge.")
         try:
             cadence_payload = payload.get("cadence_mismatch")
+            samples = payload.get("samples", ())
+            if not isinstance(cadence_payload, (dict, type(None))) or not isinstance(samples, (list, tuple)):
+                raise TypeError("cadence_mismatch : objet ; samples : liste")
             cadence_mismatch = CadenceMismatch.from_dict(cadence_payload) if cadence_payload else None
             cadence_method = str(payload.get("cadence_audio_method", "atempo"))
             pitch_payload = payload.get("cadence_pitch_analysis")
@@ -146,14 +149,14 @@ class SyncCalibration:
                 tuple(SyncSegment(float(s["start_ms"]), float(s["shift_ms"]))
                       for s in payload["segments"]),
                 float(payload.get("confidence", 1)),
-                tuple(payload.get("samples", ())),
+                tuple(samples),
                 cadence_mismatch=cadence_mismatch,
                 cadence_audio_method=cadence_method,
                 cadence_pitch_analysis=pitch_analysis,
                 cadence_method_auto=payload.get("cadence_method_auto") is True,
                 cadence_pitch_factor=float(payload.get("cadence_pitch_factor", 1.0)),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Calibration invalide.") from exc
 
     def with_start_offset(self, offset_ms: float) -> SyncCalibration:
@@ -224,6 +227,18 @@ class SyncCalibration:
         donor = (output_ms - segment.shift_ms) / self._stretch_ratio()
         upper = self.segments[index + 1].start_ms if index + 1 < len(self.segments) else math.inf
         return max(segment.start_ms, min(upper, donor))
+
+    def with_segment_shift(self, index: int, shift_ms: float) -> SyncCalibration:
+        """Décalage du segment ``index`` fixé à ``shift_ms`` ; l'écart est reporté sur les segments suivants
+        (sauts relatifs conservés, comme le champ « Décalage » du Synchro Studio)."""
+        if not 0 <= index < len(self.segments):
+            raise ValueError(f"Segment {index} inexistant ({len(self.segments)} segment(s)).")
+        if not math.isfinite(shift_ms):
+            raise ValueError("Décalage invalide.")
+        delta = float(shift_ms) - self.segments[index].shift_ms
+        segments = tuple(segment if position < index else SyncSegment(segment.start_ms, segment.shift_ms + delta)
+                         for position, segment in enumerate(self.segments))
+        return replace(self, segments=segments)
 
     def with_edit(self, output_start_ms: float, output_end_ms: float, *, silence: bool) -> SyncCalibration:
         """Ajoute une coupe (sortie de la section supprimée) ou un silence de la longueur de la section.
@@ -355,6 +370,12 @@ class SyncCalibration:
 
     def intervals(self, start_ms: float, end_ms: float):
         """Découpe aux jonctions et retire les parties écrasées par un saut négatif."""
+        for a, b, _source in self.source_intervals(start_ms, end_ms):
+            yield a, b
+
+    def source_intervals(self, start_ms: float, end_ms: float):
+        """Comme `intervals`, avec le temps source (ms) où commence chaque morceau de sortie (morceau
+        suivant une coupe, ou début rogné à zéro : une partie de l'événement est déjà écoulée)."""
         ratio = self.cadence_mismatch.time_stretch_ratio if self.cadence_mismatch else 1.0
         scaled_start = start_ms * ratio
         scaled_end = end_ms * ratio
@@ -367,7 +388,7 @@ class SyncCalibration:
             if right > left:
                 a, b = max(0, left + segment.shift_ms), max(0, right + segment.shift_ms)
                 if b > a:
-                    yield a, b
+                    yield a, b, (a - segment.shift_ms) / ratio
             previous_end = max(previous_end, seg_stop + segment.shift_ms)
 
 
@@ -385,6 +406,12 @@ def _method_pitch(cadence: CadenceMismatch | None, method: str) -> float:
     """Hauteur produite par la conversion seule : asetrate la change avec la vitesse, atempo
     (et « auto » non tranchée, appliquée en atempo) la conserve."""
     return cadence.speed_factor if cadence is not None and method == "asetrate" else 1.0
+
+
+def cadence_method_pitch(cadence: CadenceMismatch | None, method: str) -> float:
+    """Hauteur produite par la seule conversion `cadence` selon la méthode (asetrate : celle de la
+    vitesse ; atempo et « auto » non tranchée : inchangée)."""
+    return _method_pitch(cadence, method)
 
 
 def _combined_cadence(inner: SyncCalibration, outer: SyncCalibration):

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -48,6 +49,7 @@ _FIELD_WEIGHTS = {
     "type": 40,
     "language": 18,
     "lang": 18,
+    "file_language": 18,
     "codec": 8,
     "codec_raw": 8,
     "codec_name": 8,
@@ -60,6 +62,7 @@ _FIELD_WEIGHTS = {
     "codec_dtsx": 10,
     "title": 4,
     "source_title": 4,
+    "file_title": 4,
     "flags": 6,
     "flag_enabled": 4,
     "flag_default": 4,
@@ -146,7 +149,8 @@ class DecisionProfileManager:
         """Fichier du profil de nom exact ``name`` (existant, sinon à créer)."""
         return self._store.path_for_name(str(name or "").strip())
 
-    def save(self, profile: Mapping[str, Any]) -> Path:
+    def save(self, profile: Mapping[str, Any], *, replace: bool = True) -> Path:
+        """Enregistre ``profile`` ; ``replace=False`` : ``FileExistsError`` si le nom est déjà pris."""
         data = dict(profile)
         data.pop("sources", None)
         data.pop("output", None)
@@ -159,6 +163,7 @@ class DecisionProfileManager:
         return self._store.write(
             name,
             json.dumps(data, ensure_ascii=False, indent=2, default=_json_default) + "\n",
+            replace=replace,
         )
 
     def load(self, name: str) -> dict[str, Any] | None:
@@ -525,6 +530,10 @@ def _condition_leaf_result(
         matched = _compare_value(actual, op, expected) or (
             similarity > 0 and op not in {"not_is", "ne", "!=", "not_contains", "not_in"}
         )
+    elif field == "file_title" and op in {"is", "eq", "=="}:
+        # Titre textuel : comparaison exacte, jamais la normalisation de langue (titres à tirets).
+        similarity = 0
+        matched = str(actual or "").strip().casefold() == str(expected or "").strip().casefold()
     elif field == "language":
         similarity = 0
         # Forme d'avant la détection de « VFQ » (fr-FR) : une règle déjà enregistrée
@@ -867,6 +876,14 @@ def _field_change(
     key = (track.entry_id, field)
     rule_id = str(rule.get("id") or "")
     previous = proposed.get(key)
+    if (mode == "priority" and previous is not None and previous.get("value") == value
+            and previous.get("rule_id") != rule_id
+            and priority_key < tuple(previous.get("priority_key") or (0, 0))):
+        # Mode priorité, même valeur, priorité plus basse : la priorité retenue reste la plus haute (sinon une règle
+        # plus basse réécrivant la même valeur l'abaissait, et une règle suivante de son niveau entrait en conflit).
+        # « Remplacer » / « Ajouter » gardent le comportement historique (l'écriture passe à la règle).
+        _assign_track_field(track, field, value)
+        return True
     if previous is None or previous.get("value") == value or previous.get("rule_id") == rule_id:
         proposed[key] = {"rule_id": rule_id, "value": value, "priority_key": priority_key}
         _assign_track_field(track, field, value)
@@ -1009,6 +1026,7 @@ def _apply_rule_action(
     conflict_choices: Mapping[str, str] | None,
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
+    variant_requests: list[_VariantRequest],
 ) -> None:
     action_name = _action_type(action)
     tags = temporary_tags_by_entry_id.setdefault(track.entry_id, set())
@@ -1144,26 +1162,77 @@ def _apply_rule_action(
         _apply_audio_variant_action(
             action,
             track,
-            tracks=tracks,
             rule=rule,
             temporary_tags_by_entry_id=temporary_tags_by_entry_id,
-            report=report,
             source_index_by_file_id=source_index_by_file_id,
             variables=variables,
+            variant_requests=variant_requests,
         )
+
+
+@dataclass
+class _VariantRequest:
+    """Demande ``create_audio_variant`` relevée pendant les règles, affectée après elles (ordre indifférent)."""
+
+    action: Mapping[str, Any]
+    rule_id: str
+    source_track: TrackEntry
+    prepared: TrackEntry  # clone de la piste source à l'instant de l'action (création seulement)
+    codec: str  # codec demandé (« copy » : codec source)
+    target_codec: str  # codec de la variante, normalisé
+    title: str
+    clear_title: bool
+    language: str
+    clear_language: bool
+    inherited_title: str  # titre de la piste source à l'instant de l'action
+    display_info: str | None
+    match_bitrate: bool = False  # capture : variantes jumelles distinguées par leur débit
+    twin: int | None = None  # capture : rang d'une variante jumelle (variante propre, jamais partagée)
+    bitrate_kbps: int = 0  # débit demandé (0 : aucun) — population du rang de jumelle
+
+    def bitrate_matches(self, track: TrackEntry) -> bool:
+        """Critère de débit (``match_bitrate``) : variante au débit demandé seulement."""
+        if not self.match_bitrate or self.display_info is None:
+            return True
+        return _bitrate_from_display(track.display_info) == _bitrate_from_display(self.display_info)
+
+    @property
+    def group(self) -> tuple[str, str]:
+        return (self.source_track.entry_id, self.target_codec.upper())
+
+    @property
+    def target(self) -> tuple[Any, ...]:
+        """Cible : intention de titre (valeur / effacement / héritage), de langue (valeur / effacement) et, avec
+        ``match_bitrate``, débit (variantes jumelles distinctes)."""
+        title = ("value", self.title) if self.title else ("clear",) if self.clear_title else ("inherit",)
+        language = ("clear",) if self.clear_language else ("value", self.language)
+        bitrate = _bitrate_from_display(self.display_info) if self.match_bitrate and self.display_info else None
+        return (*self.group, title, language, bitrate, self.twin)
+
+    def accepts(self, track: TrackEntry) -> bool:
+        """Variante existante compatible avec la cible (titre puis langue)."""
+        if self.title and track.title != self.title:
+            return False
+        if self.clear_title and track.title:
+            return False
+        if not self.bitrate_matches(track):
+            return False
+        if self.clear_language:
+            return not track.language
+        return not self.language or normalize_lang(track.language, track.title) == self.language
 
 
 def _apply_audio_variant_action(
     action: Mapping[str, Any],
     source_track: TrackEntry,
     *,
-    tracks: list[TrackEntry],
     rule: Mapping[str, Any],
     temporary_tags_by_entry_id: dict[str, set[str]],
-    report: dict[str, Any],
     source_index_by_file_id: Mapping[str, int] | None,
     variables: Mapping[str, Any] | None,
+    variant_requests: list[_VariantRequest],
 ) -> None:
+    """Relève la demande (valeurs résolues sur l'état de la piste source à cet instant)."""
     codec = str(action.get("codec") or action.get("target_codec") or "copy").strip()
     title_pattern = str(action.get("title_pattern") or action.get("pattern") or "")
     title = (
@@ -1177,7 +1246,13 @@ def _apply_audio_variant_action(
         if title_pattern
         else str(action.get("title") or "")
     )
-    raw_language = str(action.get("language") or source_track.language)
+    # « clear » : effacement explicite (titre, langue) ; une valeur vide seule hérite de la source
+    # (profils antérieurs inchangés).
+    clear = action.get("clear")
+    clear_fields = {str(item) for item in clear} if isinstance(clear, list) else set()
+    clear_title = "title" in clear_fields and not title
+    clear_language = "language" in clear_fields and not str(action.get("language") or "")
+    raw_language = "" if clear_language else str(action.get("language") or source_track.language)
     if "{" in raw_language and "}" in raw_language:
         raw_language = render_title_pattern(
             raw_language,
@@ -1186,17 +1261,8 @@ def _apply_audio_variant_action(
             source_index_by_file_id=source_index_by_file_id,
             variables=variables,
         )
-    language = normalize_lang(raw_language, title)
-    existing = _find_existing_variant(tracks, source_track, codec=codec, title=title, language=language)
-    if existing is None:
-        variant = clone_track_entry(source_track)
-        tracks.append(variant)
-        report["created_variants"].append(track_summary(variant, source_index_by_file_id=source_index_by_file_id))
-    else:
-        variant = existing
-        report["reused_variants"].append(track_summary(variant, source_index_by_file_id=source_index_by_file_id))
+    display_info: str | None = None
     if codec and codec.lower() != "copy":
-        variant.codec = codec.upper()
         bitrate = int(action.get("bitrate_kbps") or 0)
         parts = [
             part.strip()
@@ -1205,41 +1271,210 @@ def _apply_audio_variant_action(
         ]
         if bitrate > 0:
             parts.append(f"{bitrate} kbps")
-        variant.display_info = "  ".join(parts)
-    if title:
-        variant.title = title
-    if language:
-        variant.language = language
-    variant.enabled = bool(action.get("enabled", True))
-    flags = action.get("flags")
+        display_info = "  ".join(parts)
+    variant_requests.append(_VariantRequest(
+        action=action,
+        rule_id=str(rule.get("id") or "variant"),
+        source_track=source_track,
+        prepared=clone_track_entry(source_track),
+        codec=codec,
+        target_codec=source_track.codec if not codec or codec.lower() == "copy" else codec.upper(),
+        title=title,
+        clear_title=clear_title,
+        language=normalize_lang(raw_language, title),
+        clear_language=clear_language,
+        inherited_title=source_track.title or "",
+        display_info=display_info,
+        match_bitrate=bool(action.get("match_bitrate")),
+        twin=(int(action["twin"]) if isinstance(action.get("twin"), int) and not isinstance(action.get("twin"), bool)
+              else None),
+        bitrate_kbps=int(action.get("bitrate_kbps") or 0),
+    ))
+
+
+def _write_variant(
+    request: _VariantRequest,
+    variant: TrackEntry,
+    temporary_tags_by_entry_id: dict[str, set[str]],
+    order_priorities: dict[str, int] | None = None,
+    written_fields: set[tuple[str, str]] | None = None,
+) -> None:
+    """Écritures d'une demande sur sa variante (sélection, drapeau par drapeau, titre, langue, débit, rang,
+    décalage propre de la variante ; `written_fields` reçoit les champs écrits hors règles)."""
+    if "time_shift_ms" in request.action:
+        variant.time_shift_ms = int(request.action.get("time_shift_ms") or 0)
+        if written_fields is not None:
+            written_fields.add((variant.entry_id, "time_shift_ms"))
+    order = request.action.get("order_priority")
+    if order_priorities is not None and isinstance(order, int) and not isinstance(order, bool) and order > 0:
+        order_priorities[variant.entry_id] = order
+    if request.display_info is not None:
+        variant.codec = request.codec.upper()
+        variant.display_info = request.display_info
+    if request.title or request.clear_title:
+        variant.title = request.title
+    if request.language or request.clear_language:
+        variant.language = request.language
+    variant.enabled = bool(request.action.get("enabled", True))
+    flags = request.action.get("flags")
     if isinstance(flags, Mapping):
         for name, value in flags.items():
-            if name in FLAG_NAMES and name != "enabled":
+            if name in FLAG_NAMES:  # flags.enabled = drapeau Matroska ; sélection : clé « enabled »
                 setattr(variant, f"flag_{name}", bool(value))
-    tags = temporary_tags_by_entry_id.setdefault(variant.entry_id, set())
-    tags.add(str(rule.get("id") or "variant"))
+    temporary_tags_by_entry_id.setdefault(variant.entry_id, set()).add(request.rule_id)
 
 
-def _find_existing_variant(
+def _variant_is_fixed_point(requests: list[_VariantRequest], track: TrackEntry) -> bool:
+    """Variante déjà produite par ces demandes : leurs écritures n'y changent rien (deuxième application)."""
+    probe = copy.deepcopy(track)
+    for request in requests:
+        _write_variant(request, probe, {})
+    fields = ("codec", "display_info", "title", "language", "enabled", "time_shift_ms",
+              *(f"flag_{name}" for name in FLAG_NAMES))
+    return all(getattr(probe, name) == getattr(track, name) for name in fields)
+
+
+def _variant_preference(requests: list[_VariantRequest], track: TrackEntry, group: list[TrackEntry]) -> int:
+    """Préférence d'une variante pour une cible : 2 = déjà à son image et au rang de jumelle capturé (ordre du
+    tableau parmi ``group``), 1 = déjà à son image, 0 = simplement compatible. Jumelles identiques : chacune
+    retrouve la sienne à chaque réapplication (identifiants et ordre stables)."""
+    if not _variant_is_fixed_point(requests, track):
+        return 0
+    twin = requests[0].twin
+    if twin is not None:
+        # Même population qu'à la capture : jumelles de même débit (rang compté parmi elles).
+        group = [item for item in group if _bitrate_from_display(item.display_info) == requests[0].bitrate_kbps]
+        if 0 < twin <= len(group) and group[twin - 1] is track:
+            return 2
+    return 1
+
+
+def _max_matching(
+    keys: list[tuple[Any, ...]],
+    candidates: list[TrackEntry],
+    accepts: Callable[[tuple[Any, ...], TrackEntry], bool],
+    prefers: Callable[[tuple[Any, ...], TrackEntry], int] = lambda _key, _track: 0,
+) -> dict[tuple[Any, ...], TrackEntry]:
+    """Appariement maximal cibles → variantes, stable : chaque cible prend d'abord la variante libre qui est déjà
+    la sienne (``prefers`` : ses écritures n'y changent rien), sinon la première variante libre compatible (ordre
+    du tableau) ; une cible déjà servie n'est déplacée que si une cible suivante n'a sinon aucune variante (chemin
+    augmentant). Cibles dans l'ordre des demandes."""
+    owner: dict[str, tuple[Any, ...]] = {}
+    by_id = {track.entry_id: track for track in candidates}
+
+    def assign(key: tuple[Any, ...], seen: set[str]) -> bool:
+        free_tracks = [track for track in candidates
+                       if track.entry_id not in owner and track.entry_id not in seen and accepts(key, track)]
+        # Plus haute préférence d'abord (``prefers`` : 2 = déjà à son image et à son rang, 1 = à son image), puis ordre
+        # du tableau.
+        free = max(free_tracks, key=lambda track: prefers(key, track), default=None)
+        if free is not None:
+            owner[free.entry_id] = key
+            return True
+        for track in candidates:
+            if track.entry_id in seen or not accepts(key, track):
+                continue
+            seen.add(track.entry_id)
+            if assign(owner[track.entry_id], seen):
+                owner[track.entry_id] = key
+                return True
+        return False
+
+    for key in keys:
+        assign(key, set())
+    return {key: by_id[entry_id] for entry_id, key in owner.items()}
+
+
+def _materialize_variant_requests(
+    requests: list[_VariantRequest],
     tracks: list[TrackEntry],
-    source_track: TrackEntry,
     *,
-    codec: str,
-    title: str,
-    language: str,
-) -> TrackEntry | None:
-    normalized_codec = source_track.codec if not codec or codec.lower() == "copy" else codec.upper()
-    for track in tracks:
-        if not track.is_new or track.source_entry_id != source_track.entry_id:
+    temporary_tags_by_entry_id: dict[str, set[str]],
+    report: dict[str, Any],
+    source_index_by_file_id: Mapping[str, int] | None,
+    order_priorities: dict[str, int] | None = None,
+    written_fields: set[tuple[str, str]] | None = None,
+) -> None:
+    """Affecte les demandes de variantes après les règles.
+
+    1. Demandes d'effacement effectif (``clear``) : par piste source et codec, appariement maximal et stable entre
+       cibles (identiques → même variante ; ordre des demandes) et variantes libres compatibles ; cible sans variante
+       → création depuis son clone (ordre des demandes : une deuxième application retrouve les mêmes). Ces variantes
+       leur sont réservées.
+    2. Autres demandes : affectation historique à l'identique, dans l'ordre (première variante du codec dont le
+       titre explicite et la langue résolue correspondent, joker sinon ; création sinon ; écritures aussitôt
+       visibles des demandes suivantes), hors variantes réservées.
+    """
+    entries: list[tuple[int, str, dict[str, Any]]] = []
+    reserved: set[str] = set()
+    clearing: dict[tuple[Any, ...], list[int]] = {}
+    for index, request in enumerate(requests):
+        if request.clear_title or request.clear_language:
+            clearing.setdefault(request.target, []).append(index)
+    groups: dict[tuple[str, str], list[tuple[Any, ...]]] = {}
+    for target, indexes in clearing.items():
+        groups.setdefault(requests[indexes[0]].group, []).append(target)
+    for (source_id, target_codec), keys in groups.items():
+        candidates = [
+            track for track in tracks
+            if track.is_new and track.source_entry_id == source_id and track.entry_id not in reserved
+            and (not target_codec or str(track.codec or "").upper() == target_codec)
+        ]
+        keys.sort(key=lambda key: clearing[key][0])
+        matched = _max_matching(
+            keys, candidates, lambda key, track: requests[clearing[key][0]].accepts(track),
+            lambda key, track: _variant_preference(
+                [requests[index] for index in clearing[key]], track,
+                [item for item in candidates if requests[clearing[key][0]].accepts(item)]),
+        )
+        for key in sorted(keys, key=lambda key: clearing[key][0]):
+            variant = matched.get(key)
+            created = variant is None
+            if variant is None:
+                variant = requests[clearing[key][0]].prepared
+                tracks.append(variant)
+            reserved.add(variant.entry_id)
+            for position, index in enumerate(clearing[key]):
+                kind = "created_variants" if created and position == 0 else "reused_variants"
+                entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
+                _write_variant(requests[index], variant, temporary_tags_by_entry_id, order_priorities, written_fields)
+    twin_claimed: set[str] = set()  # variantes servies par une jumelle capturée (``twin``) : propres à elle
+    for index, request in enumerate(requests):
+        if request.clear_title or request.clear_language:
             continue
-        if normalized_codec and str(track.codec or "").upper() != normalized_codec.upper():
-            continue
-        if title and track.title != title:
-            continue
-        if language and normalize_lang(track.language, track.title) != language:
-            continue
-        return track
-    return None
+        compatible = [
+            track for track in tracks
+            if track.is_new and track.source_entry_id == request.source_track.entry_id
+            and track.entry_id not in reserved
+            and (request.twin is None or track.entry_id not in twin_claimed)
+            and (not request.target_codec or str(track.codec or "").upper() == request.target_codec.upper())
+            and (not request.title or track.title == request.title)
+            and (not request.language or normalize_lang(track.language, track.title) == request.language)
+            and request.bitrate_matches(track)
+        ]
+        if request.twin is not None and compatible:
+            group = [
+                track for track in tracks
+                if track.is_new and track.source_entry_id == request.source_track.entry_id
+                and (not request.target_codec or str(track.codec or "").upper() == request.target_codec.upper())
+                and (not request.title or track.title == request.title)
+                and (not request.language or normalize_lang(track.language, track.title) == request.language)
+                and request.bitrate_matches(track)
+            ]
+            variant = max(compatible, key=lambda track: _variant_preference([request], track, group))
+        else:
+            variant = compatible[0] if compatible else None
+        kind = "reused_variants"
+        if variant is None:
+            variant = request.prepared
+            tracks.append(variant)
+            kind = "created_variants"
+        if request.twin is not None:
+            twin_claimed.add(variant.entry_id)
+        entries.append((index, kind, track_summary(variant, source_index_by_file_id=source_index_by_file_id)))
+        _write_variant(request, variant, temporary_tags_by_entry_id, order_priorities, written_fields)
+    for _index, kind, summary in sorted(entries, key=lambda entry: entry[0]):
+        report[kind].append(summary)
 
 
 def apply_decision_profile(
@@ -1288,6 +1523,7 @@ def _apply_decision_profile_rules(
     original_tracks = [track for track in working if not track.is_new]
     variables = _profile_variables(profile.get("variables"))
     temporary_tags_by_entry_id: dict[str, set[str]] = {track.entry_id: set() for track in working}
+    variant_requests: list[_VariantRequest] = []
     order_priorities: dict[str, int] = {}
     proposed: dict[tuple[str, str], dict[str, Any]] = {}
     conflicts: list[dict[str, Any]] = []
@@ -1374,8 +1610,20 @@ def _apply_decision_profile_rules(
                     conflict_choices=conflict_choices,
                     source_index_by_file_id=source_index_by_file_id,
                     variables=variables,
+                    variant_requests=variant_requests,
                 )
             report["applied_rules"] += 1
+
+    variant_written: set[tuple[str, str]] = set()
+    _materialize_variant_requests(
+        variant_requests,
+        working,
+        temporary_tags_by_entry_id=temporary_tags_by_entry_id,
+        report=report,
+        source_index_by_file_id=source_index_by_file_id,
+        order_priorities=order_priorities,
+        written_fields=variant_written,
+    )
 
     selection_policy = profile.get("selection_policy", {})
     disable_types: set[str] = set()
@@ -1406,9 +1654,14 @@ def _apply_decision_profile_rules(
     }
     # Champs écrits par une règle, même à valeur inchangée (piste → champs).
     written: dict[str, list[str]] = {}
-    for entry_id, field in proposed:
+    for entry_id, field in [*proposed, *sorted(variant_written - set(proposed))]:
         written.setdefault(entry_id, []).append(field)
     report["written_fields"] = {entry_id: sorted(fields) for entry_id, fields in written.items()}
+    # Décalages propres rejoués par create_audio_variant (variante créée ou reprise) : piste → ms.
+    report["variant_time_shifts"] = {
+        track.entry_id: int(track.time_shift_ms or 0)
+        for track in working if (track.entry_id, "time_shift_ms") in variant_written
+    }
     report["valid"] = not report["conflicts"] and not report["ambiguous_matches"]
     return DecisionProfileResult(tracks=working, report=report, profile=dict(profile))
 
@@ -1447,7 +1700,18 @@ def _condition(field: str, op: str, value: Any, *, required: bool = True, weight
 
 def _match_for_track(track: TrackEntry) -> dict[str, Any]:
     items: list[dict[str, Any]] = [_condition("type", "is", track.track_type, required=True)]
-    lang = normalize_lang(track.orig_language or track.language, track.orig_title or track.title)
+    # Langue lue dans le fichier (``file_language``) : stable face aux éditions, aux règles déjà appliquées et à
+    # l'application depuis l'état courant du panneau ; jamais la valeur courante.
+    lang = normalize_lang(track.physical_language, track.physical_title)
+    # Titre lu dans le fichier : départage préféré (jamais obligatoire) de pistes de même langue et codec,
+    # stable quand le titre courant est vidé ou modifié.
+    file_title = (
+        [_condition("file_title", "is", track.physical_title, required=False)] if track.physical_title else []
+    )
+    file_language = (
+        _condition("file_language", "is", lang, required=True)
+        if lang else _condition("file_language", "missing", "", required=True)
+    )
     codec = str(track.orig_codec or track.codec or "").strip().upper()
     if track.track_type == "video":
         if codec:
@@ -1464,10 +1728,10 @@ def _match_for_track(track: TrackEntry) -> dict[str, Any]:
             )
         items.append(_condition("video_flags_hex", "is", video_flags_hex(track), required=False))
     elif track.track_type == "audio":
-        if lang:
-            items.append(_condition("language", "is", lang, required=True))
+        items.append(file_language)
         if codec:
             items.append(_condition("codec", "is", codec, required=False))
+        items.extend(file_title)
         channels = _channels_from_display(track.orig_display_info or track.display_info)
         if channels:
             items.append(_condition("channels", "is", channels, required=False))
@@ -1475,12 +1739,10 @@ def _match_for_track(track: TrackEntry) -> dict[str, Any]:
         if audio_object:
             items.append(_condition("audio_object", "is", audio_object, required=False))
     elif track.track_type == "subtitle":
-        if lang:
-            items.append(_condition("language", "is", lang, required=True))
+        items.append(file_language)
         if codec:
             items.append(_condition("codec", "is", codec, required=False))
-        if track.orig_title:
-            items.append(_condition("source_title", "contains", track.orig_title, required=False))
+        items.extend(file_title)
     return {"all": items}
 
 
@@ -1504,6 +1766,15 @@ def remux_config_to_decision_profile(
     """Capture the current remux table as an editable decision-profile v1."""
     all_tracks = [track for source in config.sources for track in source.tracks]
     original_tracks = [track for track in all_tracks if not track.is_new]
+    # Ordre du tableau (``track_order``, sources mêlées et variantes comprises) : rang de sortie de chaque piste.
+    file_index_by_entry = {track.entry_id: source.file_index for source in config.sources for track in source.tracks}
+    positions: dict[str, int] = {}
+    for position, item in enumerate(config.track_order or ()):
+        entry_id = item[2] if len(item) > 2 else next(
+            (track.entry_id for track in original_tracks
+             if file_index_by_entry.get(track.entry_id) == item[0] and int(track.mkv_tid) == int(item[1])), "")
+        if entry_id and entry_id not in positions:
+            positions[entry_id] = position + 1
     groups = [
         {"id": "video", "label": "Video", "enabled": True, "priority": 300},
         {"id": "audio", "label": "Audio", "enabled": True, "priority": 200},
@@ -1516,16 +1787,21 @@ def remux_config_to_decision_profile(
         if include_selection:
             actions.append({"type": "set_enabled", "value": bool(track.enabled)})
         if include_metadata:
+            # Valeur vidée (origine renseignée) : effacement rejoué ; jamais renseignée : aucune action.
             if track.language:
                 actions.append({"type": "set_language", "value": normalize_lang(track.language, track.title)})
+            elif (track.orig_language or "").strip():
+                actions.append({"type": "set_language", "value": ""})
             if track.title:
                 actions.append({"type": "set_title", "value": track.title})
+            elif (track.orig_title or "").strip():
+                actions.append({"type": "set_title", "value": ""})
             if int(track.time_shift_ms or 0) != 0:
                 actions.append({"type": "set_time_shift_ms", "value": int(track.time_shift_ms or 0)})
         if include_flags:
             actions.append({"type": "set_flags", "value": _flag_action_payload(track)})
         if include_order and track.enabled:
-            actions.append({"type": "set_order_priority", "value": index + 1})
+            actions.append({"type": "set_order_priority", "value": positions.get(track.entry_id, index + 1)})
         if not actions:
             continue
         rule_id = f"{track.track_type}_{index + 1}"
@@ -1546,22 +1822,82 @@ def remux_config_to_decision_profile(
 
     if include_audio_variants:
         by_entry_id = {track.entry_id: track for track in original_tracks}
+        twins: dict[tuple[str, str, str, str], int] = {}
+        twin_rank: dict[str, int] = {}
+        twin_members: dict[tuple[str, str, str, str, str], list[tuple[int, int, str]]] = {}
+        for order, track in enumerate(all_tracks):
+            if track.is_new and track.track_type == "audio":
+                # Rang compté parmi les jumelles de même débit (population relue à l'application).
+                member_key = (track.source_entry_id, track.codec.upper(), track.title,
+                              normalize_lang(track.language, ""), str(_bitrate_from_display(track.display_info)))
+                twin_members.setdefault(member_key, []).append((positions.get(track.entry_id, 1_000_000), order,
+                                                                track.entry_id))
+        for members in twin_members.values():
+            for rank, (_position, _order, entry_id) in enumerate(sorted(members), start=1):
+                twin_rank[entry_id] = rank
+        # Variantes sœurs (même source, même codec) portant un titre / une langue : une variante vide à côté doit
+        # être effacée explicitement, sinon sa demande (joker) pourrait reprendre la sœur nommée.
+        titled_siblings: set[tuple[str, str]] = set()
+        languaged_siblings: set[tuple[str, str]] = set()
+        for track in all_tracks:
+            if track.is_new and track.track_type == "audio":
+                if (track.title or "").strip():
+                    titled_siblings.add((track.source_entry_id, track.codec.upper()))
+                if (track.language or "").strip():
+                    languaged_siblings.add((track.source_entry_id, track.codec.upper()))
+        for track in all_tracks:
+            if track.is_new and track.track_type == "audio":
+                key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
+                twins[key] = twins.get(key, 0) + 1
         for index, track in enumerate(track for track in all_tracks if track.is_new and track.track_type == "audio"):
             source_track = by_entry_id.get(track.source_entry_id)
             if source_track is None:
                 continue
-            codec = track.codec.lower() if track.codec.upper() != source_track.codec.upper() else "copy"
+            bitrate = _bitrate_from_display(track.display_info)
+            # « copy » seulement pour une copie réelle (même codec, même débit) : sinon codec explicite, pour que le
+            # débit soit appliqué à la recréation (le moteur l'ignore avec « copy »).
+            same_bitrate = not bitrate or bitrate == _bitrate_from_display(
+                source_track.orig_display_info or source_track.display_info)
+            codec = ("copy" if track.codec.upper() == source_track.codec.upper() and same_bitrate
+                     else track.codec.lower())
             action: dict[str, Any] = {
                 "type": "create_audio_variant",
                 "codec": codec,
                 "enabled": bool(track.enabled),
-                "language": normalize_lang(track.language or source_track.language, track.title),
+                "language": normalize_lang(track.language, track.title),
                 "title": track.title,
                 "flags": _flag_action_payload(track),
             }
-            bitrate = _bitrate_from_display(track.display_info)
+            # Titre / langue vidés alors que le clone hériterait d'une valeur (celle de l'original, rétablie par sa
+            # règle, ou celle du fichier) : effacement explicite.
+            sibling_key = (track.source_entry_id, track.codec.upper())
+            clear = [
+                name for name, value, current, physical, siblings in (
+                    ("title", track.title, source_track.title, source_track.physical_title, titled_siblings),
+                    ("language", track.language, source_track.language, source_track.physical_language,
+                     languaged_siblings),
+                )
+                if not (value or "").strip()
+                and ((current or "").strip() or (physical or "").strip() or sibling_key in siblings)
+            ]
+            if clear:
+                action["clear"] = clear
+            if int(track.time_shift_ms or 0) != int(source_track.time_shift_ms or 0):
+                # Décalage propre à la variante (recalage, saisie) : rejoué sur la variante créée ou reprise.
+                action["time_shift_ms"] = int(track.time_shift_ms or 0)
+            twin_key = (track.source_entry_id, track.codec.upper(), track.title, normalize_lang(track.language, ""))
             if bitrate:
                 action["bitrate_kbps"] = bitrate
+                if twins.get(twin_key, 0) > 1:
+                    # Variantes jumelles (même codec, titre, langue) : distinguées par leur débit à la reprise.
+                    action["match_bitrate"] = True
+                    action["codec"] = track.codec.lower()
+            if twins.get(twin_key, 0) > 1:
+                # Jumelles (même débit compris) : chacune sa variante, jamais partagée (sélection, drapeaux) ; rang
+                # = position dans le tableau parmi ses jumelles (reprise stable de la même variante).
+                action["twin"] = twin_rank[track.entry_id]
+            if include_order and track.enabled and track.entry_id in positions:
+                action["order_priority"] = positions[track.entry_id]
             rules.append(
                 {
                     "id": f"audio_variant_{index + 1}",

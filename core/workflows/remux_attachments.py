@@ -64,7 +64,9 @@ def write_mediainfo_nfo(
         if result.returncode:
             raise RemuxError(result.stderr or "MediaInfo échoué")
         nfo_text = _clean_mediainfo_nfo(result.stdout, output_path) if clean_nfo else result.stdout
-        nfo_path.write_text(nfo_text, encoding="utf-8", newline="")
+        from core.atomic_io import atomic_publish_bytes
+
+        atomic_publish_bytes(nfo_path, nfo_text.encode("utf-8"))  # remplacement atomique, droits conservés
         log_cb("OK", f"NFO généré : {nfo_path.name}")
     except Exception as exc:
         log_cb("WARN", f"Impossible de générer le NFO : {exc}")
@@ -135,6 +137,8 @@ def extract_attached_pics(
                 cli_path(out_path),
             ]
             log_cb("INFO", "$ " + " ".join(str(token) for token in cmd))
+            # Commande FFmpeg construite ici (argv), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,

@@ -67,6 +67,8 @@ from ..validation import MatroskaPacketValidation
 
 #: Types NAL des parameter sets (CodecPrivate hvcC et in-band).
 _PARAMETER_SET_TYPES = frozenset({32, 33, 34})  # VPS, SPS, PPS
+#: NAL dont une copie identique dans le même access unit n'apporte rien (parameter sets, SEI prefix).
+_DEDUPLICATED_TYPES = _PARAMETER_SET_TYPES | {39}
 
 _TRACK_TYPE_VIDEO = 1
 
@@ -83,6 +85,14 @@ class HevcPayloadRewriteResult:
     frames_rewritten: int
     codec_private_updated: bool
     dovi_mapping_written: bool
+    #: NAL à en-tête invalide (bit interdit, ``temporal_id`` nul) retirées du flux injecté.
+    discarded_nal_units: int = 0
+
+
+def discarded_nal_message(count: int) -> str:
+    """Journal : NAL à en-tête invalide retirées du flux réécrit (défaut de la source, sortie conforme)."""
+    return (f"Flux vidéo : {count} NAL à en-tête invalide retirée(s) (bit interdit ou temporal_id nul, "
+            "ignorées par les décodeurs) — flux de sortie conforme.")
 
 
 def _hvcc_length_size(codec_private: bytes) -> int | None:
@@ -151,8 +161,19 @@ def _au_to_block_payload(au: HevcAccessUnit, length_size: int | None) -> bytes:
     if all(nal.nal_type in _PARAMETER_SET_TYPES for nal in au.nal_units):
         return b""
     # Tri stable selon l'ordre canonique H.265 pour garantir que VPS/SPS/PPS
-    # précèdent impérativement les SEI prefix sur les keyframes.
-    ordered_nals = sorted(au.nal_units, key=lambda n: _canonical_nal_rank(n.nal_type))
+    # précèdent impérativement les SEI prefix sur les keyframes. Doublons exacts
+    # retirés : hevc_mp4toannexb recopie le CodecPrivate de l'encodeur (SEI x265
+    # compris) devant chaque IRAP qui porte déjà ses en-têtes.
+    seen: set[tuple[int, bytes]] = set()
+    unique_nals = []
+    for nal in au.nal_units:
+        if nal.nal_type in _DEDUPLICATED_TYPES:
+            key = (nal.nal_type, nal.payload)
+            if key in seen:
+                continue
+            seen.add(key)
+        unique_nals.append(nal)
+    ordered_nals = sorted(unique_nals, key=lambda n: _canonical_nal_rank(n.nal_type))
     if length_size is None:
         return b"".join(b"\x00\x00\x00\x01" + nal.payload for nal in ordered_nals)
     parts: list[bytes] = []
@@ -314,7 +335,7 @@ class MatroskaHevcPayloadRewriter:
             patch_flags=False,
         )
 
-        frames = {"count": 0}
+        frames = {"count": 0, "discarded": 0}
 
         def _packets() -> Iterator[MatroskaMuxPacket]:
             """Lockstep blocs encodés ↔ AUs injectés (mémoire bornée)."""
@@ -336,6 +357,7 @@ class MatroskaHevcPayloadRewriter:
                         "Désalignement strict : plus de blocs encodés que "
                         f"d'access units injectés (bloc #{sequence + 1})."
                     )
+                frames["discarded"] += access_unit.discarded_nal_units
                 rewritten_payload = _au_to_block_payload(access_unit, length_size)
                 if not rewritten_payload:
                     # Un bloc vide dans la sortie livrée violerait le contrat
@@ -376,6 +398,7 @@ class MatroskaHevcPayloadRewriter:
             frames_rewritten=frames["count"],
             codec_private_updated=updated_codec_private is not None,
             dovi_mapping_written=dovi_mapping is not None,
+            discarded_nal_units=frames["discarded"],
         )
 
 
@@ -426,7 +449,7 @@ def rewrite_file_video_payloads(
                          patch_language=False, patch_name=False, patch_flags=False)
         for track in tracks
     )
-    frames = {"count": 0}
+    frames = {"count": 0, "discarded": 0}
 
     def _packets() -> Iterator[MatroskaMuxPacket]:
         au_iter = iter_hevc_access_units(injected_hevc, max(64 * 1024, int(chunk_size)), cancel_cb=cancel_cb)
@@ -438,6 +461,7 @@ def rewrite_file_video_payloads(
                 if access_unit is None:
                     raise HevcPayloadAlignmentError(
                         f"Désalignement : plus de blocs vidéo que d'access units injectés (bloc #{frames['count'] + 1}).")
+                frames["discarded"] += access_unit.discarded_nal_units
                 payload = _au_to_block_payload(access_unit, length_size)
                 if not payload:
                     raise HevcPayloadAlignmentError(
@@ -464,10 +488,12 @@ def rewrite_file_video_payloads(
         frames_rewritten=frames["count"],
         codec_private_updated=codec_private is not None,
         dovi_mapping_written=False,
+        discarded_nal_units=frames["discarded"],
     )
 
 
 __all__ = [
+    "discarded_nal_message",
     "HevcPayloadAlignmentError",
     "HevcPayloadRewriteResult",
     "MatroskaHevcPayloadRewriter",

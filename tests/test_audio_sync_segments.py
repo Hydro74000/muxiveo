@@ -42,6 +42,8 @@ def _fake_sync_panel(**overrides):
         audio_sync_started=SimpleNamespace(emit=lambda *_a: None),
         _audio_sync_error=SimpleNamespace(emit=lambda *_a: None),
         _executor=SimpleNamespace(submit=lambda callback: callback()),
+        _preselected_reference=lambda *_a: None,
+        _remember_reference=lambda *_a: None,
     )
     state.update(overrides)
     return SimpleNamespace(**state)
@@ -349,6 +351,7 @@ def _choice_panel(tracks):
         _source_files=[SimpleNamespace(id="A", path=Path("a.mkv")), SimpleNamespace(id="B", path=Path("b.mkv"))],
         _track_table=SimpleNamespace(current_tracks=lambda: tracks),
         _audio_sync_family=panel.RemuxPanel._audio_sync_family,
+        _track_inherits_source_sync=lambda _track: True,
     )
 
 
@@ -820,7 +823,7 @@ def test_inconclusive_continuous_scan_proposes_the_spot_offset(monkeypatch):
 def test_inconclusive_continuous_scan_is_accepted_with_a_warning(monkeypatch):
     scanner = _inconclusive_scanner(monkeypatch, accept_coherent=True)
     warnings: list[str] = []
-    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=warnings.append)
+    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=lambda message, **_fields: warnings.append(message))
     assert calibration.segments[0].shift_ms == 37.0
     assert len(warnings) == 1 and "Synchro incertaine" in warnings[0]
 
@@ -831,7 +834,7 @@ def test_uncertain_offset_under_10_ms_is_not_applied(monkeypatch, accept_coheren
     scanner = _inconclusive_scanner(monkeypatch, accept_coherent=accept_coherent,
                                     shifts=(9.0, 2.0, 6.0, 10.0, 6.0, 11.0))
     warnings: list[str] = []
-    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=warnings.append)
+    calibration = scanner.scan(*_tracks(), detect_cuts=True, warn=lambda message, **_fields: warnings.append(message))
     assert [s.shift_ms for s in calibration.segments] == [0.0] and len(calibration.samples) == 6
     assert len(warnings) == 1 and "aucune correction" in warnings[0] and "+8 ms" in warnings[0]
 

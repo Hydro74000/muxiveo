@@ -180,7 +180,7 @@ def test_packet_reader_window_boundaries_and_oversized_packets(tmp_path, monkeyp
 
     # Fenêtre réduite : plusieurs remappings, un paquet plus grand que la
     # fenêtre, des en-têtes traversant sa frontière et des métadonnées groupées.
-    monkeypatch.setattr(module._MappedInput, "_WINDOW_BYTES", 4096)
+    monkeypatch.setattr(module._WindowedInput, "_WINDOW_BYTES", 4096)
     cluster = bytes.fromhex("1f43b675")
     media = b""
     for index in range(12):
@@ -201,7 +201,7 @@ def test_packet_reader_window_boundaries_and_oversized_packets(tmp_path, monkeyp
 def test_packet_reader_element_header_crosses_mapping_window(tmp_path, monkeypatch):
     import core.matroska.reader as module
 
-    monkeypatch.setattr(module._MappedInput, "_WINDOW_BYTES", 4096)
+    monkeypatch.setattr(module._WindowedInput, "_WINDOW_BYTES", 4096)
     prefix = element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff" + element(INFO_ID, b"")
     timestamp = uint_element(b"\xe7", 0)
     packet = element(b"\xa3", b"\x81\x00\x00\x80" + b"f" * 128)
@@ -215,24 +215,52 @@ def test_packet_reader_element_header_crosses_mapping_window(tmp_path, monkeypat
     assert list(reader.blocks()) == list(reader._blocks_stream())
 
 
-def test_packet_reader_closes_mapping_when_iteration_stops(tmp_path, monkeypatch):
+def test_packet_reader_releases_window_when_iteration_stops(tmp_path, monkeypatch):
     import core.matroska.reader as module
 
     path = _blocks_file(tmp_path, b"\x81\x00\x00\x80frame")
-    mappings = []
-    original = module.mmap.mmap
+    windows = []
+    original = module._WindowedInput.__init__
 
-    def record_mapping(*args, **kwargs):
-        result = original(*args, **kwargs)
-        mappings.append(result)
-        return result
+    def record_window(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        windows.append(self)
 
-    monkeypatch.setattr(module.mmap, "mmap", record_mapping)
+    monkeypatch.setattr(module._WindowedInput, "__init__", record_window)
     iterator = MatroskaReader(path).blocks()
     assert next(iterator).payload == b"frame"
-    assert mappings and not mappings[0].closed
+    assert windows and windows[0]._buffer is not None
     iterator.close()
-    assert all(mapping.closed for mapping in mappings)
+    assert all(window._buffer is None for window in windows)
+
+
+def test_packet_reader_reads_large_windows_sequentially(tmp_path, monkeypatch):
+    """Parcours séquentiel : quelques grandes lectures contiguës, jamais une par paquet."""
+    import core.matroska.reader as module
+
+    monkeypatch.setattr(module._WindowedInput, "_WINDOW_BYTES", 64 * 1024)
+    cluster = bytes.fromhex("1f43b675")
+    media = b"".join(
+        element(cluster, uint_element(b"\xe7", index * 40) + element(b"\xa3", b"\x81\x00\x00\x80" + bytes([index]) * 1000))
+        for index in range(200)
+    )
+    path = tmp_path / "sequential.mkv"
+    path.write_bytes(element(EBML_HEADER_ID, b"") + SEGMENT_ID + b"\xff" + element(INFO_ID, b"") + media)
+    reads: list[tuple[int, int]] = []
+    original = module._WindowedInput._ensure
+
+    def record(self, start, end):
+        before = self._buffer
+        result = original(self, start, end)
+        if result is not before:
+            reads.append((start, len(result)))
+        return result
+
+    monkeypatch.setattr(module._WindowedInput, "_ensure", record)
+    reader = MatroskaReader(path)
+    assert list(reader.blocks()) == list(reader._blocks_stream())
+    assert len(reads) <= path.stat().st_size // (64 * 1024) + 2
+    assert all(later[0] >= earlier[0] for earlier, later in zip(reads, reads[1:]))
 
 
 @pytest.mark.parametrize("corrupt", [b"\x00", b"\xa3", b"\xa3\x40", b"\xa3\x88", b"\xa3\x82\x81\x00"])

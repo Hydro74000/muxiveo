@@ -25,6 +25,7 @@ from core.workflows.audio_sync import SYNC_AUDIO_ORIGIN_FILTER  # noqa: F401  (r
 from core.workflows.common.audio_timestamps import (
     common_timestamp_origin, input_timestamp_offset_args, preroll_input_offset, probe_timestamp_payload, timestamp_seconds,
 )
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 if TYPE_CHECKING:
     from core.workflows.sync_calibration import SyncCalibration
@@ -40,6 +41,13 @@ TEXT_SUBTITLE_CODECS: frozenset[str] = frozenset({
 
 REWRITE_SUBTITLE_CODECS: frozenset[str] = TEXT_SUBTITLE_CODECS | CONVERT_TO_SRT
 REWRITE_AUDIO_CODECS: frozenset[str] = frozenset({"ac3", "eac3", "aac"})
+#: Downmix d'une variante AC-3 (5.1 au plus), comme ``build_audio_variant_command``.
+_DOWNMIX_51_ARGS = ("-ac:a", "6", "-channel_layout:a", "5.1")
+
+
+def _variant_channels(codec_key: str, channels: int) -> int:
+    """Canaux de sortie d'une variante : l'AC-3 s'arrête à 5.1."""
+    return 6 if codec_key == "ac3" and channels > 6 else channels
 SYNC_REWRITE_STAGE_PREFIX = "__MRE_SYNC_REWRITE_STAGE__ "
 SYNC_REWRITE_MODE_AUTO = ""
 SYNC_REWRITE_MODE_OFFSET = "offset"
@@ -182,6 +190,54 @@ def _advanced_audio_kind(codec_key: str, *, object_audio: bool) -> str:
     return ""
 
 
+def advanced_rewrite_output_codec(
+    source_codec_key: str, kind: str, *, target_codec: str = "", preserve_source: bool = True,
+) -> str:
+    """Codec produit par une réécriture audio avancée (règle unique : service et aperçu).
+
+    Copie / coupe : codec de la source ; lossless vers FLAC : FLAC ; WavPack ;
+    avec perte et variante demandée : directement le codec de la variante
+    (AC-3, E-AC-3, AAC, FLAC), sinon intermédiaire FLAC (un seul encodage avec perte).
+    """
+    if kind in {"eac3_joc", "dts", "dts_object", "truehd_object"}:
+        return source_codec_key
+    if kind == "lossless_to_flac":
+        output = "flac"
+    elif source_codec_key == "wv":
+        output = "wavpack"
+    else:
+        output = source_codec_key
+    if kind == "lossy" and not preserve_source:
+        requested = normalized_rewrite_codec(target_codec or "")
+        if requested and requested != source_codec_key:
+            output = requested if requested in REWRITE_AUDIO_CODECS or requested == "flac" else "flac"
+    return output
+
+
+def planned_rewrite_codec(
+    source_codec: str, target_codec: str, *, preserve_source: bool, advanced_audio: bool, offset_ms: int,
+) -> str | None:
+    """Codec de l'artefact d'une réécriture audio, prévu sans sonde (aperçu) ; ``None`` : non réécrite.
+
+    La sonde peut encore refuser la réécriture (canaux, audio objet) : l'aperçu
+    le présente comme une branche conditionnelle.
+    """
+    source_key = normalized_rewrite_codec(source_codec)
+    target_key = normalized_rewrite_codec(target_codec)
+    if source_key in REWRITE_AUDIO_CODECS:
+        if preserve_source:
+            return source_key
+        return target_key if target_key in REWRITE_AUDIO_CODECS else None
+    if not advanced_audio:
+        return None
+    kind = _advanced_audio_kind(source_key, object_audio=False)
+    if not kind or not _advanced_audio_kind_supports_offset(kind, int(offset_ms)):
+        return None
+    return advanced_rewrite_output_codec(
+        source_key, kind, target_codec=target_codec, preserve_source=preserve_source,
+    )
+
+
 def _advanced_audio_kind_supports_offset(kind: str, offset_ms: int) -> bool:
     if kind in {"eac3_joc", "dts", "dts_object", "truehd_object"}:
         return int(offset_ms or 0) < 0
@@ -300,6 +356,25 @@ def track_has_object_audio_metadata(
     return any(marker in haystack for marker in _OBJECT_AUDIO_MARKERS)
 
 
+def requested_audio_reencode(track) -> bool:
+    """Variante réencodée (autre codec, ou même codec à un autre débit) : conversion demandée,
+    l'audio objet éventuel de l'original n'y est déjà plus, son titre hérité ne compte pas.
+    Une copie (même codec, même description) reste l'original."""
+    codec = normalized_rewrite_codec(str(getattr(track, "codec", "") or ""))
+    original = normalized_rewrite_codec(str(getattr(track, "orig_codec", "") or getattr(track, "codec", "") or ""))
+    if not codec:
+        return False
+    if codec != original:
+        return True
+    if not getattr(track, "is_new", False):
+        return False
+    # Même codec : débit demandé différent (comparé en nombre, l'ordre des mentions du libellé change
+    # à la relecture d'un job sans rien demander).
+    display = str(getattr(track, "display_info", "") or "")
+    original_display = str(getattr(track, "orig_display_info", "") or display)
+    return audio_bitrate_kbps_from_display_info(display) != audio_bitrate_kbps_from_display_info(original_display)
+
+
 def audio_bitrate_kbps_from_display_info(display_info: str) -> int | None:
     match = re.search(
         r"(\d+(?:[.,]\d+)?)\s*(?:kbps|kb/s|kbit/s)",
@@ -413,6 +488,13 @@ def ui_sync_rewrite_can_toggle(
     enabled: bool,
     advanced_audio_enabled: bool = False,
 ) -> bool:
+    """Bascule « Sync réelle » / « Sync offset » : décalage constant seulement ; une calibration à
+    coupures ou cadence impose la réécriture (le mode offset ne la porterait pas)."""
+    from core.workflows.sync_calibration import effective_calibration
+
+    if effective_calibration(getattr(track, "sync_calibration", None),
+                             str(getattr(track, "track_type", "") or "audio")) is not None:
+        return False
     return ui_sync_rewrite_preview_for_track(
         track,
         enabled=enabled,
@@ -585,7 +667,7 @@ class SyncRewriteService:
                     rewrite_bitrate_kbps = self._normalize_audio_bitrate_kbps(
                         rewrite_codec_key,
                         audio_target_bitrate_kbps,
-                        channels_count,
+                        _variant_channels(rewrite_codec_key, channels_count),
                     )
                 out = self._rewrite_audio(
                     source=source,
@@ -601,6 +683,10 @@ class SyncRewriteService:
                     crossfade_ms=crossfade_ms,
                     source_origin_s=timestamp_seconds(probe.get("_timestamp_origin_s")),
                     sample_rate=_positive_int(probe.get("sample_rate")),
+                    downmix_51=(
+                        not preserve_source_audio_params
+                        and _variant_channels(rewrite_codec_key, channels_count) != channels_count
+                    ),
                 )
                 bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
                 self._log(
@@ -681,21 +767,30 @@ class SyncRewriteService:
                     source_timestamp_offset_s=timestamp_seconds(probe.get("_preroll_input_offset_s")),
                 )
 
-            rewrite_codec_key = self._advanced_audio_output_codec(source_codec_key, kind)
+            # Variante demandée : un seul encodage avec perte (directement au
+            # contrat), sinon intermédiaire FLAC puis variante.
+            rewrite_codec_key = advanced_rewrite_output_codec(
+                source_codec_key, kind, target_codec=audio_target_codec,
+                preserve_source=preserve_source_audio_params,
+            )
+            downmix_51 = (
+                kind == "lossy" and not preserve_source_audio_params
+                and _variant_channels(rewrite_codec_key, channels_count) != channels_count
+            )
             if kind == "truehd" and not self._truehd_reencode_supported(probe):
                 self._log(
                     "Sync réelle audio avancée ignorée: TrueHD/MLP sans Atmos hors layout "
                     f"supporté (stream={stream_index}); fallback offset."
                 )
                 return None
-            rewrite_bitrate_kbps = self._advanced_audio_bitrate_kbps(
+            rewrite_bitrate_kbps = None if rewrite_codec_key == "flac" else self._advanced_audio_bitrate_kbps(
                 codec_key=rewrite_codec_key,
                 source_codec_key=source_codec_key,
                 kind=kind,
                 audio_target_bitrate_kbps=audio_target_bitrate_kbps,
                 probe=probe,
                 display_info=display_info,
-                channels=channels_count,
+                channels=_variant_channels(rewrite_codec_key, channels_count),
             )
             out = self._rewrite_audio_advanced(
                 source=source,
@@ -708,6 +803,7 @@ class SyncRewriteService:
                 experimental=kind == "truehd",
                 cancel_cb=cancel_cb,
                 source_origin_s=timestamp_seconds(probe.get("_timestamp_origin_s")),
+                downmix_51=downmix_51,
             )
             bitrate_label = f", bitrate={rewrite_bitrate_kbps} kbps" if rewrite_bitrate_kbps else ""
             self._log(
@@ -830,9 +926,12 @@ class SyncRewriteService:
         crossfade_ms: int = 80,
         source_origin_s: float = 0.0,
         sample_rate: int | None = None,
+        downmix_51: bool = False,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
-        bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else self._audio_bitrate_kbps(codec_key, channels)
+        bitrate = bitrate_kbps if bitrate_kbps and bitrate_kbps > 0 else self._audio_bitrate_kbps(
+            codec_key, 6 if downmix_51 else channels,
+        )
         cmd = [
             self._ffmpeg,
             "-hide_banner", "-y",
@@ -861,23 +960,17 @@ class SyncRewriteService:
         cmd.extend([
             "-c:a", codec_key,
             "-b:a", f"{bitrate}k",
+            *(_DOWNMIX_51_ARGS if downmix_51 else ()),
         ])
         # Le PCM est déjà recalé par asetpts ; préserver le pré-roll encodeur
         # pour que le CodecDelay Matroska ne crée pas un retard supplémentaire.
         cmd.extend([
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ])
         self._run_checked(cmd, destination, "Réécriture sync audio échouée", cancel_cb=cancel_cb)
         return destination
-
-    @staticmethod
-    def _advanced_audio_output_codec(source_codec_key: str, kind: str) -> str:
-        if kind == "lossless_to_flac":
-            return "flac"
-        if source_codec_key == "wv":
-            return "wavpack"
-        return source_codec_key
 
     @staticmethod
     def _truehd_reencode_supported(probe: Mapping[str, object]) -> bool:
@@ -944,6 +1037,7 @@ class SyncRewriteService:
         experimental: bool = False,
         cancel_cb: Callable[[], bool] | None = None,
         source_origin_s: float = 0.0,
+        downmix_51: bool = False,
     ) -> Path:
         destination = self._unique_path(tmp_dir, f"sync_rewrite_{token}.mka")
         if offset_ms > 0:
@@ -968,8 +1062,10 @@ class SyncRewriteService:
                 bitrate_kbps=bitrate_kbps,
                 experimental=experimental,
             ),
+            *(_DOWNMIX_51_ARGS if downmix_51 else ()),
         ])
         cmd.extend([
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ])
@@ -1002,6 +1098,7 @@ class SyncRewriteService:
             "-c:a", "copy",
             "-bsf:a", "setts=pts=PTS-STARTPTS:dts=DTS-STARTDTS",
             "-avoid_negative_ts", "make_zero",
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ])
@@ -1059,6 +1156,7 @@ class SyncRewriteService:
             "-i", str(shifted),
             "-map", "0:0",
             "-c:s", "copy",
+            *matroska_output_args(self._ffmpeg),
             "-f", "matroska",
             str(destination),
         ]
@@ -1117,6 +1215,8 @@ class SyncRewriteService:
         cancel_cb: Callable[[], bool] | None = None,
     ) -> None:
         self._emit_tool_progress("$ " + " ".join(str(part) for part in cmd))
+        # Commande FFmpeg construite par le service (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         with subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -1438,6 +1538,8 @@ class SyncRewriteService:
 
 __all__ = [
     "EmptySubtitleRewrite",
+    "advanced_rewrite_output_codec",
+    "planned_rewrite_codec",
     "REWRITE_AUDIO_CODECS",
     "REWRITE_SUBTITLE_CODECS",
     "SYNC_REWRITE_MODE_AUTO",

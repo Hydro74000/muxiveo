@@ -28,6 +28,7 @@ elle est encore utilisée).
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 import os
 import platform as _platform
 import re
@@ -48,7 +49,7 @@ from pathlib import Path
 from core.atomic_io import atomic_write_text
 from core.file_lock import FileLock, lock_is_free
 from core.github_release import ReleaseAsset, fetch_release_by_repo, file_sha256, select_asset, verify_download
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_probe
 from core.version import (
     APP_USER_AGENT,
     MUXIVEO_PLUGINS_REPOSITORY,
@@ -421,8 +422,40 @@ def _remove_tree(path: Path) -> bool:
         return False  # bibliothèque encore chargée (Windows) : retirée au prochain nettoyage
 
 
+#: Verrous d'installation, hors des dossiers supprimables : ``<racine des extensions>/.locks/<id>.lock``.
+_LOCKS_DIR = ".locks"
+#: Attente maximale du verrou d'une installation ou d'un retrait (un autre processus modifie l'extension).
+_LOCK_WAIT_S = 30.0
+
+
+@contextmanager
+def _modifying(spec: PluginSpec, root: Path | None, *, wait: float | None):
+    """Verrou d'installation de l'extension (racine jamais supprimée), détenu pendant toute la modification.
+
+    ``wait`` : attente bornée (installation, retrait ; dépassement → :class:`PluginError`) ; ``None`` : essai non
+    bloquant (nettoyage : verrou pris ailleurs → ``False``, rien n'est touché)."""
+    folder = (root or plugins_root()) / _LOCKS_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(folder / f"{spec.id}.lock")
+    acquired = lock.try_acquire()
+    if not acquired and wait is not None:
+        deadline = time.monotonic() + wait
+        while not acquired and time.monotonic() < deadline:
+            time.sleep(0.1)
+            acquired = lock.try_acquire()
+        if not acquired:
+            raise PluginError("Extension en cours de modification par un autre processus ; réessayez ensuite")
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            lock.release()
+
+
 class PluginLease:
-    """Maintient les fichiers d'une version FEL tant qu'une bibliothèque est référencée."""
+    """Maintient les fichiers d'une version d'extension tant qu'elle sert (bibliothèque FEL chargée, moteur
+    muxiveo-rife ou accélération TensorRT d'un encodage, sonde) : jamais retirée par le nettoyage ni par
+    ``remove`` pendant ce temps."""
 
     def __init__(self, version_dir: Path) -> None:
         self.lock = FileLock(version_dir / f".lease-{uuid.uuid4().hex}")
@@ -439,7 +472,44 @@ class PluginLease:
         self.lock.release(unlink=True)
 
 
-def _remove_fel_version(path: Path) -> bool:
+def lease_for(path: Path | str | None, root: Path | None = None) -> PluginLease | None:
+    """Bail de la version d'extension qui contient ``path`` (exécutable, dossier), ``None`` hors des extensions
+    installées dans le dossier utilisateur (binaire du système, paquet tout compris). Version en cours de
+    modification ou retirée : :class:`PluginError`."""
+    if not path:
+        return None
+    try:
+        base = (root or plugins_root()).resolve()
+        resolved = Path(path).expanduser().resolve()
+        relative = resolved.relative_to(base)
+    except (OSError, ValueError):
+        return None
+    parts = relative.parts
+    if len(parts) < 2 or parts[0] == _LOCKS_DIR:
+        return None
+    version_dir = base / parts[0] / parts[1]
+    if not (version_dir / "manifest.json").is_file():
+        return None
+    return PluginLease(version_dir)
+
+
+def leases_for(*paths: Path | str | None, root: Path | None = None) -> list[PluginLease]:
+    """Baux de toutes les versions utilisées par un traitement (moteur, accélération) ; échec : aucun gardé."""
+    leases: list[PluginLease] = []
+    try:
+        for path in paths:
+            lease = lease_for(path, root)
+            if lease is not None:
+                leases.append(lease)
+    except BaseException:
+        for lease in leases:
+            lease.release()
+        raise
+    return leases
+
+
+def _remove_version(path: Path) -> bool:
+    """Retire une version d'extension, sauf si un bail la maintient (retrait reporté au nettoyage suivant)."""
     gate = FileLock(path.parent / ".usage.lock")
     if not gate.try_acquire():
         return False
@@ -455,6 +525,11 @@ def _cache_of(spec: PluginSpec, cache_dir: Path | None) -> Path | None:
     if cache_dir is not None:
         return cache_dir
     return spec.cache_dir() if spec.cache_dir is not None else None
+
+
+def _check_cancelled(cancel: threading.Event | None) -> None:
+    if cancel is not None and cancel.is_set():
+        raise PluginCancelled("installation annulée")
 
 
 def install(
@@ -476,6 +551,14 @@ def install(
     if not spec.supports(platform):
         raise PluginError("plate-forme non prise en charge")
     assert platform is not None
+    with _modifying(spec, root, wait=_LOCK_WAIT_S):  # téléchargement, activation et nettoyage sous le verrou
+        return _install_locked(spec, root, platform, version=version, progress=progress, cancel=cancel,
+                               asset=asset, cache_dir=cache_dir)
+
+
+def _install_locked(spec: PluginSpec, root: Path | None, platform: str, *, version: str | None,
+                    progress: ProgressFn | None, cancel: threading.Event | None, asset: ReleaseAsset | None,
+                    cache_dir: Path | None) -> InstalledPlugin:
     version = version or spec.min_version
     previous = installed_plugin(spec, root, platform)
     base = _plugin_dir(spec, root)
@@ -488,6 +571,7 @@ def install(
         _download(asset, archive, progress, cancel)
         staging.mkdir()
         _extract(archive, staging, asset.name.endswith(".zip"))
+        _check_cancelled(cancel)
         entries = [p for p in staging.iterdir()]
         if len(entries) != 1 or not entries[0].is_dir():
             raise PluginError("structure d'archive inattendue")
@@ -495,6 +579,7 @@ def install(
         if str(manifest.get("version")) != version:
             raise PluginError(f"version {manifest.get('version')} au lieu de {version}")
         _verify_files(entries[0], manifest)
+        _check_cancelled(cancel)  # dernière occasion : ensuite la version est activée
         target = base / f"{version}-{token}"
         entries[0].rename(target)
         atomic_write_text(base / _POINTER, json.dumps(
@@ -506,7 +591,7 @@ def install(
     cache = _cache_of(spec, cache_dir)
     if (previous is None or previous.version != version) and cache is not None:
         _remove_tree(cache)
-    cleanup_orphans(spec, root)
+    _cleanup_locked(spec, root)
     plugin = installed_plugin(spec, root, platform)
     if plugin is None:
         raise PluginError("extension installée mais illisible")
@@ -514,17 +599,24 @@ def install(
 
 
 def remove(spec: PluginSpec, root: Path | None = None, cache_dir: Path | None = None) -> bool:
-    """Supprime l'extension (et son cache) ; faux si des fichiers encore utilisés restent."""
-    base = _plugin_dir(spec, root)
-    (base / _POINTER).unlink(missing_ok=True)
-    if spec.id == FEL_PLUGIN_ID and base.is_dir():
-        complete = all([_remove_fel_version(path) for path in base.iterdir() if path.is_dir()])
-    else:
-        complete = _remove_tree(base)
-    cache = _cache_of(spec, cache_dir)
-    if cache is not None:
-        _remove_tree(cache)
-    return complete
+    """Supprime l'extension (et son cache) sous le verrou d'installation ; faux si une version encore utilisée
+    (bail) ou des fichiers verrouillés restent : retrait reporté au nettoyage suivant."""
+    with _modifying(spec, root, wait=_LOCK_WAIT_S):
+        base = _plugin_dir(spec, root)
+        (base / _POINTER).unlink(missing_ok=True)
+        complete = True
+        if base.is_dir():
+            for entry in base.iterdir():
+                if entry.is_dir():
+                    complete = _remove_version(entry) and complete
+                elif entry.name.startswith(".download-"):
+                    entry.unlink(missing_ok=True)
+            if complete:
+                complete = _remove_tree(base)
+        cache = _cache_of(spec, cache_dir)
+        if cache is not None:
+            _remove_tree(cache)
+        return complete
 
 
 def _probe_y4m() -> bytes:
@@ -537,15 +629,29 @@ def _probe_y4m() -> bytes:
 
 
 def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = None,
-            log: Callable[[str], None] | None = None, timeout: float = 300.0) -> list[str]:
+            log: Callable[[str], None] | None = None, timeout: float = 300.0,
+            cancel: threading.Event | None = None) -> list[str]:
     """Prépare (et met en cache) le moteur TensorRT de chaque modèle fourni ; retourne les échecs.
 
     Sert aussi de test de bon fonctionnement juste après l'installation. Les modèles dont muxiveo-rife n'a
-    pas la version ncnn (repli Vulkan) sont ignorés.
+    pas la version ncnn (repli Vulkan) sont ignorés. ``cancel`` : préparation en cours tuée, puis
+    :class:`PluginCancelled`.
     """
     cache_dir = cache_dir or trt_engine_cache_dir()
     models_dir = Path(shutil.which(rife_bin) or rife_bin).resolve().parent / "rife-models"
     failures: list[str] = []
+    # Moteur et accélération loués pendant tout le préchauffage : jamais retirés par un nettoyage concurrent.
+    leases = leases_for(shutil.which(rife_bin) or rife_bin, plugin.path)
+    try:
+        return _warm_up_leased(rife_bin, plugin, cache_dir, models_dir, failures, log, timeout, cancel)
+    finally:
+        for lease in leases:
+            lease.release()
+
+
+def _warm_up_leased(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path, models_dir: Path, failures: list[str],
+                    log: Callable[[str], None] | None, timeout: float,
+                    cancel: threading.Event | None) -> list[str]:
     with tempfile.TemporaryDirectory(prefix="muxiveo-trt-") as tmp:
         source = Path(tmp) / "probe.y4m"
         source.write_bytes(_probe_y4m())
@@ -563,11 +669,10 @@ def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = Non
             if log:
                 log(name)
             try:
-                # Binaire muxiveo-rife configuré, arguments construits ici, sans shell.
-                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                result = subprocess.run(  # nosec B603
-                    cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs()
-                )
+                # Binaire muxiveo-rife configuré, arguments construits ici, sans shell ; tué à l'annulation.
+                result = run_probe(cmd, timeout=timeout, cancel_event=cancel)
+            except ProbeCancelledError as exc:
+                raise PluginCancelled("préparation du moteur annulée") from exc
             except (OSError, subprocess.SubprocessError) as exc:
                 failures.append(f"{name} : {exc}")
                 continue
@@ -578,7 +683,14 @@ def warm_up(rife_bin: str, plugin: InstalledPlugin, cache_dir: Path | None = Non
 
 
 def cleanup_orphans(spec: PluginSpec, root: Path | None = None) -> None:
-    """Retire les versions remplacées et les restes de téléchargements interrompus."""
+    """Retire les versions remplacées et les restes de téléchargements interrompus, seulement si aucun autre
+    processus ne modifie l'extension (verrou d'installation pris : rien n'est touché) ; versions louées gardées."""
+    with _modifying(spec, root, wait=None) as acquired:
+        if acquired:
+            _cleanup_locked(spec, root)
+
+
+def _cleanup_locked(spec: PluginSpec, root: Path | None) -> None:
     base = _plugin_dir(spec, root)
     if not base.is_dir():
         return
@@ -587,10 +699,7 @@ def cleanup_orphans(spec: PluginSpec, root: Path | None = None) -> None:
         if entry.name == _POINTER or (current is not None and entry == current.path):
             continue
         if entry.is_dir():
-            if spec.id == FEL_PLUGIN_ID:
-                _remove_fel_version(entry)
-            else:
-                _remove_tree(entry)
+            _remove_version(entry)  # ``.staging-*`` compris (sans bail) ; version louée gardée
         elif entry.name.startswith(".download-"):
             entry.unlink(missing_ok=True)
 
@@ -613,6 +722,8 @@ __all__ = [
     "fetch_feed",
     "install",
     "installed_plugin",
+    "lease_for",
+    "leases_for",
     "main_file",
     "parse_feed",
     "platform_tag",

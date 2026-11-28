@@ -87,7 +87,9 @@ def test_windows_job_runs_real_cmd_and_lock_tests():
     windows = text[text.index("  windows:"):]
     assert "runs-on: windows-latest" in windows
     assert "scripts/windows_pytest_bootstrap.py" not in windows
-    for test_file in ("test_encode_preview_quoting.py", "test_output_commit.py", "test_workdir_ownership.py"):
+    for test_file in ("test_encode_preview_quoting.py", "test_output_commit.py", "test_workdir_ownership.py",
+                      "test_output_commit_policy.py", "test_main_window_extensions.py", "test_service_hdr_cancel.py",
+                      "test_nvencc_install.py"):
         assert f"tests/{test_file}" in windows
         assert (_WORKFLOWS.parents[1] / "tests" / test_file).is_file()
 

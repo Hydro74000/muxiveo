@@ -962,7 +962,6 @@ def build_encode_workflow(tools: ToolPaths) -> EncodeWorkflow:
         ffprobe_bin=tools.ffprobe,
         dovi_tool_bin=tools.dovi_tool,
         hdr10plus_bin=tools.hdr10plus_tool,
-        ram_buffer_enabled=False,
         ffmpeg_threads=4,
     )
     workflow._bins["mediainfo"] = tools.mediainfo

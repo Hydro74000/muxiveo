@@ -86,12 +86,10 @@ jobs:
       - name: Install System Dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: ffmpeg libegl1 libgl1 libglib2.0-0
+          packages: libegl1 libgl1 libglib2.0-0
 
-      - name: FFmpeg version
-        run: |
-          ffmpeg -version
-          ffprobe -version
+      - name: Install FFmpeg master
+        uses: ./.github/actions/ffmpeg-master
 
       - name: Install Python Dependencies
         run: |

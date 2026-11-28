@@ -50,6 +50,32 @@ Deux départs sont possibles :
 - **Profil vide** : construire les règles à la main ;
 - **Capturer l'état courant** : partir de la table de pistes actuelle puis ajuster.
 
+Un titre ou une langue vidés dans la table sont capturés comme un effacement : action `set_title` /
+`set_language` à valeur vide pour une piste d'origine, `"clear": ["title", "language"]` pour une variante audio
+(`create_audio_variant`). Une valeur jamais renseignée ne produit aucune action. Dans l'éditeur, la case
+**Effacer** à côté de **Langue** et de **Titre pattern** écrit cet effacement ; un champ vide n'écrit rien. Sans
+`clear`, un `title` ou une `language` vides d'une variante reprennent ceux de la piste source (profils existants
+inchangés). Le drapeau Matroska `FlagEnabled` d'une variante passe par `flags.enabled` ; la clé `enabled` de
+l'action reste la sélection de la piste.
+
+Reprise d'une variante déjà présente : une demande sans effacement suit la règle historique, dans l'ordre des
+actions (première variante du même codec dont le titre et la langue demandés correspondent ; titre ou langue non
+demandés : n'importe laquelle ; plusieurs demandes peuvent reprendre la même variante ; l'héritage reprend donc
+toute variante du codec déjà présente ou créée par une action précédente). Une demande d'effacement (`clear`) reçoit
+une variante qui lui est propre (vide sur le champ effacé), jamais partagée avec les autres demandes, et les
+variantes vides existantes sont réparties entre les effacements sans doublon, quel que soit leur ordre.
+
+L'éditeur réécrit seulement ce que vous modifiez : une règle ouverte puis enregistrée sans changement ressort
+identique (ordre des actions, actions répétées, paramètres comme `write_mode`, critères qu'il n'affiche pas, par
+exemple les canaux d'une règle capturée, `required`, `weight`, sous-critères `any` / `not`) ; un champ modifié
+remplace ses actions ou ses critères à l'emplacement du premier (modifier la langue remplace toutes les conditions
+de langue affichées). Les critères vidéo sont modifiés en place : renseigner la hauteur ne change que la hauteur
+(condition `height`, et hauteur de `resolution` ; la largeur de `resolution` reste la sienne), vider une dimension
+de `resolution` la remplace par une condition sur l'autre dimension (mêmes `required` / `weight`), et cocher une
+case HDR ne change que son bit dans `video_flags_hex` (profondeur, résolution… conservées). Les variantes demandées par les règles sont affectées après
+toutes les règles : seules les règles et groupes actifs comptent, et le clone garde l'état de la piste source au
+moment de l'action.
+
 Les modèles disponibles couvrent les usages principaux : sélection vidéo, garder une langue, exclure commentaire, renommer, flags, ordre, variante audio et tag temporaire.
 
 ## Comprendre une règle
@@ -249,12 +275,21 @@ Exemples :
 
 Si une valeur manque, Muxiveo l'omet et nettoie les espaces ou séparateurs inutiles.
 
+`{file_language}` et `{file_title}` sont la langue et le titre lus dans le fichier : contrairement à `{language}` /
+`{title}` (valeurs courantes, modifiées par les règles déjà appliquées) et à `{source_language}` / `{source_title}`
+(état du tableau au départ quand le profil est appliqué depuis le panneau), ils ne changent jamais ; une variante
+garde ceux du flux dont elle dérive. Les règles capturées s'y ancrent : `file_language is fr-FR` (ou `missing` pour
+une piste sans langue), et `file_title is <titre du fichier>` en critère préféré pour départager des pistes de même
+langue et de même codec. Elles retrouvent ainsi la même piste sur un fichier fraîchement inspecté comme sur un
+tableau déjà modifié ou à la deuxième application. Les profils capturés avant cette version (`source_title`) gardent
+leur comportement : les recapturer pour en profiter.
+
 Keywords disponibles au premier lot :
 
 ```text
 {type} {source_index} {track_index}
-{language} {lang} {lang_name} {source_language}
-{title} {source_title}
+{language} {lang} {lang_name} {source_language} {file_language}
+{title} {source_title} {file_title}
 {codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object}
 {atmos} {dtsx} {codec_atmos} {codec_dtsx}
 {resolution} {width} {height} {hdr} {video_flags_hex}
@@ -381,5 +416,8 @@ muxiveo --cli preview --config exact-job.json
 muxiveo --cli run --config exact-job.json
 muxiveo --cli batch --template exact-job.json --input-dir "Serie" --output-dir "out"
 ```
+
+Chaque piste et variante y porte ses flags Matroska complets, `flags.enabled` (`FlagEnabled`) compris, distinct
+de la sélection `enabled` ; un job exporté avant cette clé garde le drapeau de l'inspection.
 
 Utilisez un exact job quand la structure des sources est stable. Utilisez un profil décisionnel quand les sources varient mais que vos décisions restent les mêmes.

@@ -45,7 +45,7 @@ jobs:
         run: python -m pip install pytest
 
       - name: Update process tests
-        run: python -m pytest -v --noconftest -p no:cacheprovider tests/test_update_apply.py
+        run: python -m pytest -v --noconftest -p no:cacheprovider tests/test_update_apply.py tests/test_update_transactions.py
 
       - name: Source marker (archive réelle)
         if: runner.os == 'Linux'
@@ -76,7 +76,7 @@ jobs:
       - name: Install packaging dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller pillow
+          python -m pip install -r requirements.txt -r requirements-build.txt
 
       - name: Build old app
         shell: bash

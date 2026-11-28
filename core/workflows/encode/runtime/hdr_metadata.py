@@ -142,6 +142,8 @@ class HdrMetadataProbeService:
     def load_mediainfo_video_tracks(self, path: Path) -> list[dict]:
         mediainfo_bin = self._tool_bin("mediainfo")
         try:
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 [mediainfo_bin, "--Output=JSON", str(path)],
                 capture_output=True,
@@ -243,6 +245,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -325,6 +329,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -437,127 +443,6 @@ class HdrMetadataProbeService:
             warning="" if verified else "Aucune keyframe vérifiée avec les métadonnées HDR demandées.",
         )
 
-    def select_preview_scenes_random(
-        self,
-        source: Path,
-        *,
-        count: int,
-        stream_index: int = 0,
-        source_duration_s: float | None = None,
-        skip_lead_s: float = 1.0,
-        skip_tail_s: float = 5.0,
-        prefer_dovi: bool = False,
-        prefer_hdr10plus: bool = False,
-        progress_cb: Callable[[str], None] | None = None,
-        progress_pct_cb: Callable[[int], None] | None = None,
-    ) -> tuple[DynamicHdrPreviewSceneSelection, ...]:
-        """Choisit `count` keyframes uniformément réparties sur la durée.
-
-        - SDR : pas de probe (ffmpeg snappera sur la keyframe la plus proche au moment du extract).
-        - HDR : on récupère les timestamps des keyframes par demux paquet (rapide, sans décodage)
-          puis on tire au hasard une keyframe par bucket de durée. Garantit que les frames
-          extraites portent DoVi RPU / HDR10+ SEI (qui ne sont fiables qu'aux keyframes).
-        """
-        if count <= 0:
-            return ()
-
-        duration = float(source_duration_s or 0.0)
-        min_t = max(0.0, float(skip_lead_s))
-        max_t = max(min_t + 0.1, duration - float(skip_tail_s)) if duration > 0 else None
-        if max_t is None or max_t <= min_t:
-            return ()
-
-        wants_dynamic = bool(prefer_dovi or prefer_hdr10plus)
-        if not wants_dynamic:
-            bucket_size = (max_t - min_t) / count
-            selections: list[DynamicHdrPreviewSceneSelection] = []
-            for i in range(count):
-                lo = min_t + i * bucket_size
-                hi = min_t + (i + 1) * bucket_size
-                t = random.uniform(lo, hi)
-                selections.append(DynamicHdrPreviewSceneSelection(
-                    requested_time_s=t,
-                    scene_time_s=t,
-                ))
-            if progress_pct_cb is not None:
-                progress_pct_cb(100)
-            return tuple(selections)
-
-        keyframes = self.preview_keyframe_times(
-            source,
-            stream_index=stream_index,
-            source_duration_s=source_duration_s,
-            progress_cb=progress_cb,
-            progress_pct_cb=progress_pct_cb,
-        )
-        in_range = [k for k in keyframes if min_t <= k <= max_t]
-        if not in_range:
-            # Pas de keyframe dans la fenêtre utile, fallback au tirage uniforme
-            bucket_size = (max_t - min_t) / count
-            return tuple(
-                DynamicHdrPreviewSceneSelection(
-                    requested_time_s=(t := random.uniform(min_t + i * bucket_size, min_t + (i + 1) * bucket_size)),
-                    scene_time_s=t,
-                )
-                for i in range(count)
-            )
-
-        bucket_size = (max_t - min_t) / count
-        labels = [n for n, f in (("DoVi", prefer_dovi), ("HDR10+", prefer_hdr10plus)) if f]
-        verified_reason = f"I-frame {'/'.join(labels)}"
-        fallback_reason = f"I-frame {'/'.join(labels)} (non vérifiée)"
-
-        def _verify(time_s: float) -> bool:
-            return self.verify_keyframe_hdr_at(
-                source,
-                time_s=time_s,
-                stream_index=stream_index,
-                require_dovi=prefer_dovi,
-                require_hdr10plus=prefer_hdr10plus,
-            )
-
-        results: list[DynamicHdrPreviewSceneSelection] = []
-        used: set[float] = set()
-        for i in range(count):
-            lo = min_t + i * bucket_size
-            hi = min_t + (i + 1) * bucket_size
-            bucket = [k for k in in_range if lo <= k <= hi and k not in used]
-            random.shuffle(bucket)
-            pick = None
-            verified = False
-            for candidate in bucket[:6]:
-                if _verify(candidate):
-                    pick = candidate
-                    verified = True
-                    break
-            if pick is None and bucket:
-                pick = bucket[0]
-            if pick is None:
-                continue
-            used.add(pick)
-            results.append(DynamicHdrPreviewSceneSelection(
-                requested_time_s=pick,
-                scene_time_s=pick,
-                reason=verified_reason if verified else fallback_reason,
-            ))
-
-        if len(results) < count:
-            remaining = [k for k in in_range if k not in used]
-            random.shuffle(remaining)
-            for candidate in remaining:
-                if len(results) >= count:
-                    break
-                verified = _verify(candidate)
-                used.add(candidate)
-                results.append(DynamicHdrPreviewSceneSelection(
-                    requested_time_s=candidate,
-                    scene_time_s=candidate,
-                    reason=verified_reason if verified else fallback_reason,
-                ))
-
-        results.sort(key=lambda s: s.scene_time_s)
-        return tuple(results)
-
     def source_hdr_transfer(self, source: Path, stream_index: int | None = None) -> str:
         """Renvoie "pq" (HDR10/DoVi), "hlg" ou "" (SDR) selon le color_transfer du flux."""
         cmd = [
@@ -569,6 +454,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -580,7 +467,8 @@ class HdrMetadataProbeService:
             return ""
         if result.returncode != 0:
             return ""
-        transfer = (result.stdout or "").strip().lower()
+        # Sortie CSV : FFmpeg ≥ 8.1 ajoute un champ (vide) par side data de flux (Dolby Vision) → « smpte2084, ».
+        transfer = (result.stdout or "").strip().split(",", 1)[0].strip().lower()
         if transfer in {"smpte2084", "smpte2084le"}:
             return "pq"
         if transfer in {"arib-std-b67", "bt2020-10", "bt2020-12"}:
@@ -626,6 +514,8 @@ class HdrMetadataProbeService:
         timeout_s = 300
         probe: DynamicHdrPreviewProbeResult
         try:
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -714,6 +604,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -787,6 +679,8 @@ class HdrMetadataProbeService:
         keyframes: list[float] = []
         timed_out = False
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -987,6 +881,8 @@ class HdrMetadataProbeService:
 
         mediainfo_bin = self._tool_bin("mediainfo")
         try:
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             hdr_format = subprocess.run(
                 [mediainfo_bin, "--Inform=Video;%HDR_Format%", str(source)],
                 capture_output=True,
@@ -994,6 +890,8 @@ class HdrMetadataProbeService:
                 timeout=20,
                 **subprocess_text_kwargs(),
             )
+            # Outil configuré (MediaInfo, FFmpeg), arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             hdr_compat = subprocess.run(
                 [mediainfo_bin, "--Inform=Video;%HDR_Format_Compatibility%", str(source)],
                 capture_output=True,
@@ -1049,6 +947,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True, check=False, timeout=10,
@@ -1069,6 +969,8 @@ class HdrMetadataProbeService:
         ]
         cmd.extend(ffprobe_input_args(source))
         try:
+            # Outil configuré, arguments séparés, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 cmd,
                 capture_output=True, check=False, timeout=20,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr
 from dataclasses import dataclass, replace
@@ -388,6 +389,10 @@ class HybridStudio(QWidget):
     # Préparation d'une ligne du lot : génération, ligne, plan, calibration / message.
     prepared = Signal(int, int, object, object)
     failed = Signal(int, int, str)
+    #: Épisode refusé pour synchro impossible (génération, ligne, ``SyncUnavailableError``) : la saison continue.
+    sync_refused = Signal(int, int, object)
+    #: Fin d'une opération avec des épisodes refusés pour synchro impossible : texte du récapitulatif.
+    sync_refusals_ready = Signal(str)
     ready_changed = Signal(bool)
     op_state_changed = Signal(str, str)
     op_progress = Signal(str)
@@ -425,6 +430,9 @@ class HybridStudio(QWidget):
         self._defer_audio_sync = False
         # Échecs par ligne : un épisode en échec n'interrompt pas la saison.
         self._prepare_failures: dict[int, str] = {}
+        #: Lignes refusées pour synchro impossible : exclues des préparations automatiques et du lancement.
+        self._sync_refused_rows: dict[int, object] = {}
+        self._sync_recap_shown = False
         # Seules les sorties confirmées de cette session peuvent être sautées
         # à la relance ; une sortie préexistante ou remplacée reste une collision.
         self._completed_jobs: dict[int, tuple[Any, tuple[int, int, int, int]]] = {}
@@ -683,6 +691,13 @@ class HybridStudio(QWidget):
         self.recipe_status_lbl.setStyleSheet(f"color: {_C.TEXT_SEC}; font-size: {_font_px(11)}px;")
         wit_actions.addWidget(self.recipe_status_lbl)
         wit_actions.addStretch()
+        # Recette partagée avec le CLI (`hybrid --recipe`, `--save-recipe`).
+        self.export_recipe_btn = _secondary_button(translate_text("Exporter la recette…"))
+        self.export_recipe_btn.clicked.connect(self.export_recipe)
+        wit_actions.addWidget(self.export_recipe_btn)
+        self.import_recipe_btn = _secondary_button(translate_text("Importer la recette…"))
+        self.import_recipe_btn.clicked.connect(self.import_recipe)
+        wit_actions.addWidget(self.import_recipe_btn)
         cwit_layout.addLayout(wit_actions)
 
         layout.addWidget(card_witness)
@@ -907,6 +922,7 @@ class HybridStudio(QWidget):
 
         self.prepared.connect(self.on_prepared, Qt.ConnectionType.QueuedConnection)
         self.failed.connect(self._on_episode_failed, Qt.ConnectionType.QueuedConnection)
+        self.sync_refused.connect(self._on_sync_refused, Qt.ConnectionType.QueuedConnection)
         self.witness_inspected.connect(self._on_witness_inspected, Qt.ConnectionType.QueuedConnection)
         self.single_calibration_done.connect(self._on_single_calibration_done, Qt.ConnectionType.QueuedConnection)
         self.single_calibration_failed.connect(self._on_single_calibration_failed, Qt.ConnectionType.QueuedConnection)
@@ -1043,6 +1059,7 @@ class HybridStudio(QWidget):
 
     def _fill_witness_table(self, res, signature=None):
         """Reconstruit le témoin sous le bloqueur de signaux de l'appelant."""
+        self._witness_result = (res, signature)
         self._witness_section.set_expanded(True)
         if isinstance(res, Exception):
             self.witness_info.setText(translate_text("Erreur d'inspection : {err}", err=str(res)))
@@ -1191,6 +1208,8 @@ class HybridStudio(QWidget):
         recipe.donor_audio_langs = donor_audio_langs
         recipe.donor_sub_langs = donor_sub_langs
         recipe.track_choices = tuple(choices)
+        # Sources de variantes gardées telles quelles : une source recochée est simplement retenue par la sélection
+        # (``_select_matrix_tracks``), et redevient candidate de clonage si elle est décochée de nouveau.
         recipe.track_overrides = overrides
         recipe.sync_mode = self.mode.currentData() or "physical"
         recipe.sync_subtitles = "mirror" if self.mirror.isChecked() else "none"
@@ -1210,6 +1229,62 @@ class HybridStudio(QWidget):
         self.recipe_status_lbl.setText(summary)
         self.recipe_status_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px; font-weight: bold;")
         self.status.setText(translate_text("Modèle appliqué à la saison. Vous pouvez lancer l'analyse ou l'hybridation."))
+        self._update_output_preview()
+
+    def _recipe_with_controls(self) -> HybridRecipe:
+        """Recette courante complétée des réglages affichés (export, signature, préparation : une seule source)."""
+        return self._effective_recipe()
+
+    def export_recipe(self) -> None:
+        """Recette (pistes du modèle, langues, synchro) en JSON, réutilisable par `hybrid --recipe`."""
+        path, _ = QFileDialog.getSaveFileName(self, translate_text("Exporter la recette"), "recette-hybride.json",
+                                              translate_text("Recette JSON (*.json)"))
+        if not path:
+            return
+        from core.atomic_io import atomic_write_text
+        from core.jobs.hybrid_studio import recipe_json
+
+        try:
+            atomic_write_text(Path(path), recipe_json(self._recipe_with_controls()))
+        except OSError as exc:
+            self.log_message.emit("ERROR", translate_text("Recette non écrite : {error}", error=str(exc)))
+            return
+        self.log_message.emit("OK", translate_text("Recette exportée : {path}", path=path))
+
+    def import_recipe(self) -> None:
+        """Recette relue : modèle de pistes, langues et réglages de synchro."""
+        if self.busy:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, translate_text("Importer la recette"), "",
+                                              translate_text("Recette JSON (*.json)"))
+        if not path:
+            return
+        from core.jobs.errors import JobError
+        from core.jobs.hybrid_studio import load_recipe
+
+        try:
+            recipe = load_recipe(Path(path))
+        except JobError as exc:
+            self.log_message.emit("ERROR", exc.message)
+            self.status.setText(exc.message)
+            return
+        self.recipe = recipe
+        for combo, value in ((self.mode, recipe.sync_mode), (self.sync_strategy, recipe.sync_strategy),
+                             (self.cadence_method_combo, recipe.cadence_audio_method)):
+            index = combo.findData(value)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        self.mirror.setChecked(recipe.sync_subtitles == "mirror")
+        self.cadence_auto_apply.setChecked(recipe.cadence_auto_apply)
+        self.manual_shift.setValue(recipe.manual_shift_ms)
+        crossfade = self.controls["crossfade-ms"]
+        if isinstance(crossfade, QSpinBox):
+            crossfade.setValue(recipe.crossfade_ms)  # sinon la préparation reprend le contrôle
+        witness = getattr(self, "_witness_result", None)
+        if witness is not None:
+            self._populate_witness_table(*witness)
+        self.recipe_status_lbl.setText(translate_text("Recette importée : {name}", name=Path(path).name))
+        self.recipe_status_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px; font-weight: bold;")
         self._update_output_preview()
 
     @staticmethod
@@ -1357,8 +1432,8 @@ class HybridStudio(QWidget):
         """Template et variables du document courant, sans se fier à sa seule date."""
         if not profile:
             return "", {}
-        from cli.errors import CliError
-        from cli.profile import snapshot_decision_profile
+        from core.jobs.errors import JobError as CliError
+        from core.jobs.profile import snapshot_decision_profile
         from core.profiles.decision import profile_output_template, profile_variables
         try:
             _version, loaded = snapshot_decision_profile(profile, self.config)
@@ -1368,8 +1443,8 @@ class HybridStudio(QWidget):
             return "", {}
 
     def _profile_version(self):
-        from cli.errors import CliError
-        from cli.profile import snapshot_decision_profile
+        from core.jobs.errors import JobError as CliError
+        from core.jobs.profile import snapshot_decision_profile
         profile = self.profile.text().strip()
         if not profile:
             return ()
@@ -1466,6 +1541,7 @@ class HybridStudio(QWidget):
         if self._operation_start_guard is not None and not self._operation_start_guard():
             return False
         self._operation_active = True
+        self._sync_recap_shown = False  # récapitulatif une fois par opération
         self.stopped = False
         self.signals = None
         self.cancel_event.clear()
@@ -1478,6 +1554,12 @@ class HybridStudio(QWidget):
         if self._operation_active:
             self._operation_active = False
             self.op_state_changed.emit(state, label)
+            recap = self._sync_refusal_recap()
+            if recap and not self._sync_recap_shown:
+                # Une fois par exécution, après la libération de l'opération globale (fenêtre différée par la
+                # fenêtre principale tant qu'un autre panneau travaille).
+                self._sync_recap_shown = True
+                self.sync_refusals_ready.emit(recap)
 
     def _update_run_button(self, *_):
         self.verify_audio_button.setEnabled(not self.busy and any(ep.is_complete for ep in self.matrix_episodes))
@@ -1516,10 +1598,24 @@ class HybridStudio(QWidget):
             self.sync_strategy.currentData(), self.manual_shift.value(),
             self.mode.currentData(), self.mirror.isChecked(), self.detect_cuts.isChecked(),
             self.cadence_auto_apply.isChecked(), self.cadence_method_combo.currentData(),
-            tuple(self.recipe.keep_master_audio_langs), tuple(self.recipe.donor_audio_langs),
-            tuple(self.recipe.donor_sub_langs), self.recipe.keep_master_video,
-            self.recipe.track_choices,
-            tuple((choice, tuple(sorted(values.items()))) for choice, values in self.recipe.track_overrides.items()),
+            # Recette effective entière (complétée par les contrôles, comme la préparation) : tout champ importé
+            # (chapitres, étiquette de sortie, variantes…) invalide le plan, jamais un simple rattrapage des
+            # contrôles dans ``self.recipe``.
+            json.dumps(self._effective_recipe().to_dict(), sort_keys=True, ensure_ascii=False),
+        )
+
+    def _effective_recipe(self) -> HybridRecipe:
+        """Recette telle que la préparation l'utilise : synchro, cadence et fondu lus dans les contrôles."""
+        return replace(
+            self.recipe,
+            sync_mode=self.mode.currentData() or "physical",
+            sync_subtitles="mirror" if self.mirror.isChecked() else "none",
+            sync_strategy=self.sync_strategy.currentData() or "auto",
+            manual_shift_ms=self.manual_shift.value(),
+            cadence_auto_apply=self.cadence_auto_apply.isChecked(),
+            cadence_audio_method=self.cadence_method_combo.currentData() or "auto",
+            crossfade_ms=(int(crossfade.value()) if isinstance(crossfade := self.controls["crossfade-ms"], QSpinBox)
+                          else self.recipe.crossfade_ms),
         )
 
     def _source_signature(self):
@@ -1566,7 +1662,7 @@ class HybridStudio(QWidget):
                 # laisser son verrou d'exécution actif.
                 raise ValueError(errors.getvalue().strip().splitlines()[-1]) from exc
         args.cancel_event = self.cancel_event
-        from cli.profile import snapshot_decision_profile
+        from core.jobs.profile import snapshot_decision_profile
         args.profile_version, args.profile_snapshot = (
             snapshot_decision_profile(args.profile, self.config) if args.profile else ((), None)
         )
@@ -1624,6 +1720,7 @@ class HybridStudio(QWidget):
             self.jobs.clear()
             self._pending_sync_rows.clear()
         self._prepare_failures.clear()
+        self._sync_refused_rows.clear()  # nouveau scan : refus réévalués
         self._defer_audio_sync = (self.recipe.sync_strategy == "auto" and not verify_audio
                                   and not auto_run and self._export_after_prepare is None)
         self._completed_jobs.clear()
@@ -1661,8 +1758,10 @@ class HybridStudio(QWidget):
         self.args.cancel_event = self.cancel_event
 
     def _complete_missing_plans(self) -> bool:
-        """Prépare seulement les paires sans plan ou à synchro différée ; les plans édités restent."""
-        if not any(ep.is_complete and (row not in self.jobs or row in self._pending_sync_rows)
+        """Prépare seulement les paires sans plan ou à synchro différée ; les plans édités restent. Lignes
+        refusées pour synchro impossible : jamais reprises (aucune paire de référence, rien ne changerait)."""
+        if not any(ep.is_complete and row not in self._sync_refused_rows
+                   and (row not in self.jobs or row in self._pending_sync_rows)
                    for row, ep in enumerate(self.matrix_episodes)):
             return False
         try:
@@ -1750,6 +1849,7 @@ class HybridStudio(QWidget):
 
     def _on_donor_reassigned(self, row: int, ep: MatrixEpisode):
         self._pending_sync_rows.discard(row)
+        self._sync_refused_rows.pop(row, None)  # donneur changé : refus réévalué à la prochaine préparation
         if row in self.jobs:
             del self.jobs[row]
         item_status = self.table.item(row, 3)
@@ -1987,6 +2087,8 @@ class HybridStudio(QWidget):
         for row, episode in enumerate(self.matrix_episodes):
             if row in self.jobs and (self._defer_audio_sync or row not in self._pending_sync_rows):
                 continue
+            if row in self._sync_refused_rows:  # refusée (synchro impossible) : jamais remise en file
+                continue
             if not episode.is_complete:
                 item = self.table.item(row, 3)
                 if item is not None:
@@ -2037,7 +2139,12 @@ class HybridStudio(QWidget):
                 )
                 self.prepared.emit(generation, row, prepared, calibration)
             except Exception as exc:
-                self.failed.emit(generation, row, str(exc))
+                from core.workflows.hybrid_matrix import SyncUnavailableError
+
+                if isinstance(exc, SyncUnavailableError):  # refus structuré : seul signal de cette ligne
+                    self.sync_refused.emit(generation, row, exc)
+                else:
+                    self.failed.emit(generation, row, str(exc))
 
         self.executor.submit(task)
 
@@ -2075,8 +2182,9 @@ class HybridStudio(QWidget):
             return
         offer_sync = self._defer_audio_sync and bool(self._pending_sync_rows) and not self.stopped
         self._defer_audio_sync = False
+        # Refus pour synchro impossible : épisodes en échec, jamais bloquants (la saison continue sans eux).
         failed = [self.matrix_episodes[row].display_name for row in sorted(self._prepare_failures)
-                  if row < len(self.matrix_episodes)]
+                  if row < len(self.matrix_episodes) and row not in self._sync_refused_rows]
         self._prepare_failures.clear()
         names = ", ".join(failed[:5]) + (" …" if len(failed) > 5 else "")
         self.set_busy(False)
@@ -2219,6 +2327,26 @@ class HybridStudio(QWidget):
         cuts = any(len(calibration.segments) > 1 for _label, _name, calibration in entries)
         item.setForeground(QColor(_C.WARN if cuts else _C.OK))
 
+    def _on_sync_refused(self, generation: int, row: int, error: object) -> None:
+        """Refus structuré d'un épisode (synchro impossible) : ligne en échec, exclue du lot, récapitulée en fin
+        d'opération ; le poste n'est libéré qu'une fois (ce signal remplace ``failed`` pour cette ligne)."""
+        if not self._row_returned(generation, row):
+            return
+        if not self.stopped:
+            self._sync_refused_rows[row] = error
+            self.jobs.pop(row, None)
+            self._pending_sync_rows.discard(row)
+            self._mark_failed(row, str(error))
+        self._fill_preparation()
+
+    def _sync_refusal_recap(self) -> str:
+        """Texte du récapitulatif des épisodes refusés pour synchro impossible ("" s'il n'y en a pas)."""
+        lines = [f"{getattr(error, 'episode', '')} — {error}" for _row, error in sorted(self._sync_refused_rows.items())]
+        if not lines:
+            return ""
+        return translate_text("Ces épisodes n'ont pas été traités, faute de piste de référence pour caler leurs "
+                              "donneurs :") + "\n\n" + "\n".join(f"• {line}" for line in lines)
+
     def _on_episode_failed(self, generation: int, row: int, message: str):
         """Échec d'un épisode : noté sur sa ligne, la préparation de la saison continue."""
         if not self._row_returned(generation, row):
@@ -2228,16 +2356,20 @@ class HybridStudio(QWidget):
                 self._pending_sync_rows.add(row)
             else:
                 self._pending_sync_rows.discard(row)
-            self._prepare_failures[row] = message
-            item = self.table.item(row, 3)
-            if item is not None:
-                item.setText(translate_text("Échec"))
-                item.setForeground(QColor(_C.ERROR))
-                item.setToolTip(message)
-            name = self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else ""
-            self.log_message.emit("ERROR", f"[{name}] {message}")
-            self._update_run_button()
+            self._mark_failed(row, message)
         self._fill_preparation()
+
+    def _mark_failed(self, row: int, message: str) -> None:
+        """Ligne en « Échec » (motif en info-bulle, journal ERROR) ; préparation en cours poursuivie par l'appelant."""
+        self._prepare_failures[row] = message
+        item = self.table.item(row, 3)
+        if item is not None:
+            item.setText(translate_text("Échec"))
+            item.setForeground(QColor(_C.ERROR))
+            item.setToolTip(message)
+        name = self.matrix_episodes[row].display_name if row < len(self.matrix_episodes) else ""
+        self.log_message.emit("ERROR", f"[{name}] {message}")
+        self._update_run_button()
 
     def on_failed(self, message: str):
         self._defer_audio_sync = False
@@ -2409,20 +2541,9 @@ class HybridStudio(QWidget):
 
     def _store_row_calibration(self, row, source_index, config, calibration):
         """Synchro d'une source donneuse du plan (pistes, calibrations, ligne affichée)."""
-        # Coupures, conversion de cadence ou de hauteur : seule la réécriture physique les applique.
-        if calibration.changes_timeline or calibration.converts_audio:
-            config.sync_mode = "physical"
-        offset = round(calibration.segments[0].shift_ms)
-        payload = calibration.to_dict()
-        physical = config.sync_mode == "physical"
-        if physical:
-            config.sync_calibrations[str(source_index)] = payload
-        else:
-            config.sync_calibrations.pop(str(source_index), None)
-        for track in config.sources[source_index].tracks:
-            if track.is_audio or (track.is_subtitle and config.sync_subtitles == "mirror"):
-                track.time_shift_ms = 0 if physical else offset
-                track.sync_calibration = payload if physical else None
+        from core.workflows.hybrid_matrix import store_plan_calibration
+
+        store_plan_calibration(config, source_index, calibration)
         primary = calibration if source_index == 1 else self.jobs[row][1]
         self.jobs[row] = (config, primary)
         self._completed_jobs.pop(row, None)
@@ -2557,7 +2678,7 @@ class HybridStudio(QWidget):
         self._save_jobs(Path(directory))
 
     def _save_jobs(self, directory: Path, *, finalized: bool = False):
-        from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
+        from core.jobs.batch import PlannedBatchJob, assert_unique_batch_outputs
         from core.profiles.selectors import remux_config_to_exact_job
         from core.workflows.workflow_store import save_workflow
 
@@ -2614,7 +2735,7 @@ class HybridStudio(QWidget):
             return
         self.execution_rows = [row for row in sorted(self.jobs) if not self._job_already_completed(row)]
         try:
-            from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
+            from core.jobs.batch import PlannedBatchJob, assert_unique_batch_outputs
             assert_unique_batch_outputs([
                 PlannedBatchJob(row, str(config.sources[0].path), str(config.output), remux_config=config)
                 for row, (config, _calibration) in sorted(self.jobs.items())

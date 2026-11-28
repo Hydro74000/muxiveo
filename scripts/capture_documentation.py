@@ -83,6 +83,13 @@ def _render_widgets(locale: str, destination: Path, scratch: Path, only: list[st
     from ui.panels.tmdb_search_modal import TmdbSearchModal
     from ui.panels.track_edit_dialog import TrackEditDialog
 
+    from ui.panels.remux_panel.widgets.output_bar import OutputBar
+
+    # Demonstration output paths do not exist on the rendering machine: the output card keeps its
+    # neutral state instead of reporting a missing destination folder.
+    patch.object(OutputBar, "_evaluate", lambda self: (
+        "empty" if self._required and not self._edit.text().strip() else "normal", "")).start()
+
     app = QApplication([])
     app.setFont(QFont("Noto Sans", 10))
     language = "fra" if locale == "fr" else "eng"

@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 from array import array
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
+
+from core.i18n import translate_text
 
 #: Percentiles de maxRGB émis par le plugin pour chaque image.
 PERCENTILES = (1.0, 25.0, 50.0, 75.0, 90.0, 95.0, 99.98)
@@ -42,6 +46,9 @@ class ImageMeasurement:
     #: Mesure rapide (images clés) : nombre d'images réellement mesurées, valeurs tenues jusqu'à l'image
     #: clé suivante ; 0 : mesure complète.
     sampled: int = 0
+    #: Compte exact des paquets de la piste, égal au nombre d'images mesurées, relevé quand il a été obtenu
+    #: (mémorisé par le cache : la clé lie taille et date du fichier) ; ``None`` : jamais vérifié.
+    verified_frames: int | None = None
 
     @property
     def is_estimate(self) -> bool:
@@ -113,6 +120,8 @@ def read_measurement(path: Path, layer: str = "base", *, total_frames: int | Non
                     covered += int(item["frames"])
                     for index, count in item.get("maxrgb_hist") or ():
                         histogram[int(index)] += int(count)
+    except InterruptedError:
+        raise  # annulation (sous-classe d'OSError) : jamais confondue avec une lecture impossible
     except (OSError, ValueError, KeyError, TypeError) as exc:
         if isinstance(exc, MeasurementError):
             raise
@@ -137,6 +146,171 @@ def read_measurement(path: Path, layer: str = "base", *, total_frames: int | Non
     if not fps or fps <= 0:
         raise MeasurementError("Statistiques de l'image : cadence requise pour une mesure par images clés.")
     return _expand(measurement, np.frombuffer(times, dtype=np.float64), fps, total_frames)
+
+
+def measured_frames_mismatch(measurement: ImageMeasurement, expected_frames: int | None) -> str | None:
+    """Mesure complète dont le nombre d'images diffère de ``expected_frames`` (compte exact) : motif, sinon ``None``.
+
+    Une image perdue décale toutes les suivantes (statistiques et HDR10+ désalignés) : mvo-fel ≤ 0.6.1
+    perdait le premier GOP d'un flux commençant par une NAL invalide. Estimation (images clés) : non concernée.
+    """
+    if not expected_frames or measurement.is_estimate or measurement.frames == expected_frames:
+        return None
+    return translate_text("Mesure de l'image incomplète : {measured} images pour {expected} dans la piste "
+                          "(extension mvo-fel à mettre à jour).", measured=measurement.frames,
+                          expected=expected_frames)
+
+
+FrameCheck = Callable[[ImageMeasurement], str | None]
+
+
+class FrameStatus(str, Enum):
+    """Vérification du nombre d'images d'une mesure complète face à la piste."""
+
+    #: Compte exact (paquets de la piste) égal au nombre d'images mesurées.
+    VERIFIED = "verified"
+    #: Compte de l'inspection égal, non démenti (aucun comptage exact).
+    QUICK_MATCH = "quick_match"
+    #: Aucun compte, compte exact illisible, ou mesure par images clés (estimation).
+    UNVERIFIED = "unverified"
+
+
+def frames_status(measurement: ImageMeasurement, quick: int | None = None,
+                  exact: int | None = None) -> FrameStatus:
+    """Statut affiché d'une mesure, sans aucun comptage (``quick`` : compte de l'inspection, ``exact`` : compte
+    exact déjà connu)."""
+    if measurement.is_estimate:
+        return FrameStatus.UNVERIFIED
+    known = exact if exact is not None else measurement.verified_frames
+    if known is not None:
+        return FrameStatus.VERIFIED if known == measurement.frames else FrameStatus.UNVERIFIED
+    if quick is not None and quick == measurement.frames:
+        return FrameStatus.QUICK_MATCH
+    return FrameStatus.UNVERIFIED
+
+
+class FrameCountCheck:
+    """Règle unique du nombre d'images d'une mesure complète (HDR Studio, ``hdr.inspect``, ``hdr.patch``,
+    génération HDR10+).
+
+    ``quick`` : compte de l'inspection (MediaInfo validé, plausible mais pas exact) ; ``exact()`` : comptage des
+    paquets de la piste, fait une fois au plus (``None`` : illisible). Appelé sur une mesure : motif d'un écart
+    confirmé, sinon ``None`` — compte rapide absent ou différent → compte exact demandé ; compte exact illisible →
+    accepté (statut ``unverified``). Écriture par image : :meth:`require_verified`.
+    """
+
+    def __init__(self, quick: int | None, exact: Callable[[], int | None] | None) -> None:
+        self.quick = quick
+        self._exact = exact
+        self._counted: list[int | None] = []
+
+    @property
+    def exact_known(self) -> int | None:
+        """Compte exact déjà obtenu (``None`` : jamais compté ou illisible)."""
+        return self._counted[0] if self._counted else None
+
+    def exact_frames(self) -> int | None:
+        """Compte exact de la piste (compté une fois au plus ; annulation propagée par le compteur)."""
+        if not self._counted:
+            self._counted.append(self._exact() if self._exact is not None else None)
+        return self._counted[0]
+
+    def __call__(self, measurement: ImageMeasurement) -> str | None:
+        if measurement.is_estimate:
+            return None
+        if measurement.verified_frames is not None and not self._counted:
+            # Vérifiée lors d'un enregistrement précédent (même fichier : taille et date liées à la clé).
+            return measured_frames_mismatch(measurement, measurement.verified_frames)
+        # Compte exact déjà obtenu : seule référence (une mesure égale au compte de l'inspection n'en est pas
+        # plus juste quand ce compte a été démenti).
+        if not self._counted and self.quick is not None and measurement.frames == self.quick:
+            return None
+        return measured_frames_mismatch(measurement, self.exact_frames())
+
+    def status(self, measurement: ImageMeasurement) -> FrameStatus:
+        """Statut sans comptage supplémentaire."""
+        return frames_status(measurement, self.quick, self.exact_known)
+
+    def require_verified(self, measurement: ImageMeasurement) -> int:
+        """Compte exact égal au nombre d'images de la mesure, exigé avant toute écriture image par image (HDR10+
+        recalculé) : compte obtenu au besoin ; écart, compte illisible ou estimation → :class:`MeasurementError`."""
+        if measurement.is_estimate:
+            raise MeasurementError(translate_text(
+                "Mesure par images clés : nombre d'images non vérifiable, mesure complète requise."))
+        if measurement.verified_frames is not None and measurement.verified_frames == measurement.frames \
+                and not self._counted:
+            return measurement.verified_frames
+        exact = self.exact_frames()
+        if exact is None:
+            raise MeasurementError(translate_text(
+                "Nombre d'images de la piste illisible (comptage des paquets) : écriture image par image refusée."))
+        problem = measured_frames_mismatch(measurement, exact)
+        if problem is not None:
+            raise MeasurementError(problem)
+        return exact
+
+    def verified(self, measurement: ImageMeasurement) -> ImageMeasurement:
+        """Mesure annotée du compte exact s'il a été obtenu et lui est égal (mémorisé par le cache)."""
+        exact = self.exact_known
+        if measurement.is_estimate or exact is None or exact != measurement.frames \
+                or measurement.verified_frames == exact:
+            return measurement
+        return dataclasses.replace(measurement, verified_frames=exact)
+
+
+def frame_count_check(quick: int | None, exact: Callable[[], int | None] | None) -> FrameCountCheck:
+    """:class:`FrameCountCheck` de la piste (``quick`` : compte de l'inspection, ``exact`` : compteur de paquets)."""
+    return FrameCountCheck(quick, exact)
+
+
+def packet_counter(ffprobe: str, path: Path, stream_index: int,
+                   cancel: threading.Event | None = None) -> Callable[[], int | None]:
+    """Comptage exact des paquets de la piste (``ffprobe -count_packets``), arrêté par ``cancel``
+    (``FelCancelled``, comme une mesure annulée)."""
+    def count() -> int | None:
+        from core.fel.engine import FelCancelled
+        from core.frame_count import ffprobe_packet_count
+        from core.subprocess_utils import run_cancellable_capture
+
+        def check_cancelled() -> None:
+            if cancel is not None and cancel.is_set():
+                raise FelCancelled("Comptage des images annulé")
+
+        def run(cmd: list[str], **kwargs: object) -> object:
+            return run_cancellable_capture(cmd, cancel_cb=cancel.is_set if cancel is not None else None,
+                                           check_cancelled=check_cancelled, **kwargs)  # type: ignore[arg-type]
+
+        return ffprobe_packet_count(ffprobe, Path(path), run_command=run, stream_index=stream_index)
+
+    return count
+
+
+def measure_track(engine: object, path: Path, stream_index: int, work_dir: Path, *, layer: str = "base",
+                  threads: int = 8, total_frames: int | None = None, fps: float | None = None, fast: bool = False,
+                  progress: Callable[[int], None] | None = None, cancel: threading.Event | None = None,
+                  device: str = "auto", precision: str = "fast",
+                  frame_check: FrameCheck | None = None) -> tuple[ImageMeasurement, str]:
+    """Mesure de l'image d'une piste par le plugin mvo-fel (``FelEngine``) : (mesure, moteur exécuté).
+
+    Statistiques écrites dans ``work_dir`` puis supprimées. ``fast`` : images clés seules (estimation).
+    ``frame_check`` (``frame_count_check``) : mesure complète d'un autre nombre d'images que la piste refusée
+    (``MeasurementError``).
+    Annulation : ``FelCancelled`` pendant la mesure, ``InterruptedError`` pendant la lecture.
+    """
+    statistics = Path(work_dir) / f"mesure-{layer}.jsonl"
+    event = cancel if cancel is not None else threading.Event()
+    try:
+        backend = engine.measure(  # type: ignore[attr-defined]
+            Path(path), stream_index, statistics, layer=layer, device=device, precision=precision, threads=threads,
+            progress=progress, cancelled=event, sampling="keyframes" if fast else "all")
+        measurement = read_measurement(statistics, layer, total_frames=total_frames, fps=fps,
+                                       cancelled=event.is_set)
+        mismatch = frame_check(measurement) if frame_check is not None else None
+        if mismatch is not None:
+            raise MeasurementError(mismatch)
+        return measurement, str(backend)
+    finally:
+        statistics.unlink(missing_ok=True)
 
 
 def _expand(measurement: ImageMeasurement, times: np.ndarray, fps: float, total_frames: int | None) -> ImageMeasurement:

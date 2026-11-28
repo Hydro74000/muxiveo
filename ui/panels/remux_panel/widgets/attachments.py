@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
+# Pièces jointes XML/NFO : document à DTD jamais analysé (_pretty_xml).
+# nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from xml.dom import minidom
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QCursor, QFont, QMouseEvent, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -246,51 +250,74 @@ class _TagEditDialog(QDialog):
 _IMAGE_ATTACHMENT_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 _TEXT_ATTACHMENT_EXTENSIONS = {".txt", ".xml", ".nfo"}
 
-_TMDB_COVER_CACHE: dict[str, bytes] = {}
+class _TmdbCovers(QObject):
+    """Covers TMDB de la session : téléchargées hors du fil Qt, résultat publié par ``finished`` (connexion en
+    file), cache borné sous verrou (les plus anciennes retirées)."""
 
+    #: URL, octets de l'image (``None`` : échec), message d'erreur traduit.
+    finished = Signal(str, object, str)
+    CAPACITY = 32
 
-def _fetch_tmdb_cover_bytes(url: str) -> bytes | None:
-    """Télécharge (et met en cache) les octets d'une cover TMDB depuis son URL."""
-    if not url:
-        return None
-    cached = _TMDB_COVER_CACHE.get(url)
-    if cached is not None:
-        return cached
-    import ssl
-    import urllib.error
-    import urllib.request
+    def __init__(self) -> None:
+        super().__init__()
+        self._items: OrderedDict[str, bytes] = OrderedDict()
+        self._pending: set[str] = set()
+        self._lock = threading.Lock()
 
-    from core.version import APP_USER_AGENT
+    def cached(self, url: str) -> bytes | None:
+        with self._lock:
+            data = self._items.get(url)
+            if data is not None:
+                self._items.move_to_end(url)
+            return data
 
-    req = urllib.request.Request(url, headers={"User-Agent": APP_USER_AGENT, "Accept": "image/*,*/*;q=0.8"})
-    try:
+    def _store(self, url: str, data: bytes) -> None:
+        with self._lock:
+            self._items[url] = data
+            self._items.move_to_end(url)
+            while len(self._items) > self.CAPACITY:
+                self._items.popitem(last=False)
+
+    def request(self, url: str) -> None:
+        """Téléchargement de ``url`` en tâche de fond (une seule fois s'il est déjà en cours)."""
+        with self._lock:
+            if url in self._pending:
+                return
+            self._pending.add(url)
+        threading.Thread(target=self._fetch, args=(url,), name="tmdb-cover", daemon=True).start()
+
+    def _fetch(self, url: str) -> None:
+        from core.tls import TlsVerificationError
+        from core.workdir import fetch_tmdb_image
+
+        data: bytes | None = None
+        error = ""
         try:
-            resp_cm = urllib.request.urlopen(req, timeout=10)
-        except urllib.error.URLError as exc:
-            cur: BaseException | None = exc
-            is_ssl = False
-            while cur is not None:
-                if isinstance(cur, ssl.SSLError):
-                    is_ssl = True
-                    break
-                if isinstance(getattr(cur, "reason", None), ssl.SSLError):
-                    is_ssl = True
-                    break
-                cur = cur.__cause__ or cur.__context__
-            if not is_ssl:
-                return None
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            resp_cm = urllib.request.urlopen(req, timeout=10, context=ctx)
-        with resp_cm as resp:
-            data = resp.read()
-    except (urllib.error.URLError, OSError):
-        return None
-    if not data:
-        return None
-    _TMDB_COVER_CACHE[url] = data
-    return data
+            data = fetch_tmdb_image(url, timeout=10, deadline=30) or None
+            if data is not None:
+                self._store(url, data)
+            else:
+                error = translate_text("Impossible de télécharger la cover TMDB.")
+        except TlsVerificationError as exc:
+            error = translate_text(
+                "Cover TMDB non téléchargée : certificat TLS refusé ({detail}). La vérification n'est jamais "
+                "désactivée d'office ; MUXIVEO_TMDB_INSECURE_SSL=1 la désactive à vos risques.", detail=exc)
+        except Exception as exc:  # noqa: BLE001 — réseau, échéance, taille : message à l'utilisateur
+            error = translate_text("Impossible de télécharger la cover TMDB : {exc}", exc=exc)
+        finally:
+            with self._lock:
+                self._pending.discard(url)
+        self.finished.emit(url, data, error)
+
+
+_TMDB_COVERS: list[_TmdbCovers] = []
+
+
+def _tmdb_covers() -> _TmdbCovers:
+    """Covers TMDB de la session (objet créé dans le fil Qt au premier usage)."""
+    if not _TMDB_COVERS:
+        _TMDB_COVERS.append(_TmdbCovers())
+    return _TMDB_COVERS[0]
 
 
 def _resolved_manual_attachment_path(path: Path | None) -> Path | None:
@@ -343,26 +370,27 @@ def _scaled_pixmap(pixmap: QPixmap, bounds: QSize) -> QPixmap:
     )
 
 
-def _pretty_text_attachment_content(path: Path) -> str:
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    if path.suffix.lower() not in {".xml", ".nfo"}:
+def _pretty_xml(raw: str) -> str:
+    """XML / NFO d'une pièce jointe indenté pour l'affichage. Document à DTD (entités : expansion
+    exponentielle ou externe, fichier non fiable) ou invalide : texte brut, jamais analysé."""
+    head = raw.upper()
+    if "<!DOCTYPE" in head or "<!ENTITY" in head:
         return raw
     try:
         formatted = minidom.parseString(raw.encode("utf-8")).toprettyxml(indent="  ")
     except Exception:
         return raw
     return "\n".join(line for line in formatted.splitlines() if line.strip())
+
+
+def _pretty_text_attachment_content(path: Path) -> str:
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    return _pretty_xml(raw) if path.suffix.lower() in {".xml", ".nfo"} else raw
 
 
 def _pretty_text_attachment_bytes(data: bytes, filename: str) -> str:
     raw = data.decode("utf-8", errors="replace")
-    if Path(filename).suffix.lower() not in {".xml", ".nfo"}:
-        return raw
-    try:
-        formatted = minidom.parseString(raw.encode("utf-8")).toprettyxml(indent="  ")
-    except Exception:
-        return raw
-    return "\n".join(line for line in formatted.splitlines() if line.strip())
+    return _pretty_xml(raw) if Path(filename).suffix.lower() in {".xml", ".nfo"} else raw
 
 
 class _AttachmentNameButton(QPushButton):
@@ -675,6 +703,7 @@ class _AttachmentItemWidget(QWidget):
 
     remove_clicked = Signal(object)   # self
     changed        = Signal()
+    extract_clicked = Signal(object)  # self (pièce jointe embarquée)
 
     def __init__(
         self,
@@ -706,8 +735,25 @@ class _AttachmentItemWidget(QWidget):
         self._name_widget: QWidget | None = None
         self._embedded_attachment_bytes: bytes | None = None
         self._embedded_attachment_bytes_loaded = False
+        #: Cover TMDB demandée par un clic : visionneuse ouverte à l'arrivée des octets.
+        self._open_when_ready = False
+        if self.is_tmdb_pending and self.tmdb_cover_url:
+            # Ligne supprimée avant le retour : connexion retirée avec elle, résultat ignoré.
+            _tmdb_covers().finished.connect(self._on_tmdb_cover, Qt.ConnectionType.QueuedConnection)
         self.setFixedHeight(_scale(28))
         self._build_ui(source_color)
+        if self.att is not None and not self.is_manual:
+            self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.customContextMenuRequested.connect(self._on_context_menu)
+
+    def _on_context_menu(self, pos: QPoint) -> None:
+        """Clic droit sur une pièce jointe embarquée : « Extraire… »."""
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        action = menu.addAction(translate_text("Extraire…"))
+        if menu.exec(self.mapToGlobal(pos)) is action:
+            self.extract_clicked.emit(self)
 
     @property
     def tag_count(self) -> int:
@@ -875,6 +921,15 @@ class _AttachmentItemWidget(QWidget):
 
     def _open_attachment_viewer(self) -> None:
         self._hide_hover_preview()
+        if self.is_tmdb_pending and self.tmdb_cover_url and _tmdb_covers().cached(self.tmdb_cover_url) is None:
+            # Jamais de réseau dans le fil Qt : téléchargement en tâche de fond, visionneuse ouverte à l'arrivée.
+            if not self._open_when_ready:
+                self._tooltip_before = self.toolTip()
+            self._open_when_ready = True
+            self.setCursor(Qt.CursorShape.BusyCursor)
+            self.setToolTip(translate_text("Chargement de la cover TMDB…"))
+            _tmdb_covers().request(self.tmdb_cover_url)
+            return
         path = self._local_attachment_path()
         if self._supports_image_interaction():
             image_bytes = None if path is not None else self._load_embedded_attachment_bytes()
@@ -911,19 +966,37 @@ class _AttachmentItemWidget(QWidget):
             return self.att.filename
         return self.tmdb_cover_filename or ""
 
+    def discard(self) -> None:
+        """Ligne retirée du panneau : plus aucune réaction à une cover arrivée ensuite, puis destruction (la
+        suppression différée de Qt laisse sinon passer un résultat déjà en file)."""
+        self._open_when_ready = False
+        if self.is_tmdb_pending and self.tmdb_cover_url:
+            try:
+                _tmdb_covers().finished.disconnect(self._on_tmdb_cover)
+            except (RuntimeError, TypeError):
+                pass
+        self.deleteLater()
+
+    def _on_tmdb_cover(self, url: str, data: object, error: str) -> None:
+        """Cover TMDB arrivée (fil Qt) : visionneuse ouverte si elle avait été demandée par un clic."""
+        if url != self.tmdb_cover_url or not self._open_when_ready:
+            return
+        self._open_when_ready = False
+        self.unsetCursor()
+        self.setToolTip(getattr(self, "_tooltip_before", ""))
+        if data is None:
+            QMessageBox.warning(self, translate_text("Attachement"),
+                                error or translate_text("Impossible de télécharger la cover TMDB."))
+            return
+        self._open_attachment_viewer()
+
     def _load_embedded_attachment_bytes(self) -> bytes | None:
+        if self.is_tmdb_pending and self.tmdb_cover_url:
+            # Cover TMDB : octets déjà téléchargés seulement (survol et rendu sans réseau).
+            return _tmdb_covers().cached(self.tmdb_cover_url)
         if self._embedded_attachment_bytes_loaded:
             return self._embedded_attachment_bytes
         self._embedded_attachment_bytes_loaded = True
-        if self.is_tmdb_pending and self.tmdb_cover_url:
-            self._embedded_attachment_bytes = _fetch_tmdb_cover_bytes(self.tmdb_cover_url)
-            if self._embedded_attachment_bytes is None:
-                QMessageBox.warning(
-                    self,
-                    translate_text("Attachement"),
-                    translate_text("Impossible de télécharger la cover TMDB."),
-                )
-            return self._embedded_attachment_bytes
         if self.att is None or self._embedded_attachment_loader is None:
             return None
         try:
@@ -979,6 +1052,7 @@ class _AttachmentPanel(QFrame):
 
     changed = Signal()
     tmdb_details_selected = Signal(object)  # MediaDetails
+    extract_requested = Signal(str, object)  # file_id, AttachmentInfo
 
     def __init__(self, config: "AppConfig", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1177,7 +1251,7 @@ class _AttachmentPanel(QFrame):
         for item in to_remove:
             self._items.remove(item)
             self._items_layout.removeWidget(item)
-            item.deleteLater()
+            item.discard()
         if to_remove:
             # Recalculer les valeurs héritées sans perdre les éditions du
             # panneau (manuelles ou TMDB). Leur remise à zéro relève de clear_all.
@@ -1190,7 +1264,7 @@ class _AttachmentPanel(QFrame):
         self._clear_pending_tmdb_cover()
         for item in self._items[:]:
             self._items_layout.removeWidget(item)
-            item.deleteLater()
+            item.discard()
         self._items.clear()
         self._panel_tag_overrides = None
         self._tag_edits.clear()
@@ -1311,6 +1385,7 @@ class _AttachmentPanel(QFrame):
             self._sync_tag_overrides()
         item.changed.connect(self.changed)
         item.remove_clicked.connect(self._on_remove_item)
+        item.extract_clicked.connect(self._on_extract_item)
         self._update_state()
 
     def _set_edited_tags(
@@ -1359,12 +1434,20 @@ class _AttachmentPanel(QFrame):
             )
         self._edit_tags_btn.setEnabled(True)
 
+    def _on_extract_item(self, item: _AttachmentItemWidget) -> None:
+        """« Extraire… » d'une pièce jointe embarquée.
+
+        Slot lié (référence faible) : une lambda gardant le panneau en vie le libérerait pendant la
+        destruction différée de l'item, puis détruirait l'item une seconde fois (SIGBUS).
+        """
+        self.extract_requested.emit(item.file_id, item.att)
+
     def _on_remove_item(self, item: _AttachmentItemWidget) -> None:
         self._items.remove(item)
         self._items_layout.removeWidget(item)
         if item.is_tmdb_pending:
             self._clear_pending_tmdb_cover()
-        item.deleteLater()
+        item.discard()
         self._update_state()
         self.changed.emit()
 
@@ -1392,7 +1475,7 @@ class _AttachmentPanel(QFrame):
             if item.is_tmdb_pending:
                 self._items.remove(item)
                 self._items_layout.removeWidget(item)
-                item.deleteLater()
+                item.discard()
                 removed = True
                 break
         self._clear_pending_tmdb_cover()

@@ -6,7 +6,7 @@ import numpy as np
 from core.hdr_inspection.dovi import L9_PRIMARY_NAMES, DoviAnalysis
 from core.hdr_inspection.hdr10p import Hdr10PlusAnalysis
 from core.hdr_inspection.inspector import InspectionReport
-from core.hdr_inspection.measure import ImageMeasurement
+from core.hdr_inspection.measure import FrameStatus, ImageMeasurement, frames_status
 from core.hdr_inspection.snapshot import DoviRecord, HdrSnapshot
 from core.i18n import translate_text
 
@@ -67,8 +67,26 @@ def static_rows(snapshot: HdrSnapshot, measurement: ImageMeasurement | None = No
     levels = translate_text("absents") if snapshot.max_cll is None else f"{snapshot.max_cll} / {snapshot.max_fall}"
     rows = [(translate_text("Écran de mastering (MDCV)"), mdcv), (translate_text("MaxCLL / MaxFALL"), levels)]
     if measurement is not None:
-        rows.append((translate_text("Mesurés sur l'image"), f"{measurement.max_cll()} / {measurement.max_fall()}"))
+        rows.append((translate_text("Mesurés sur l'image"), f"{measurement.max_cll()} / {measurement.max_fall()}"
+                     + unverified_note(measurement, snapshot)))
     return rows
+
+
+def unverified_note(measurement: ImageMeasurement, snapshot: HdrSnapshot) -> str:
+    """« (nombre d'images non vérifié) » pour une mesure complète sans compte concordant (valeurs agrégées
+    d'une mesure amputée faussables)."""
+    if measurement.is_estimate:
+        return ""
+    status = frames_status(measurement, snapshot.frames if snapshot.frames_exact else None)
+    return "" if status is not FrameStatus.UNVERIFIED else " (" + translate_text("nombre d'images non vérifié") + ")"
+
+
+#: Statut du nombre d'images d'une mesure (``frames_status`` du rapport), libellés français à traduire.
+FRAMES_STATUS_LABELS = {
+    FrameStatus.VERIFIED: "vérifié (comptage des paquets de la piste)",
+    FrameStatus.QUICK_MATCH: "concordant avec l'inspection (non compté)",
+    FrameStatus.UNVERIFIED: "non vérifié",
+}
 
 
 def container_dovi_rows(record: DoviRecord) -> Rows:
@@ -144,13 +162,17 @@ def hdr10plus_rows(hdr10plus: Hdr10PlusAnalysis) -> Rows:
     ]
 
 
-def measurement_rows(measurement: ImageMeasurement, fps: float) -> Rows:
+def measurement_rows(measurement: ImageMeasurement, fps: float, quick: int | None = None) -> Rows:
+    """``quick`` : compte de l'inspection (statut du nombre d'images, sans comptage)."""
     x, y, width, height = measurement.window
     measured = (translate_text("{sampled} images clés sur {frames} (mesure rapide, estimation)",
                                sampled=measurement.sampled, frames=measurement.frames)
                 if measurement.is_estimate else str(measurement.frames))
+    status = [] if measurement.is_estimate else [(translate_text("Nombre d'images"), translate_text(
+        FRAMES_STATUS_LABELS[frames_status(measurement, quick)]))]
     return [
         (translate_text("Images mesurées"), measured),
+        *status,
         (translate_text("MaxCLL / MaxFALL mesurés"), f"{measurement.max_cll()} / {measurement.max_fall()}"
          + (" (" + translate_text("estimation") + ")" if measurement.is_estimate else "")),
         (translate_text("Durée"), format_time(measurement.frames / fps)),

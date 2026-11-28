@@ -964,3 +964,111 @@ def test_start_refuses_reserved_destination_before_workspace(tmp_path, monkeypat
         holder.release()
     assert failures and failures[0][0] == WorkflowStep.VALIDATION
     assert "déjà en cours d'écriture" in failures[0][1]
+
+
+# --- Image de base du RPU de Film 2 face à celle de Film 1 -----------------------------------------------
+
+
+@pytest.mark.parametrize(("transfer", "sdr", "film1_dovi", "expected"), [
+    ("PQ", False, "UNKNOWN", "pq"), ("SMPTE ST 2084", False, "P8_1", "pq"), ("HLG", False, "P8_4", "hlg"),
+    ("arib-std-b67", False, "UNKNOWN", "hlg"), ("BT.709", True, "UNKNOWN", "pq"), ("", False, "UNKNOWN", ""),
+    ("PQ", False, "P5", "ipt"), ("", False, "P8_4", "hlg"), ("", False, "P7_MEL", "pq"), ("", False, "P8_0", ""),
+])
+def test_output_base_transfer(transfer: str, sdr: bool, film1_dovi: str, expected: str) -> None:
+    from core.dovi_profile_detector import DoviSubProfile
+    from core.workflows.merge_dovi import HDRFlags, StaticHdrMetadata, ValidationContext
+
+    context = ValidationContext(HDRFlags(has_dovi=True), StaticHdrMetadata(), StaticHdrMetadata(),
+                                film1_needs_sdr_to_hdr10=sdr, film1_transfer=transfer,
+                                film1_dovi_profile=getattr(DoviSubProfile, film1_dovi))
+    assert context.output_base_transfer == expected
+
+
+def test_p5_film1_refused_with_encode_conversion_hint(french_messages) -> None:
+    from core.dovi_profile_detector import DoviSubProfile
+    from core.workflows.merge_dovi import WorkflowError, _check_dovi_base
+
+    for film2_profile in (DoviSubProfile.P8_1, DoviSubProfile.P8_0, DoviSubProfile.UNKNOWN, DoviSubProfile.P5):
+        with pytest.raises(WorkflowError, match="Convertissez d'abord Film 1 en HDR10 dans le panneau Encodage"):
+            _check_dovi_base(film2_profile, "ipt")
+
+
+@pytest.mark.parametrize(("sub_profile", "base", "refused"), [
+    ("P8_4", "pq", True), ("P8_2", "pq", True), ("P8_1", "hlg", True), ("P7_MEL", "hlg", True),
+    ("P5", "hlg", True), ("P8_4", "hlg", False), ("P8_1", "pq", False), ("P7_FEL", "pq", False),
+    ("P8_0", "hlg", False), ("UNKNOWN", "pq", False), ("P8_4", "", False),
+])
+def test_dovi_base_must_match_film1(sub_profile: str, base: str, refused: bool, french_messages) -> None:
+    from core.dovi_profile_detector import DoviSubProfile
+    from core.workflows.merge_dovi import WorkflowError, WorkflowStep, _check_dovi_base
+
+    profile = getattr(DoviSubProfile, sub_profile)
+    if not refused:
+        _check_dovi_base(profile, base)
+        return
+    with pytest.raises(WorkflowError) as error:
+        _check_dovi_base(profile, base)
+    assert error.value.step is WorkflowStep.DETECT_DOVI
+    assert "« Désactivé »" in str(error.value) and profile.label in str(error.value)
+
+
+def test_record_compat_follows_the_rpu_profile() -> None:
+    from core.dovi_profile_detector import DoviSubProfile
+    from core.workflows.encode.runtime.dovi_p7_router import P7RoutingDecision
+    from core.workflows.merge_dovi import DoviProfile, _record_compat_id
+
+    def routing(sub_profile: DoviSubProfile) -> P7RoutingDecision:
+        return P7RoutingDecision(False, sub_profile, None, "")
+
+    assert _record_compat_id(DoviProfile.P8_1, routing(DoviSubProfile.P8_4)) == 4
+    assert _record_compat_id(DoviProfile.P8_1, routing(DoviSubProfile.P7_MEL)) == 1
+    assert _record_compat_id(DoviProfile.P8_1, None) == 1
+    assert _record_compat_id(DoviProfile.P8_0, routing(DoviSubProfile.P8_4)) is None
+
+
+def test_colour_element_signals_the_written_base_transfer() -> None:
+    from core.matroska.ebml import uint_element
+    from core.matroska.ids import TRANSFER_CHARACTERISTICS_ID
+    from core.workflows.merge_dovi import StaticHdrMetadata, _build_colour_element_from_static_hdr
+
+    from core.matroska.ids import MATRIX_COEFFICIENTS_ID, PRIMARIES_ID
+    from core.workflows.merge_dovi import ColourSignal
+
+    static = StaticHdrMetadata(max_cll="1000,400")
+    hlg = _build_colour_element_from_static_hdr(static, signal=ColourSignal.for_base("hlg"))
+    assert uint_element(TRANSFER_CHARACTERISTICS_ID, 18) in hlg
+    assert uint_element(TRANSFER_CHARACTERISTICS_ID, 16) in _build_colour_element_from_static_hdr(static)
+    # VUI du flux écrit prioritaire, complété par la base déduite ; SDR BT.709 signalé comme tel.
+    vui = ColourSignal.from_ffprobe({"pix_fmt": "yuv420p10le", "color_transfer": "bt709", "color_primaries": "bt709",
+                                     "color_space": "bt709", "color_range": "tv"})
+    sdr = _build_colour_element_from_static_hdr(static, signal=vui.completed(ColourSignal.for_base("pq")))
+    assert uint_element(TRANSFER_CHARACTERISTICS_ID, 1) in sdr and uint_element(PRIMARIES_ID, 1) in sdr
+    assert uint_element(MATRIX_COEFFICIENTS_ID, 1) in sdr
+    partial = ColourSignal.from_ffprobe({"pix_fmt": "yuv420p10le", "color_transfer": "arib-std-b67,"})
+    assert partial.completed(ColourSignal.for_base("pq")) == ColourSignal(9, 9, 18, 1, 10)
+    assert ColourSignal.from_ffprobe({}).completed(ColourSignal.for_base("sdr")) == ColourSignal(1, 1, 1, 1, 10)
+
+
+@pytest.mark.parametrize(("rpu_found", "expected"), [(True, "P5"), (False, "UNKNOWN")])
+def test_unsignalled_film1_dovi_profile_read_from_first_frames(tmp_path: Path, rpu_found: bool,
+                                                                expected: str) -> None:
+    """Film 1 dont MediaInfo ne signale pas le Dolby Vision : profil lu sur le premier RPU des 8 premières
+    images (lecture bornée), jamais sur le fichier entier."""
+    from core.dovi_profile_detector import DoviSubProfile
+
+    wf = MergeDoviWorkflow()
+    calls: list[list[str]] = []
+
+    def probe(cmd, **_kwargs):
+        calls.append([str(c) for c in cmd])
+        if "-frames:v" in cmd:
+            Path(cmd[-1]).write_bytes(b"\x00\x00\x00\x01head")
+        elif "extract-rpu" in cmd and rpu_found:
+            Path(cmd[cmd.index("-o") + 1]).write_bytes(b"rpu")
+        return subprocess.CompletedProcess(cmd, 0, "Summary:\n  Frames: 1\n  Profile: 5\n", "")
+
+    cast(Any, wf)._run_probe = probe
+    film1 = tmp_path / "film1.mkv"
+    film1.write_bytes(b"")
+    assert wf._film1_dovi_profile(film1, signalled=False) == getattr(DoviSubProfile, expected)
+    assert all(str(film1) not in call or "-frames:v" in call for call in calls)

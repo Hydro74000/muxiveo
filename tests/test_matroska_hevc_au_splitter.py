@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from core.matroska.hevc.access_units import (
     split_into_access_units,
+    write_valid_nal_units,
 )
 
 
@@ -112,3 +113,33 @@ class TestSplitIntoAccessUnits:
         # Le payload de l'AU doit ré-émettre les NAL avec start codes 4 octets.
         assert aus[0].payload == b"\x00\x00\x00\x01" + nal1
         assert aus[1].payload == b"\x00\x00\x00\x01" + nal2
+
+
+class TestInvalidNalUnits:
+    """NAL à en-tête invalide (bit interdit, temporal_id nul) : retirées comme par le décodeur."""
+
+    def test_leading_forbidden_nal_forms_no_phantom_access_unit(self):
+        # Rip DVDFab : NAL de type 31 à bit interdit devant l'AUD de la première image.
+        junk = bytes([0x80 | (31 << 1), 0x42, 0x01, 0x01, 0x22])
+        stream = _stream(junk, _nal(35), _nal(33), _nal(19, first_slice=True), _nal(35),
+                         _nal(1, first_slice=True))
+        aus = split_into_access_units(stream)
+        assert len(aus) == 2
+        assert [n.nal_type for n in aus[0].nal_units] == [35, 33, 19]
+        assert aus[0].discarded_nal_units == 1 and aus[1].discarded_nal_units == 0
+        assert junk not in aus[0].payload and aus[0].is_keyframe
+
+    def test_zero_temporal_id_nal_is_dropped_without_splitting(self):
+        bad = bytes([1 << 1, 0x00, 0x80])  # tranche, nuh_temporal_id_plus1 = 0
+        stream = _stream(_nal(19, first_slice=True), bad, _nal(1, first_slice=True))
+        aus = split_into_access_units(stream)
+        assert len(aus) == 2 and sum(au.discarded_nal_units for au in aus) == 1
+        assert all(bad not in au.payload for au in aus)
+
+    def test_write_valid_nal_units_copies_stream_without_invalid_nals(self, tmp_path):
+        junk = bytes([0x80 | (31 << 1), 0x42, 0x01, 0x01])
+        kept = [_nal(35), _nal(19, first_slice=True)]
+        source, output = tmp_path / "in.hevc", tmp_path / "out.hevc"
+        source.write_bytes(_stream(junk, *kept))
+        assert write_valid_nal_units(source, output) == 1
+        assert output.read_bytes() == _stream(*kept)

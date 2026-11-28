@@ -61,7 +61,9 @@ def _video_entry(tid: int = 0) -> TrackEntry:
 
 
 @pytest.fixture
-def encode_panel(qt_app):
+def encode_panel(qt_app, monkeypatch):
+    # Détection matérielle réelle (sondes NVENC) : au-delà de 10 s sur un GPU occupé, la fermeture échouait.
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
     panel = EncodePanel(AppConfig())
     panel._hw_encoders = {"nvencc_hevc"}
     panel._populate_codec_combo()

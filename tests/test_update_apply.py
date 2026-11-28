@@ -288,11 +288,12 @@ def test_helper_script_runs_isolated_from_a_copy(tmp_path):
 def test_collect_results_reports_once_and_cleans_up(tmp_path):
     parent = tmp_path
     now = time.time()
+    install = parent / "Muxiveo"
 
     def workdir(name: str, age: float, **files: object) -> Path:
         path = parent / f"{update_apply.WORKDIR_PREFIX}{name}"
         path.mkdir()
-        (path / update_apply.WORKDIR_TAG).touch()
+        update_apply.write_workdir_tag(path, install)
         for filename, content in files.items():
             (path / filename.replace("_", ".")).write_text(json.dumps(content) if content is not None else "")
         os.utime(path, (now - age, now - age))
@@ -308,12 +309,16 @@ def test_collect_results_reports_once_and_cleans_up(tmp_path):
 
     # Suppression confiée à l'appelant : rien n'est retiré pendant la lecture.
     discard: list[Path] = []
-    results = update_apply.collect_results(parent, now=now, discard=discard)
+    results = update_apply.collect_results(parent, now=now, discard=discard, install=install)
     assert sorted(discard) == sorted([old_ok, failed, abandoned]) and old_ok.exists()
     for path in discard:
         shutil.rmtree(path)
     assert [r["version"] for r in results] == ["1.5.0", "1.9.0", "1.9.1", "2.0.0"]
-    assert update_apply.collect_results(parent, now=now) == []               # signalés une seule fois
+    # Non signalés tant que l'appelant n'a pas confirmé leur écriture : repris (journal pour les supprimés).
+    again = update_apply.collect_results(parent, now=now, install=install)
+    assert sorted(r["version"] for r in again) == ["1.5.0", "1.9.0", "1.9.1", "2.0.0"]
+    update_apply.mark_reported(parent, install, [r["id"] for r in results])
+    assert update_apply.collect_results(parent, now=now, install=install) == []  # signalés une seule fois
     assert new_ok.exists() and broken.exists() and running.exists()
     assert not old_ok.exists() and not failed.exists() and not abandoned.exists()
     assert (parent / f"{update_apply.WORKDIR_PREFIX}foreign").exists()
@@ -321,11 +326,13 @@ def test_collect_results_reports_once_and_cleans_up(tmp_path):
 
 def test_detached_cleanup_rechecks_backups_and_active_workdirs(tmp_path):
     """Vrai auxiliaire isolé : aucun import applicatif et aucun résultat marqué comme déjà signalé."""
+    install = tmp_path / "Muxiveo"
+
     def workdir(name, age, result=None, ready=False, marked=True):
         work = tmp_path / f"{update_apply.WORKDIR_PREFIX}{name}"
         work.mkdir()
         if marked:
-            (work / update_apply.WORKDIR_TAG).touch()
+            update_apply.write_workdir_tag(work, install)
         if result is not None:
             (work / update_apply.RESULT_FILE).write_text(json.dumps(result), encoding="utf-8")
         if ready:
@@ -349,7 +356,8 @@ def test_detached_cleanup_rechecks_backups_and_active_workdirs(tmp_path):
     helper = tmp_path / f"{update_apply.CLEANUP_PREFIX}test"
     helper.mkdir()
     paths = (old, latest, active, broken, ambiguous, corrupted, personal, foreign)
-    (helper / update_apply.CLEANUP_FILE).write_text(json.dumps([str(path) for path in paths]))
+    (helper / update_apply.CLEANUP_FILE).write_text(json.dumps({"install": str(install),
+                                                                "paths": [str(path) for path in paths]}))
     script = helper / "update_apply.py"
     shutil.copyfile(update_apply.__file__, script)
     result = subprocess.run([sys.executable, "-I", str(script), "cleanup", str(helper)], capture_output=True, timeout=10)
@@ -414,10 +422,10 @@ def test_ambiguous_result_never_discards_backup(tmp_path, content):
     backup = work / "previous/notes.txt"
     backup.parent.mkdir(parents=True)
     backup.write_text("personnel")
-    (work / update_apply.WORKDIR_TAG).touch()
+    update_apply.write_workdir_tag(work, tmp_path / "Muxiveo")
     (work / update_apply.READY_FILE).touch()
     (work / update_apply.RESULT_FILE).write_text(content)
-    assert update_apply.collect_results(tmp_path)[0]["ok"] is False
+    assert update_apply.collect_results(tmp_path, install=tmp_path / "Muxiveo")[0]["ok"] is False
     update_apply.cleanup_stale([work])
     assert backup.read_text() == "personnel"
 

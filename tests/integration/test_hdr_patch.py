@@ -124,3 +124,74 @@ def test_mastering_display_rewritten_without_reencoding(tmp_path):
     assert ("Content light level metadata" in container) == ("Content light level metadata" in source_container)
     assert _md5(output, "0:a:0") == _md5(source, "0:a:0")
     assert not list(work.iterdir())
+
+
+def test_cli_hdr_patch_writes_and_reports(tmp_path):
+    """Commande ``hdr-patch`` (opération hdr.patch) : plan résolu, écriture, refus d'écraser."""
+    import os
+    import sys
+
+    source = _source(tmp_path / "source.mkv")
+    output = tmp_path / "corrige.mkv"
+    root = Path(__file__).resolve().parents[2]
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
+           "XDG_DATA_HOME": str(tmp_path / "xdg-data")}
+
+    def cli(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(root / "main.py"), "--cli", "hdr-patch", "-i", str(source),
+                               "-o", str(output), "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe", "--work-dir",
+                               str(tmp_path / "work"), *args], cwd=root, env=env, capture_output=True, text=True,
+                              check=False, timeout=300)
+
+    planned = cli("--max-cll", "640", "--max-fall", "120", "--mdcv", "BT.2020:0.0001:1000", "--dry-run")
+    assert planned.returncode == 0, planned.stderr
+    changes = json.loads(planned.stdout)["changes"]
+    assert changes["static"]["max_cll"] == 640 and changes["static"]["mastering"]["primaries"] == "BT.2020"
+    assert changes["rpu"] is None and not output.exists()
+    written = cli("--max-cll", "640", "--max-fall", "120", "--mdcv", "BT.2020:0.0001:1000")
+    assert written.returncode == 0, written.stderr
+    assert _first_frame_cll(output) == (640, 120)
+    mastering = _first_frame_side_data(output, "Mastering display metadata")
+    assert Fraction(mastering["max_luminance"]) == 1000 and Fraction(mastering["red_x"]) == Fraction(35400, 50000)
+    assert cli("--max-cll", "500", "--max-fall", "100").returncode == 5
+    refused = cli("--hdr10plus-remove", "--dry-run")
+    assert refused.returncode == 3 and "HDR10+" in refused.stderr
+
+
+def test_real_rpu_edit_completes_missing_rpu_and_warns(tmp_path):
+    """Audit D01, média réel : 2 878 images, RPU absents aux rangs 2875–2876 → complétés par le RPU précédent,
+    avertissement structuré, 2 878 RPU en sortie."""
+    from types import SimpleNamespace
+
+    from core.service import ExecutionContext, ListSink, call
+    from core.service.catalog import CATALOG
+
+    source = Path(__file__).resolve().parents[2] / "samples" / "BL_EL.mkv"
+    if not source.is_file() or shutil.which("dovi_tool") is None:
+        pytest.skip("samples/BL_EL.mkv et dovi_tool requis")
+    work = Path.home() / ".cache" / "muxiveo-tests"  # média de 160 Mo : sur disque, pas en mémoire
+    work.mkdir(parents=True, exist_ok=True)
+    output = work / f"{tmp_path.name}.fix.mkv"
+    config = SimpleNamespace(app_data_dir=tmp_path / "data", display_peak_nits=1000, tool_ffmpeg="ffmpeg",
+                             tool_ffprobe="ffprobe", tool_mediainfo="mediainfo", tool_dovi_tool="dovi_tool",
+                             tool_hdr10plus="hdr10plus_tool", ffmpeg_threads=4, ensure_work_dir=lambda: work)
+    sink = ListSink()
+    try:
+        result = call(CATALOG, "hdr.patch", {"source": str(source), "output": str(output), "measurement": "cached",
+                                             "rpu": {"active_area": {"top": 4, "bottom": 4}}},
+                      ExecutionContext.create(config, sink))
+        completed = [event.data for event in sink.events
+                     if event.type.value == "warning" and event.data.get("code") == "dovi_rpu_completed"]
+        assert [item["ranks"] for item in completed] == [[2875, 2876]]
+        assert any("2875, 2876" in message for message in result.warnings)
+        assert not [event for event in sink.events if event.data.get("code") == "tool_length_mismatch"]
+        rpu, export = tmp_path / "rpu.bin", tmp_path / "rpu.json"
+        subprocess.run(["dovi_tool", "extract-rpu", "-i", str(output), "-o", str(rpu)], check=True,
+                       capture_output=True)
+        subprocess.run(["dovi_tool", "export", "-i", str(rpu), "-d", f"all={export}"], check=True,
+                       capture_output=True)
+        frames = json.loads(export.read_text(encoding="utf-8"))
+        assert len(frames) == 2878
+        assert frames[2875] == frames[2874] and frames[2876] == frames[2874]
+    finally:
+        output.unlink(missing_ok=True)

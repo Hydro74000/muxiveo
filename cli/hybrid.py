@@ -1,29 +1,32 @@
 """Commandes hybrides et outils autonomes de calibration."""
 from __future__ import annotations
 
-from dataclasses import replace
-import json
-from pathlib import Path
-import subprocess
 from typing import Any
 
-from core.subprocess_utils import subprocess_text_kwargs
-from core.workflows.audio_sync import AudioSyncTrack
+import json
+from pathlib import Path
+
 from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
-from core.workflows.hybrid import HybridPair, episode_key, pair_directories
-from core.workflows.sync_calibration import SyncCalibration
-from core.workflows.workflow_store import atomic_write_text, save_workflow
-from core.workflows.subtitle_sync import shift_file
-from core.profiles.selectors import remux_config_to_exact_job
-from cli.constants import EXIT_ARGS, EXIT_EXISTS, EXIT_OK, EXIT_PARTIAL
-from cli.errors import CliError
+from core.jobs.dynamic_sync import perform_dynamic_sync as perform_dynamic_sync  # noqa: F401 - réexport (tests, scripts)
+from core.service.ops.sync import detect_stream_kind as detect_stream_kind  # remplaçable (tests)
+from cli.constants import EXIT_OK
 from cli.options import common_options
 from cli.remux_config import build_remux_config
 from cli.runtime import run_remux_config
-
-
-def _write_json(path, value):
-    atomic_write_text(Path(path), json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
+from cli.interrupts import interrupt_guard
+from core.workflows.hybrid import HybridPair as HybridPair  # noqa: F401 - réexport (tests)
+from cli.service_adapter import (
+    argv_documents,
+    envelope,
+    exit_code_for_result,
+    overrides_from_args,
+    print_json,
+    run_operation,
+)
+from core.jobs.hybrid_pairs import HybridOptions, HybridSteps, pairs_for
+from core.jobs.hybrid_pairs import prepare_pair as _prepare_pair
+from core.jobs.runtime import remux_workflow
+from core.service.context import CancelToken
 
 
 def scanner(args, config):
@@ -33,443 +36,160 @@ def scanner(args, config):
                             accept_coherent=coherent_sync_accepted(args))
 
 
-def detect_stream_kind(ffprobe: str, path: Path | str, stream_spec: str | int, default: str = "audio") -> str:
-    path = Path(path)
-    suffix = path.suffix.lower()
-    if suffix in {".srt", ".vtt", ".ass", ".ssa"}:
-        return "subtitle"
-    spec_str = str(stream_spec).lower()
-    if ":s" in spec_str or spec_str == "s":
-        return "subtitle"
-    if ":a" in spec_str or spec_str == "a":
-        return "audio"
-    if ":v" in spec_str or spec_str == "v":
-        return "video"
-    try:
-        cmd = [
-            str(ffprobe), "-v", "error",
-            "-select_streams", str(stream_spec),
-            "-show_entries", "stream=codec_type",
-            "-of", "csv=p=0",
-            str(path),
-        ]
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        res = subprocess.run(cmd, capture_output=True, timeout=10, **subprocess_text_kwargs())  # nosec B603
-        output = res.stdout.strip().lower()
-        if output in {"audio", "subtitle", "video"}:
-            return output
-    except Exception:  # nosec B110
-        pass
-    return default
-
-
 def cmd_sync_scan(args, config, logger):
-    scan_type = getattr(args, "type", "auto")
-    ref_path = Path(args.ref)
-    tgt_path = Path(args.target)
-    ffprobe = args.ffprobe or config.tool_ffprobe
-    ffmpeg = args.ffmpeg or config.tool_ffmpeg
-
-    if scan_type == "auto":
-        tgt_kind = detect_stream_kind(ffprobe, tgt_path, args.stream_target, default="audio")
-        ref_kind = detect_stream_kind(ffprobe, ref_path, args.stream_ref, default="audio")
-    elif scan_type == "subtitle":
-        tgt_kind = "subtitle"
-        ref_kind = detect_stream_kind(ffprobe, ref_path, args.stream_ref, default="subtitle")
-    else:
-        tgt_kind = "audio"
-        ref_kind = "audio"
-
-    if tgt_kind == "subtitle":
-        from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
-        sub_scanner = SubtitleSyncScanner(ffmpeg, ffprobe, cancel_event=getattr(args, "cancel_event", None))
-        is_ref_sub = (ref_kind == "subtitle")
-        result = sub_scanner.scan(
-            ref_path, args.stream_ref,
-            tgt_path, args.stream_target,
-            is_ref_sub=is_ref_sub,
-            detect_cuts=(args.detect_cuts if is_ref_sub else False),
-            log=lambda message: logger.emit("info", message),
-        )
-    else:
-        cadence_mismatch = None
-        cadence_auto = getattr(args, "cadence_auto", None)
-        if cadence_auto is None:
-            cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
-        cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "auto") or "auto"
-
-        if cadence_auto:
-            try:
-                from core.inspector import FileInspector
-                from core.workflows.cadence import detect_cadence_from_metadata
-                inspector = FileInspector(ffprobe_bin=ffprobe)
-                ref_info = inspector.inspect(ref_path)
-                tgt_info = inspector.inspect(tgt_path)
-                ref_fps = next((v.frame_rate for v in ref_info.video_tracks if v.frame_rate), None)
-                tgt_fps = next((v.frame_rate for v in tgt_info.video_tracks if v.frame_rate), None)
-                if ref_fps and tgt_fps:
-                    cadence_mismatch = detect_cadence_from_metadata(ref_fps, tgt_fps)
-                    if cadence_mismatch:
-                        logger.emit(
-                            "info",
-                            f"Différence de cadence détectée ({ref_fps} vs {tgt_fps}) : {cadence_mismatch.description} — méthode audio : {cadence_method}",
-                        )
-            except Exception as exc:
-                logger.emit("warning", f"Impossible d'analyser les cadences vidéo : {exc}")
-
-        result = scanner(args, config).scan(
-            AudioSyncTrack(ref_path, args.stream_ref),
-            AudioSyncTrack(tgt_path, args.stream_target),
-            detect_cuts=args.detect_cuts,
-            drift_threshold_ms=args.drift_threshold_ms,
-            cadence_mismatch=cadence_mismatch,
-            cadence_audio_method=cadence_method,
-            log=lambda message: logger.emit("info", message),
-            warn=lambda message: logger.emit("warning", message),
-        )
-
+    """``sync-scan`` : opération ``sync.scan`` ; analyseur et détection de flux remplaçables (``scanner``…)."""
+    payload = {
+        "ref": args.ref, "target": args.target,
+        "stream_ref": str(args.stream_ref), "stream_target": str(args.stream_target),
+        "type": getattr(args, "type", "auto") or "auto",
+        "detect_cuts": bool(args.detect_cuts), "drift_threshold_ms": args.drift_threshold_ms,
+        "reject_coherent_sync": bool(getattr(args, "reject_coherent_sync", False)),
+        "quick_sync_check": getattr(args, "quick_sync_check", None),
+        "cadence_auto": getattr(args, "cadence_auto", None),
+        "cadence_method": getattr(args, "cadence_method", None) or None,
+    }
     if args.output_json:
-        _write_json(args.output_json, result.to_dict())
-    print(json.dumps(result.to_dict(), ensure_ascii=False))
+        payload["output_json"] = args.output_json
+    ports = {
+        "audio_scanner": lambda: scanner(args, config),
+        "detect_stream_kind": lambda *a, **k: detect_stream_kind(*a, **k),
+    }
+    result, ctx = run_operation("sync.scan", payload, config=config, logger=logger,
+                                overrides=overrides_from_args(args), ports=ports, documents=argv_documents(args))
+    if getattr(args, "log_format", "text") == "events":
+        print_json(envelope("sync.scan", ctx.events.job, result=result))
+    else:
+        print(json.dumps(getattr(result, "calibration", {}), ensure_ascii=False))
     return EXIT_OK
 
 
 def cmd_shift_subs(args, config, logger):
-    source, output = Path(args.input), Path(args.output)
-    if output.exists() and not args.force:
-        raise CliError(str(output), EXIT_EXISTS)
-    calibration = (SyncCalibration.from_dict(json.loads(Path(args.calibration).read_text(encoding="utf-8-sig")))
-                   if args.calibration else SyncCalibration.linear(args.offset_ms))
-    shift_file(source, output, calibration)
+    """``shift-subs`` : opération ``sync.shift_subtitles``."""
+    payload = {"input": args.input, "output": args.output, "force": bool(args.force)}
+    if args.calibration:
+        payload["calibration"] = args.calibration
+    else:
+        payload["offset_ms"] = args.offset_ms
+    result, ctx = run_operation("sync.shift_subtitles", payload, config=config, logger=logger)
+    if getattr(args, "log_format", "text") == "events":
+        print_json(envelope("sync.shift_subtitles", ctx.events.job, result=result))
     return EXIT_OK
 
 
 def pairs_from_args(args):
-    if args.ref and args.donor and not (args.ref_dir or args.donor_dir):
-        ref, donor = Path(args.ref).expanduser().resolve(), Path(args.donor).expanduser().resolve()
-        if not ref.is_file() or not donor.is_file() or ref == donor:
-            raise CliError("Sources hybrides invalides.", EXIT_ARGS)
-        try:
-            season, episode = episode_key(ref)
-        except ValueError:
-            season, episode = 0, 0
-        return [HybridPair(ref, donor, season, episode)]
-    if args.ref_dir and args.donor_dir and not (args.ref or args.donor):
-        return pair_directories(Path(args.ref_dir).expanduser(), Path(args.donor_dir).expanduser())
-    raise CliError("Choisir --ref/--donor ou --ref-dir/--donor-dir.", EXIT_ARGS)
+    """Moteur par paires historique (``prepare_pair``) : conservé pour les scripts ; la commande ``hybrid``
+    utilise le moteur du Hybrid Studio."""
+    return pairs_for(args.ref, args.donor, args.ref_dir, args.donor_dir)
 
 
-def perform_dynamic_sync(
-    sources: list[Any],
-    tracks: list[Any],
-    config: Any,
-    options: Any,
-    logger: Any,
-) -> SyncCalibration | None:
-    """Analyse dynamiquement les sources pour déterminer le décalage (audio ou sous-titres)."""
-    if len(sources) < 2:
-        return None
-    ref_source = sources[0]
-    donor_source = sources[1]
+def hybrid_options(args) -> HybridOptions:
+    """Options de la commande ``hybrid`` (moteur par paires, ``core.jobs.hybrid_pairs``)."""
+    return HybridOptions(
+        output_dir=Path(args.output_dir), common=common_options(args), profile=str(args.profile or ""),
+        auto_tmdb=args.auto_tmdb, tmdb_apikey=str(args.tmdb_apikey or ""), no_cover=bool(args.no_cover),
+        tag=str(args.tag), output_template=str(getattr(args, "output_template", "") or ""),
+        output_all=bool(getattr(args, "output_all", False)), export_workflow=str(args.export_workflow or ""),
+        dry_run=bool(args.dry_run), force=bool(args.force), continue_on_error=bool(args.continue_on_error),
+        report_json=str(args.report_json or ""),
+    )
 
-    ref_audio = next((t for t in ref_source.tracks if t.track_type == "audio"), None)
-    ref_sub = next((t for t in ref_source.tracks if t.track_type == "subtitle" and t.enabled), None)
-    if ref_sub is None:
-        ref_sub = next((t for t in ref_source.tracks if t.track_type == "subtitle"), None)
 
-    donor_tracks = [t for t in donor_source.tracks if t.enabled]
-    target_audio = next((t for t in donor_tracks if t.track_type == "audio"), None)
-    sync_audio = None
-    if ref_audio is not None and ref_audio.language:
-        sync_audio = next((t for t in donor_source.tracks if t.track_type == "audio" and t.language == ref_audio.language), None)
-    if sync_audio is None:
-        sync_audio = target_audio
-    target_sub = next((t for t in donor_tracks if t.track_type == "subtitle"), None)
+def _cli_profile():
+    from cli import profile
 
-    # 1. Audio vs Audio si disponible
-    if sync_audio and ref_audio:
-        cadence_mismatch = None
-        cadence_auto = getattr(options, "cadence_auto", None)
-        if cadence_auto is None:
-            cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
-        cadence_method = getattr(options, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "auto") or "auto"
+    return profile
 
-        if cadence_auto:
-            from core.workflows.hybrid_matrix import _extract_source_video_fps
-            from core.workflows.cadence import detect_cadence_from_metadata
-            ref_fps = _extract_source_video_fps(ref_source)
-            donor_fps = _extract_source_video_fps(donor_source)
-            if ref_fps and donor_fps:
-                cadence_mismatch = detect_cadence_from_metadata(ref_fps, donor_fps)
-                if cadence_mismatch:
-                    logger.emit(
-                        "info",
-                        f"Différence de cadence vidéo détectée ({ref_fps} vs {donor_fps}) : {cadence_mismatch.description} — méthode audio : {cadence_method}",
-                    )
 
-        logger.emit("info", f"Synchronisation audio dynamique : {ref_source.path.name} #{ref_audio.mkv_tid} vs {donor_source.path.name} #{sync_audio.mkv_tid}…")
-        audio_scanner = AudioSyncScanner(
-            getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
-            getattr(options, "ffprobe", None) or config.tool_ffprobe,
-            quick_check=quick_check_enabled(options, config),
-            accept_coherent=coherent_sync_accepted(options),
-        )
-        return audio_scanner.scan(
-            AudioSyncTrack(ref_source.path, ref_audio.mkv_tid),
-            AudioSyncTrack(donor_source.path, sync_audio.mkv_tid),
-            detect_cuts=bool(getattr(options, "detect_cuts", False)),
-            drift_threshold_ms=getattr(options, "drift_threshold_ms", 25) or 25,
-            cadence_mismatch=cadence_mismatch,
-            cadence_audio_method=cadence_method,
-            log=lambda msg: logger.emit("info", msg),
-            warn=lambda msg: logger.emit("warning", msg),
-        )
-
-    # 2. Sous-titre donneur si pas d'audio
-    if target_sub:
-        from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
-        sub_scanner = SubtitleSyncScanner(
-            getattr(options, "ffmpeg", None) or config.tool_ffmpeg,
-            getattr(options, "ffprobe", None) or config.tool_ffprobe,
-        )
-        if ref_sub is not None:
-            logger.emit("info", f"Synchronisation sous-titres dynamique : {ref_source.path.name} #{ref_sub.mkv_tid} vs {donor_source.path.name} #{target_sub.mkv_tid}…")
-            return sub_scanner.scan(
-                ref_source.path, ref_sub.mkv_tid,
-                donor_source.path, target_sub.mkv_tid,
-                is_ref_sub=True,
-                detect_cuts=bool(getattr(options, "detect_cuts", False)),
-                log=lambda msg: logger.emit("info", msg),
-            )
-        elif ref_audio is not None:
-            logger.emit("info", f"Synchronisation audio vs sous-titre dynamique : {ref_source.path.name} #{ref_audio.mkv_tid} vs {donor_source.path.name} #{target_sub.mkv_tid}…")
-            return sub_scanner.scan(
-                ref_source.path, ref_audio.mkv_tid,
-                donor_source.path, target_sub.mkv_tid,
-                is_ref_sub=False,
-                detect_cuts=False,
-                log=lambda msg: logger.emit("info", msg),
-            )
-
-    logger.emit("warning", f"Aucune paire de pistes compatible trouvée pour la synchronisation automatique de {donor_source.path.name}.")
-    return None
+def cli_hybrid_steps(args, config) -> HybridSteps:
+    """Étapes historiques du CLI, résolues à l'appel (fonctions remplaçables des modules ``cli``)."""
+    return HybridSteps(
+        build=lambda job, conf, options, log: build_remux_config(job, conf, options, log),
+        load_profile=lambda path, conf: _cli_profile().load_decision_profile(path, conf),
+        build_profile=lambda profile, **kwargs: _cli_profile().build_profile_remux_config(profile, **kwargs),
+        audio_scanner=lambda: scanner(args, config),
+        run=lambda conf, options, log, remux_config, *, force: run_remux_config(conf, options, log, remux_config,
+                                                                                force=force),
+        preview=lambda conf, options, remux_config: remux_workflow(conf, options).execution_preview(remux_config),
+    )
 
 
 def prepare_pair(pair, args, config, logger):
-    options = common_options(args)
-    outdir = Path(args.output_dir).expanduser().resolve()
-    job = {"sources": [str(pair.reference), str(pair.donor)],
-           "output": str(outdir / (pair.reference.stem + ".Hybrid.mkv")),
-           "mux_backend": "native", "sync_mode": args.sync_mode,
-           "sync_subtitles": args.sync_subtitles, "crossfade_ms": args.crossfade_ms,
-           "clean_nfo": args.clean_nfo, "chapters": {"source_index": 0},
-           "_allow_missing_output_dir": True}
+    return _prepare_pair(pair, hybrid_options(args), config, logger, cli_hybrid_steps(args, config))
+
+
+def _languages(value):
+    return [item.strip() for item in str(value).split(",") if item.strip()] if value else None
+
+
+def hybrid_payload(args) -> dict:
+    """Requête ``hybrid.run`` / ``hybrid.plan`` des options de la commande ``hybrid``."""
+    from cli.encode_options import encode_block_from_args
+    from core.jobs.hybrid_studio import ROLES, parse_pairs, parse_sources
+    from core.service.ops.media import JobOptions
+
+    import dataclasses
+
+    # Synchro et fondu non saisis : absents de la requête (défauts du service, ou valeurs de la recette) ; saisis,
+    # même égaux au défaut, ils l'emportent sur la recette.
+    explicit = set(getattr(args, "explicit_options", ()) or ())
+    absent: dict[str, Any] = {
+        name: None for name in ("sync_mode", "sync_subtitles", "crossfade_ms", "cadence_auto", "cadence_method")
+        if name not in explicit}
+    common = dataclasses.replace(common_options(args), **absent)
+    payload: dict = {
+        "output_dir": args.output_dir, "options": JobOptions.from_common(common),
+        "tag": str(args.tag), "no_cover": bool(args.no_cover), "dry_run": bool(args.dry_run),
+        "force": bool(args.force), "continue_on_error": bool(args.continue_on_error),
+        "output_all": bool(getattr(args, "output_all", False)),
+        "output_template": str(getattr(args, "output_template", "") or ""),
+        "tmdb_apikey": str(args.tmdb_apikey or ""), "matching": getattr(args, "matching", "episode") or "episode",
+    }
+    for key in ("ref", "donor", "ref_dir", "donor_dir", "profile", "export_workflow", "report_json", "recipe",
+                "sync", "shift_ms"):
+        if getattr(args, key, None) not in (None, ""):
+            payload[key] = getattr(args, key)
+    for key in ("keep_master_audio", "donor_audio_langs", "donor_sub_langs", "exclude_langs"):
+        languages = _languages(getattr(args, key, None))
+        if languages is not None:
+            payload[key] = languages
     if args.auto_tmdb is not None:
-        job["tmdb"] = {"enabled": True, "kind": "tv", "season": str(pair.season),
-                       "episode": str(pair.episode), "cover": not args.no_cover}
-        if args.auto_tmdb:
-            job["tmdb"]["id"] = args.auto_tmdb
-        if args.tmdb_apikey:
-            job["tmdb"]["api_key"] = args.tmdb_apikey
-    profile: dict = {}
-    if args.profile:
-        from cli.profile import build_profile_remux_config, load_decision_profile
-        profile = load_decision_profile(args.profile, config)
-        result, _ = build_profile_remux_config(profile,
-            cli_inputs=[str(pair.reference), str(pair.donor)], cli_output=job["output"],
-            config=config, options=options, logger=logger, preview=True, metadata_job=job)
-        result = replace(result, mux_backend="native", sync_mode=args.sync_mode,
-                         sync_subtitles=args.sync_subtitles, crossfade_ms=args.crossfade_ms, clean_nfo=args.clean_nfo)
-    else:
-        result = build_remux_config(job, config, options, logger)
-    # La référence fournit toujours la vidéo et les chapitres. Le profil reste
-    # maître de la sélection des pistes audio/sous-titres.
-    for track in result.sources[0].tracks:
-        if track.track_type == "video":
-            track.enabled = True
-    ref_audio = next((t for t in result.sources[0].tracks if t.track_type == "audio"), None)
-    donor_tracks = result.sources[1].tracks
-    for track in donor_tracks:
-        if track.track_type == "video":
-            track.enabled = False
-        if track.track_type == "audio" and ref_audio and track.language == ref_audio.language:
-            track.enabled = False
-        if track.track_type == "subtitle" and ref_audio and track.language == ref_audio.language:
-            track.enabled = False
-    all_tracks = [track for source in result.sources for track in source.tracks]
-    ref_video = next((t for t in result.sources[0].tracks if t.track_type == "video"), None)
-    if not args.profile:
-        result.track_order = [(s.file_index, t.mkv_tid, t.entry_id) for s in result.sources for t in s.tracks if t.enabled]
-    else:
-        allowed = {t.entry_id for t in all_tracks if t.enabled}
-        filtered_order = [item for item in result.track_order if len(item) < 3 or item[2] in allowed]
-        final_order = []
-        if ref_video:
-            final_order.append((0, ref_video.mkv_tid, ref_video.entry_id))
-        for item in filtered_order:
-            if ref_video and (item[0] == 0 and item[1] == ref_video.mkv_tid):
-                continue
-            final_order.append(item)
-        result.track_order = final_order
-    ref_audio = next((t for t in result.sources[0].tracks if t.track_type == "audio"), None)
-    target_audio = next((t for t in donor_tracks if t.track_type == "audio" and t.enabled), None)
-    target_sub = next((t for t in donor_tracks if t.track_type == "subtitle" and t.enabled), None)
-    ref_sub = next((t for t in result.sources[0].tracks if t.track_type == "subtitle" and t.enabled), None)
-    if ref_sub is None:
-        ref_sub = next((t for t in result.sources[0].tracks if t.track_type == "subtitle"), None)
-
-    sync_audio = None
-    if ref_audio is not None and ref_audio.language:
-        sync_audio = next((t for t in result.sources[1].tracks if t.track_type == "audio" and t.language == ref_audio.language), None)
-    if sync_audio is None:
-        sync_audio = target_audio
-
-    cadence_mismatch = None
-    cadence_auto = getattr(args, "cadence_auto", None)
-    if cadence_auto is None:
-        cadence_auto = getattr(config, "sync_cadence_auto_apply", True)
-    cadence_method = getattr(args, "cadence_method", None) or getattr(config, "sync_cadence_audio_method", "auto") or "auto"
-
-    if cadence_auto and len(result.sources) >= 2:
-        from core.workflows.hybrid_matrix import _extract_source_video_fps
-        from core.workflows.cadence import detect_cadence_from_metadata
-        ref_fps = _extract_source_video_fps(result.sources[0])
-        donor_fps = _extract_source_video_fps(result.sources[1])
-        if ref_fps and donor_fps:
-            cadence_mismatch = detect_cadence_from_metadata(ref_fps, donor_fps)
-            if cadence_mismatch:
-                logger.emit(
-                    "info",
-                    f"Différence de cadence vidéo détectée ({ref_fps} vs {donor_fps}) : {cadence_mismatch.description} — méthode audio : {cadence_method}",
-                )
-
-    if args.calibration:
-        calibration = SyncCalibration.from_dict(json.loads(Path(args.calibration).read_text(encoding="utf-8-sig")))
-    elif sync_audio is not None and ref_audio is not None:
-        calibration = scanner(args, config).scan(
-            AudioSyncTrack(pair.reference, ref_audio.mkv_tid),
-            AudioSyncTrack(pair.donor, sync_audio.mkv_tid),
-            detect_cuts=args.detect_cuts,
-            drift_threshold_ms=args.drift_threshold_ms,
-            cadence_mismatch=cadence_mismatch,
-            cadence_audio_method=cadence_method,
-            log=lambda text: logger.emit("info", text),
-            warn=lambda text: logger.emit("warning", text),
-        )
-    elif target_sub is not None:
-        from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
-        sub_scanner = SubtitleSyncScanner(args.ffmpeg or config.tool_ffmpeg, args.ffprobe or config.tool_ffprobe)
-        if ref_sub is not None:
-            calibration = sub_scanner.scan(
-                pair.reference, ref_sub.mkv_tid,
-                pair.donor, target_sub.mkv_tid,
-                is_ref_sub=True,
-                detect_cuts=args.detect_cuts,
-                log=lambda text: logger.emit("info", text),
-            )
-        elif ref_audio is not None:
-            calibration = sub_scanner.scan(
-                pair.reference, ref_audio.mkv_tid,
-                pair.donor, target_sub.mkv_tid,
-                is_ref_sub=False,
-                detect_cuts=False,
-                log=lambda text: logger.emit("info", text),
-            )
-        else:
-            raise CliError("Une piste de référence audio ou sous-titre est requise.", EXIT_ARGS)
-    else:
-        raise CliError("Une piste donneuse audio ou sous-titre est requise.", EXIT_ARGS)
-
-    # Cadence ou hauteur (calibration chaînée importée) : seule la réécriture physique les conserve.
-    from cli.remux_config import apply_donor_calibration
-    result.sync_mode, result.sync_calibrations = apply_donor_calibration(
-        calibration, sync_mode=result.sync_mode, sources=result.sources, sync_subtitles=args.sync_subtitles,
-        sync_calibrations=result.sync_calibrations,
-    )
-    if args.auto_forced_subs:
-        from core.workflows.subtitle_heuristics import forced_first
-        result.track_order = forced_first(result.track_order, result.sources)
-    # Template explicite, sinon celui du profil, sinon nom par défaut (comme Hybrid Studio).
-    from core.profiles.decision import profile_output_template, profile_variables
-    template = args.output_template or profile_output_template(profile)
-    if template:
-        from cli.output_template import render_output_filename
-        from cli.remux_config import resolve_tmdb_metadata
-        from core.workflows.hybrid_matrix import MatrixEpisode, matrix_output_context
-        details = resolve_tmdb_metadata(job, config, pair.reference, logger)[3] if job.get("tmdb") else None
-        # Même contexte que Hybrid Studio : {season_episode}, {season} et {episode} sans TMDB.
-        ctx = matrix_output_context(
-            MatrixEpisode(season=pair.season, episode=pair.episode, master_file=pair.reference), pair.reference,
-            details=details, tracks=all_tracks, track_order=list(result.track_order),
-            variables=profile_variables(profile), group=args.tag,
-            output_all=bool(getattr(args, "output_all", False)),
-        )
-        try:
-            result.output = outdir / render_output_filename(template, ctx)
-        except ValueError as exc:
-            raise CliError(str(exc), EXIT_ARGS) from exc
-    return result, calibration
+        payload["auto_tmdb"] = args.auto_tmdb
+    sources = parse_sources(getattr(args, "source", None) or [])
+    if sources:
+        roles = {role: name for name, role in ROLES.items()}
+        payload["sources"] = [{"role": roles[role], "path": str(path)} for role, path in sources]
+    pairs = parse_pairs(getattr(args, "pair", None) or [])
+    if pairs:
+        payload["pairs"] = [{"master": str(master), "donors": [str(d) for d in donors]} for master, donors in pairs]
+    block = encode_block_from_args(args)
+    if block is not None:
+        payload["encode"] = block
+    if getattr(args, "export_jobs", None):
+        payload["export_jobs"] = args.export_jobs
+    if getattr(args, "save_recipe", None):
+        payload["save_recipe"] = args.save_recipe
+    return payload
 
 
 def cmd_hybrid(args, config, logger):
-    from cli.batch import PlannedBatchJob, assert_unique_batch_outputs
-
-    pairs = pairs_from_args(args)
-    if args.forced_threshold <= 0 or args.drift_threshold_ms <= 0 or not 0 <= args.crossfade_ms <= 1000:
-        raise CliError("Seuils hybrides invalides.", EXIT_ARGS)
-    # Phase 1 — préparation (analyse de synchro) de toutes les paires ; les
-    # collisions de sorties sont refusées avant le premier traitement.
-    report: list[dict[str, Any]] = []
-    prepared: list[tuple[Any, Any, Any, Exception | None]] = []
-    for pair in pairs:
+    """``hybrid`` : moteur du Hybrid Studio (opérations hybrid.plan / hybrid.run) ; Ctrl+C arrête."""
+    plan = bool(getattr(args, "plan", False) or getattr(args, "export_jobs", None) or getattr(args, "save_recipe", None))
+    name = "hybrid.plan" if plan else "hybrid.run"
+    payload = hybrid_payload(args)
+    if not plan:
+        for key in ("export_jobs", "save_recipe"):
+            payload.pop(key, None)
+    with interrupt_guard(CancelToken()) as cancel:
+        result, ctx = run_operation(name, payload, config=config, logger=logger,
+                                    overrides=overrides_from_args(args), cancel=cancel,
+                                    documents=argv_documents(args))
+    if getattr(args, "log_format", "text") == "events":
+        print_json(envelope(name, ctx.events.job, result=result))
+    elif plan:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    elif args.dry_run:
         try:
-            result, calibration = prepare_pair(pair, args, config, logger)
-        except Exception as exc:
-            prepared.append((pair, None, None, exc))
-            if not args.continue_on_error:
-                break
-            continue
-        prepared.append((pair, result, calibration, None))
-    assert_unique_batch_outputs([
-        PlannedBatchJob(index, str(pair.reference), str(result.output), remux_config=result,
-                        template=str(getattr(args, "output_template", "") or ""))
-        for index, (pair, result, _calibration, _error) in enumerate(prepared)
-        if result is not None
-    ])
-    # Phase 2 — export, plan ou exécution, dans l'ordre des paires.
-    for pair, result, calibration, error in prepared:
-        try:
-            if error is not None:
-                raise error
-            entry = {"reference": str(pair.reference), "donor": str(pair.donor),
-                     "output": str(result.output), "calibration": calibration.to_dict()}
-            if args.export_workflow:
-                destination = Path(args.export_workflow)
-                if len(pairs) > 1:
-                    destination.mkdir(parents=True, exist_ok=True)
-                    destination /= f"S{pair.season:02d}E{pair.episode:02d}.exact-job.json"
-                save_workflow(destination, remux_config_to_exact_job(result))
-                entry["status"] = "exported"
-            elif args.dry_run:
-                from cli.runtime import workflow
-                entry["plan"] = workflow(config, common_options(args), logger).execution_preview(result)
-                entry["status"] = "planned"
-            else:
-                result.output.parent.mkdir(parents=True, exist_ok=True)
-                result.allow_missing_output_dir = False
-                code = run_remux_config(config, common_options(args), logger, result, force=args.force)
-                entry["status"] = "ok" if code == EXIT_OK else "failed"
-            report.append(entry)
-        except Exception as exc:
-            report.append({"reference": str(pair.reference), "status": "failed", "error": str(exc)})
-            logger.emit("error", str(exc))
-            if not args.continue_on_error:
-                break
-    if args.report_json:
-        _write_json(args.report_json, {"version": 1, "episodes": report})
-    if args.dry_run:
-        try:
-            print(json.dumps(report, ensure_ascii=False, indent=2))
+            print(json.dumps(list(getattr(result, "episodes", ())), ensure_ascii=False, indent=2))
         except UnicodeEncodeError:
-            print(json.dumps(report, ensure_ascii=True, indent=2))
-    return EXIT_PARTIAL if any(e["status"] == "failed" for e in report) else EXIT_OK
+            print(json.dumps(list(getattr(result, "episodes", ())), ensure_ascii=True, indent=2))
+    return exit_code_for_result(result)

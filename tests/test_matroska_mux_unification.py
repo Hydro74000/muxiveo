@@ -100,10 +100,12 @@ def _app_config(tmp_path: Path, *, ini_text: str = "", settings_values: dict[str
     ini_path = tmp_path / "config.ini"
     if ini_text:
         ini_path.write_text(ini_text, encoding="utf-8")
-    values = settings_values or {}
+    values = settings_values if settings_values is not None else {}
     with patch("core.config.QSettings") as mock_qs:
         inst = MagicMock()
         inst.value.side_effect = lambda key, default=None: values.get(key, default)
+        # QSettings à état : une migration écrite au chargement est relue au suivant.
+        inst.setValue.side_effect = values.__setitem__
         mock_qs.return_value = inst
         with patch.object(cfg_mod, "_INI_PATH", ini_path), \
              patch("core.config._app_data_dir", return_value=tmp_path), \
@@ -299,11 +301,106 @@ def _encode_config(tmp_path: Path, **kw: Any) -> EncodeConfig:
 
 class TestMatroskaMuxSetting:
 
-    def test_default_is_ffmpeg_without_configuration(self, tmp_path: Path) -> None:
+    def test_default_is_auto_without_configuration(self, tmp_path: Path) -> None:
         config, _settings = _app_config(tmp_path)
-        assert config.matroska_mux_backend == "ffmpeg"
-        assert config.remux_mux_backend == "ffmpeg"  # alias de compatibilité
+        assert config.matroska_mux_backend == "auto"
         assert config.load_warnings == []
+        assert config.load_notices == []
+
+    def test_saved_ffmpeg_from_the_old_default_migrates_to_auto_once(self, tmp_path: Path) -> None:
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(tmp_path, settings_values=values)
+        assert config.matroska_mux_backend == "auto"
+        # Lecture seule : rien n'est écrit avant le démarrage qui journalise.
+        assert values == {"matroska/mux_backend": "ffmpeg"}
+        notices = config.persist_load_migrations()
+        assert len(notices) == 1 and "Auto" in notices[0]
+        assert values["matroska/mux_backend"] == "auto"
+        assert values["matroska/mux_backend_default_auto"] is True
+        assert config.persist_load_migrations() == []
+        # Choix FFmpeg fait après la migration (Paramètres) : respecté, plus jamais migré.
+        values["matroska/mux_backend"] = "ffmpeg"
+        again, _settings = _app_config(tmp_path, settings_values=values)
+        assert again.matroska_mux_backend == "ffmpeg"
+        assert again.persist_load_migrations() == []
+
+    def test_reading_the_configuration_never_writes(self, tmp_path: Path) -> None:
+        """Aide du CLI, instantanés : une lecture n'écrit ni la migration ni son marqueur."""
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        for _ in range(2):
+            config, settings = _app_config(tmp_path, settings_values=values)
+            assert config.matroska_mux_backend == "auto"
+            assert not settings.setValue.called
+        assert values == {"matroska/mux_backend": "ffmpeg"}
+        assert len(config.persist_load_migrations()) == 1  # migration toujours disponible au démarrage
+
+    @pytest.mark.parametrize("override", ["native", "auto", ""])
+    def test_ini_override_still_migrates_the_saved_old_default(self, tmp_path: Path, override: str) -> None:
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(
+            tmp_path, ini_text=f"[matroska]\nmux_backend = {override}\n", settings_values=values,
+        )
+        assert config.matroska_mux_backend == (override or "auto")
+        config.persist_load_migrations()
+        assert values["matroska/mux_backend"] == "auto"
+        # Surcharge retirée : la valeur enregistrée est déjà migrée, FFmpeg ne revient pas.
+        (tmp_path / "config.ini").unlink()
+        again, _settings = _app_config(tmp_path, settings_values=values)
+        assert again.matroska_mux_backend == "auto"
+
+    def test_explicit_ffmpeg_in_config_ini_is_respected(self, tmp_path: Path) -> None:
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(tmp_path, ini_text="[matroska]\nmux_backend = ffmpeg\n", settings_values=values)
+        assert config.matroska_mux_backend == "ffmpeg"
+        assert config.persist_load_migrations() == []  # rien d'effectif à annoncer
+
+    def test_empty_matroska_key_means_auto_never_the_legacy_key(self, tmp_path: Path) -> None:
+        config, _settings = _app_config(
+            tmp_path, ini_text="[matroska]\nmux_backend =\n\n[remux]\nmux_backend = native\n",
+            settings_values={"remux/mux_backend": "native"},
+        )
+        assert config.matroska_mux_backend == "auto"
+
+    def test_legacy_saved_old_default_migrates_too(self, tmp_path: Path) -> None:
+        values: dict[str, object] = {"remux/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(tmp_path, settings_values=values)
+        assert config.matroska_mux_backend == "auto"
+        assert len(config.persist_load_migrations()) == 1
+        assert values["remux/mux_backend"] == "auto"
+        assert "matroska/mux_backend" not in values
+
+    @pytest.mark.parametrize("legacy_ini", ["native", "ffmpeg"])
+    def test_legacy_ini_override_survives_the_legacy_migration(self, tmp_path: Path, legacy_ini: str) -> None:
+        """Ancienne clé QSettings migrée en place : la surcharge [remux] de config.ini reste prioritaire."""
+        values: dict[str, object] = {"remux/mux_backend": "ffmpeg"}
+        ini = f"[remux]\nmux_backend = {legacy_ini}\n"
+        config, _settings = _app_config(tmp_path, ini_text=ini, settings_values=values)
+        assert config.matroska_mux_backend == legacy_ini
+        assert config.persist_load_migrations() == []  # rien d'effectif à annoncer
+        again, _settings = _app_config(tmp_path, ini_text=ini, settings_values=values)
+        assert again.matroska_mux_backend == legacy_ini
+
+    def test_fresh_profile_sets_the_marker_so_a_later_ffmpeg_choice_holds(self, tmp_path: Path) -> None:
+        values: dict[str, object] = {}
+        config, _settings = _app_config(tmp_path, settings_values=values)
+        assert config.matroska_mux_backend == "auto"
+        assert config.persist_load_migrations() == []
+        assert values["matroska/mux_backend_default_auto"] is True
+        values["matroska/mux_backend"] = "ffmpeg"
+        again, _settings = _app_config(tmp_path, settings_values=values)
+        assert again.matroska_mux_backend == "ffmpeg"
+
+    def test_save_supersedes_a_pending_migration(self, tmp_path: Path) -> None:
+        import core.config as cfg_mod
+
+        values: dict[str, object] = {"matroska/mux_backend": "ffmpeg"}
+        config, _settings = _app_config(tmp_path, settings_values=values)
+        config.matroska_mux_backend = "ffmpeg"  # choix explicite dans les Paramètres
+        with patch.object(cfg_mod, "_INI_PATH", tmp_path / "config.ini"):
+            config.save()
+        assert config.persist_load_migrations() == []
+        assert values["matroska/mux_backend"] == "ffmpeg"
+        assert values["matroska/mux_backend_default_auto"] is True
 
     def test_reads_new_ini_section(self, tmp_path: Path) -> None:
         config, _settings = _app_config(tmp_path, ini_text="[matroska]\nmux_backend = native\n")
@@ -326,9 +423,9 @@ class TestMatroskaMuxSetting:
         )
         assert config.matroska_mux_backend == "ffmpeg"
 
-    def test_invalid_value_falls_back_to_ffmpeg_with_warning(self, tmp_path: Path) -> None:
+    def test_invalid_value_falls_back_to_auto_with_warning(self, tmp_path: Path) -> None:
         config, _settings = _app_config(tmp_path, ini_text="[matroska]\nmux_backend = turbo\n")
-        assert config.matroska_mux_backend == "ffmpeg"
+        assert config.matroska_mux_backend == "auto"
         assert any("mux_backend invalide" in warning for warning in config.load_warnings)
 
     def test_save_writes_new_key_only(self, tmp_path: Path) -> None:
@@ -341,7 +438,7 @@ class TestMatroskaMuxSetting:
     def test_to_dict_exposes_matroska_section(self, tmp_path: Path) -> None:
         config, _settings = _app_config(tmp_path)
         assert config.to_dict()["matroska"] == {
-            "mux_backend": "ffmpeg",
+            "mux_backend": "auto",
             "regenerate_statistics": True,
         }
 
@@ -352,7 +449,7 @@ class TestMatroskaMuxSetting:
         assert group["title"] == "Muxage Matroska"
         field = group["fields"][0]
         assert field["attr"] == "matroska_mux_backend"
-        assert field["options"][0][0] == "ffmpeg"
+        assert field["options"][0][0] == "auto"
 
 
 # =============================================================================
@@ -361,9 +458,9 @@ class TestMatroskaMuxSetting:
 
 class TestJobPriority:
 
-    def test_normalize_defaults_to_ffmpeg(self) -> None:
-        assert normalize_mux_backend(None) == "ffmpeg"
-        assert normalize_mux_backend("") == "ffmpeg"
+    def test_normalize_defaults_to_auto(self) -> None:
+        assert normalize_mux_backend(None) == "auto"
+        assert normalize_mux_backend("") == "auto"
 
     def test_dataclass_defaults_are_ffmpeg(self, tmp_path: Path) -> None:
         source = tmp_path / "in.mkv"
@@ -376,11 +473,11 @@ class TestJobPriority:
         assert remux.mux_backend == "ffmpeg"
         assert _encode_config(tmp_path).mux_backend == "ffmpeg"
 
-    def test_job_template_defaults_to_ffmpeg(self) -> None:
+    def test_job_template_without_choice_writes_no_backend(self) -> None:
         from cli.remux_config import config_to_template
 
         template = config_to_template({})
-        assert template["mux_backend"] == "ffmpeg"
+        assert "mux_backend" not in template  # réglage global appliqué au chargement
         explicit = config_to_template({"mux_backend": "native"})
         assert explicit["mux_backend"] == "native"
 
@@ -445,23 +542,27 @@ class TestEncodeMuxSelector:
         decision = select_encode_mux_backend(config, pipeline=PIPELINE_NVENCC_DIRECT)
         assert decision.selected == "native"
 
-    def test_auto_keeps_ffmpeg_for_direct_single_pass(self, tmp_path: Path) -> None:
+    def test_auto_selects_native_for_direct_single_pass(self, tmp_path: Path) -> None:
         config = _encode_config(tmp_path, mux_backend="auto")
         decision = select_encode_mux_backend(config, pipeline=PIPELINE_FFMPEG_DIRECT)
-        assert decision.selected == "ffmpeg"
-        assert not decision.uses_fallback  # choix de coût, pas un repli sur blocage
-        assert "monopasse" in decision.reason
+        assert decision.selected == "native"
+        assert not decision.uses_fallback
 
-    def test_auto_keeps_ffmpeg_for_dovi_copy_from_non_matroska(self, tmp_path: Path) -> None:
-        # Vidéo COPY depuis MP4 : le natif imposerait un remballage complet.
+    def test_auto_keeps_ffmpeg_only_when_blocked(self, tmp_path: Path) -> None:
+        config = _encode_config(tmp_path, mux_backend="auto", output=tmp_path / "out.mp4")
+        decision = select_encode_mux_backend(config, pipeline=PIPELINE_FFMPEG_DIRECT)
+        assert decision.selected == "ffmpeg"
+        assert decision.uses_fallback and ".mkv" in decision.reason
+
+    def test_auto_selects_native_for_dovi_copy_from_non_matroska(self, tmp_path: Path) -> None:
+        # Vidéo COPY depuis MP4 : lue en flux par l'assemblage natif, sans remballage.
         mp4 = tmp_path / "src.mp4"
         mp4.write_bytes(b"mp4")
         video = _video_settings(codec="copy", copy_dv=True)
         config = _encode_config(tmp_path, source=mp4, mux_backend="auto", video=video)
         decision = select_encode_mux_backend(config, pipeline=PIPELINE_FFMPEG_DIRECT)
-        assert decision.selected == "ffmpeg"
+        assert decision.selected == "native"
         assert not decision.uses_fallback
-        assert "src.mp4" in decision.reason
         mkv = tmp_path / "src.mkv"
         mkv.write_bytes(b"mkv")
         config = _encode_config(tmp_path, source=mkv, mux_backend="auto", video=video)
@@ -689,7 +790,9 @@ class TestNativeEncodeAssembly:
             tmp_path / "src.mkv",
             [_entry_bytes(1, 2, "A_EAC3"), _entry_bytes(2, 17, "S_TEXT/UTF8")],
             clusters=_simple_cluster(1) + _simple_cluster(2, payload=b"Bonjour"),
-            extra_top_level=element(CHAPTERS_ID, b""),
+            # Un chapitre réel (Chapters exige une édition) : copié tel quel, sans ChapterTrack.
+            extra_top_level=element(CHAPTERS_ID, element(bytes.fromhex("45b9"), element(bytes.fromhex("b6"), (
+                bytes.fromhex("73c4") + b"\x81\x01" + bytes.fromhex("91") + b"\x81\x00")))),
         )
         artifact = _write_mkv(
             tmp_path / "video_artifact.mkv",
@@ -774,7 +877,9 @@ class TestNativeEncodeAssembly:
         assert audio.flag_original
         assert audio.flag_commentary
 
-    def test_native_assembly_materializes_non_matroska_copied_audio(self, tmp_path: Path) -> None:
+    def test_native_assembly_materializes_non_matroska_copied_audio(self, tmp_path: Path, monkeypatch) -> None:
+        # Chemin fichier (canonicalisation), conservé pour les conteneurs non lus en flux.
+        monkeypatch.setattr("core.workflows.encode.runtime.native_mux.is_streamable_source", lambda _path: False)
         foreign = tmp_path / "audio.mp4"
         foreign.write_bytes(b"mp4")
         artifact = _write_mkv(
@@ -953,7 +1058,9 @@ class TestNativeEncodeAssembly:
 
         assert [commands[0][i + 1] for i, arg in enumerate(commands[0]) if arg == "-map"] == ["0:2"]
 
-    def test_native_assembly_copied_mp4_video_without_context(self, tmp_path: Path) -> None:
+    def test_native_assembly_copied_mp4_video_without_context(self, tmp_path: Path, monkeypatch) -> None:
+        # Chemin fichier (canonicalisation), conservé pour les conteneurs non lus en flux.
+        monkeypatch.setattr("core.workflows.encode.runtime.native_mux.is_streamable_source", lambda _path: False)
         """Vidéo MP4 copiée sans chapitres ni tags : les infos de segment
         viennent de l'artefact canonique, jamais du MP4 (« VINT EBML invalide »)."""
         source = tmp_path / "source.mp4"
@@ -1141,9 +1248,12 @@ class TestExecutionPreviewAndValidate:
         report = wf.execution_preview(config)
         assert report["video_encode_backend"] == "ffmpeg"
         assert report["requested_mux_backend"] == "auto"
-        assert report["selected_mux_backend"] == "ffmpeg"
+        assert report["selected_mux_backend"] == "native"
         assert report["pipeline"] == PIPELINE_FFMPEG_DIRECT
-        assert report["post_patches"] == ["muxing_app", "language"]
+        assert report["post_patches"] == []
+        ffmpeg = wf.execution_preview(_encode_config(tmp_path, mux_backend="ffmpeg"))
+        assert ffmpeg["selected_mux_backend"] == "ffmpeg"
+        assert ffmpeg["post_patches"] == ["muxing_app", "language"]
 
     def test_multi_video_native_preview_has_no_post_patches(self, tmp_path: Path) -> None:
         wf = self._workflow()
@@ -1522,7 +1632,9 @@ class TestNativeSyncRewrite:
         )
         assert plan.ordered_tracks[1].time_shift_ms == 120
 
-    def test_rewritten_mp4_subtitle_keeps_canonical_metadata(self, tmp_path: Path) -> None:
+    def test_rewritten_mp4_subtitle_keeps_canonical_metadata(self, tmp_path: Path, monkeypatch) -> None:
+        # Chemin fichier (canonicalisation), conservé pour les conteneurs non lus en flux.
+        monkeypatch.setattr("core.workflows.encode.runtime.native_mux.is_streamable_source", lambda _path: False)
         """Sous-titre MP4 réécrit : langue, nom et flags repris de l'artefact canonique."""
         from core.matroska.ids import FLAG_DEFAULT_ID, FLAG_FORCED_ID, LANGUAGE_ID, NAME_ID
 

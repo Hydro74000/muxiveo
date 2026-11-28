@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "kind": "decision-profile",
+  "name": "Films VF",
+  "description": "VF puis VO, sous-titres français forcés en premier",
+  "rules": []
+}

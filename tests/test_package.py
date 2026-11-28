@@ -299,6 +299,8 @@ def test_build_pyinstaller_lowercases_linux_entrypoints(tmp_path):
     assert not (tmp_path / "dist" / "Muxiveo" / "Muxiveo").exists()
     assert not (tmp_path / "dist" / "Muxiveo" / ("muxiveo" + "-cli")).exists()
     assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
+    assert "--collect-binaries" in commands[0]
+    assert "--collect-data" in commands[0]
 
 
 @_UNIX_PACKAGING_ONLY
@@ -382,24 +384,41 @@ def test_build_pyinstaller_accepts_lowercase_macos_entrypoint(tmp_path):
 
     assert result == tmp_path / "dist" / "Muxiveo.app" / "Contents" / "MacOS" / "muxiveo"
     assert commands[0][commands[0].index("--name") + 1] == "Muxiveo"
+    assert "--collect-binaries" not in commands[0]
+    assert not any(commands[0][i:i + 2] == ["--collect-data", "PySide6"] for i in range(len(commands[0])))
 
 
-def test_ensure_wine_deps_pins_pyside6_and_verifies_runtime():
-    with patch.object(package_mod, "_WIN_PYSIDE6_VER", "6.10.2"), \
+def test_ensure_wine_deps_follow_requirements_and_verify_runtime():
+    """Décision DE : le préfixe Wine installe PySide6 selon requirements.txt (aucune version figée)."""
+    with patch.object(package_mod, "_WIN_PYSIDE6_VER", ""), \
          patch.object(package_mod, "_wine_pip") as mock_wine_pip, \
          patch.object(package_mod, "_ensure_wine_qt_icu_runtime") as mock_icu, \
-         patch.object(package_mod, "_verify_wine_pyside6_runtime") as mock_verify:
+         patch.object(package_mod, "_verify_wine_pyside6_runtime") as mock_verify, \
+         patch.object(package_mod, "python_inventory", return_value=[{"name": "PySide6", "version": "6.11.2"}]) \
+            as mock_inventory:
         package_mod._ensure_wine_deps()
 
+    pyside = next(r for r in package_mod.read_requirements(python_version=(3, 11)) if r.distribution == "PySide6")
     mock_wine_pip.assert_called_once_with(
         "pyinstaller",
-        "PySide6==6.10.2",
-        "pymediainfo>=6.1.0",
+        "pillow",
+        pyside.spec,
         "numpy>=1.24",
+        "pymediainfo>=6.1.0",
         "certifi",
     )
+    assert "==" not in pyside.spec
+    assert mock_inventory.call_args.args[0][0] == "wine"  # inventaire du préfixe Wine
+    assert package_mod.TOOL_MANIFEST.python == [{"name": "PySide6", "version": "6.11.2"}]
+    package_mod.TOOL_MANIFEST.python = None
     mock_icu.assert_called_once_with()
     mock_verify.assert_called_once_with()
+
+
+def test_wine_pyside6_version_can_be_forced_for_a_trial():
+    with patch.object(package_mod, "_WIN_PYSIDE6_VER", "6.10.2"):
+        specs = package_mod._wine_python_specs()
+    assert "PySide6==6.10.2" in specs and not any(s.startswith("PySide6>=") for s in specs)
 
 
 def test_ensure_pyinstaller_deps_list_format():
@@ -424,7 +443,8 @@ def test_packaging_repairs_incompatible_pyside_even_when_importable(
     requirements = reqs.read_requirements(python_version=python_version)
     versions = {"PySide6": installed_pyside, "numpy": "2.3.0", "pymediainfo": "7.0.1", "certifi": "2025.1.1"}
     monkeypatch.setattr(reqs, "installed_version", versions.get)
-    monkeypatch.setattr(module, "read_requirements", lambda: requirements)
+    monkeypatch.setattr(module, "read_requirements",
+                        lambda path=None, **_k: requirements if path is None else [])  # outils de build : à jour
     monkeypatch.setattr(module.importlib.util, "find_spec", lambda _name: object())
     monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/tool")
     packages = []
@@ -850,6 +870,65 @@ def test_patch_macos_info_plist_uses_lowercase_bundle_executable(tmp_path):
     assert plist["CFBundleShortVersionString"] == "1.2.3"
 
 
+@pytest.mark.parametrize("invalid_signature", [False, True])
+def test_build_macos_seals_final_bundle_before_distribution(tmp_path, monkeypatch, invalid_signature):
+    app = tmp_path / "dist" / "Muxiveo.app"
+    executable = app / "Contents" / "MacOS" / "muxiveo"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"executable")
+    plist_path = app / "Contents" / "Info.plist"
+    plist_path.write_bytes(plistlib.dumps({"CFBundleExecutable": "Muxiveo"}))
+    sealed = {}
+    commands = []
+
+    def make_icon(_source, dest):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"custom icon")
+        return dest
+
+    def snapshot():
+        return {str(p.relative_to(app)): p.read_bytes() for p in app.rglob("*") if p.is_file()}
+
+    def codesign(cmd, **_kwargs):
+        commands.append(cmd)
+        assert cmd[0] == "codesign"
+        assert cmd[-1] == str(app)
+        if "--sign" in cmd:
+            assert plistlib.loads(plist_path.read_bytes())["CFBundleExecutable"] == "muxiveo"
+            assert plistlib.loads(plist_path.read_bytes())["CFBundleShortVersionString"] == "5.1.1"
+            assert (app / "Contents" / "Resources" / "icon.icns").read_bytes() == b"custom icon"
+            sealed.update(snapshot())
+        else:
+            assert "--verify" in cmd and "--deep" in cmd and "--strict" in cmd
+            assert sealed and snapshot() == sealed
+            if invalid_signature:
+                raise subprocess.CalledProcessError(1, cmd)
+
+    def require_sealed(*_args, **_kwargs):
+        assert sealed and snapshot() == sealed
+
+    monkeypatch.setattr(package_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(package_mod, "_build_icns_from_png", make_icon)
+    monkeypatch.setattr(package_mod, "_build_pyinstaller", lambda **_kwargs: executable)
+    monkeypatch.setattr(package_mod, "_run", codesign)
+    verify_runtime = MagicMock(side_effect=require_sealed)
+    build_dmg = MagicMock(side_effect=lambda *_args, **_kwargs: require_sealed() or tmp_path / "Muxiveo.dmg")
+    monkeypatch.setattr(package_mod, "_verify_macos_bundle", verify_runtime)
+    monkeypatch.setattr(package_mod, "_build_macos_dmg", build_dmg)
+    monkeypatch.setattr(package_mod, "_copy_final_file_if_requested", lambda path, *_args, **_kwargs: path)
+
+    if invalid_signature:
+        with pytest.raises(subprocess.CalledProcessError):
+            package_mod.build_macos(dmg=True, version_tag="5.1.1")
+        verify_runtime.assert_not_called()
+        build_dmg.assert_not_called()
+    else:
+        package_mod.build_macos(dmg=True, version_tag="5.1.1")
+        verify_runtime.assert_called_once_with(app)
+        build_dmg.assert_called_once_with(app, version_tag="5.1.1")
+    assert len(commands) == 2
+
+
 def test_package_appimage_versioned_output_path_uses_app_version_by_default():
     with patch.object(package_appimage_mod, "APP_VERSION", "8.8.8"):
         output = package_appimage_mod._versioned_output_path(
@@ -1156,6 +1235,8 @@ def test_build_windows_allinc_produces_both_installers_and_portable_zip(tmp_path
     portable_built = []
 
     monkeypatch.setattr(package_mod, "_WIN_BUNDLE", bundle)
+    monkeypatch.setattr(package_mod, "_windows_bundle_inventory",  # bundle réutilisé : inventaire du préfixe Wine
+                        lambda b: [{"name": "PySide6", "version": "6.10.2"}])
     monkeypatch.setattr(package_mod, "_ensure_wine", lambda: None)
     monkeypatch.setattr(package_mod, "_ensure_makensis", lambda: None)
     monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
@@ -1207,3 +1288,149 @@ def test_appimage_bundles_ui_assets(tmp_path, monkeypatch):
         package_appimage_mod.build_onedir()
     sep = ";" if sys.platform == "win32" else ":"
     assert f"--add-data={package_appimage_mod.ROOT / 'ui' / 'assets'}{sep}ui/assets" in seen[0]
+
+
+def test_package_appimage_novidia_variant_never_matches_allinc_update_pattern():
+    """« _allinc_novidia » : hors du motif zsync « _allinc-* » des AppImage AllInc installées."""
+    import fnmatch
+
+    with patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_OWNER", "Hydro74000"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_REPO", "Muxiveo"), \
+         patch.object(package_appimage_mod, "_APPIMAGE_UPDATE_RELEASE", "latest"):
+        novidia = package_appimage_mod._appimage_update_information("x86_64", allinc=True, novidia=True)
+        allinc = package_appimage_mod._appimage_update_information("x86_64", allinc=True)
+    assert novidia == "gh-releases-zsync|Hydro74000|Muxiveo|latest|Muxiveo-x86_64_allinc_novidia-*.AppImage.zsync"
+    allinc_glob = allinc.rsplit("|", 1)[1]
+    novidia_glob = novidia.rsplit("|", 1)[1]
+    assert not fnmatch.fnmatch("Muxiveo-x86_64_allinc_novidia-4.2.0.AppImage.zsync", allinc_glob)
+    assert not fnmatch.fnmatch("Muxiveo-x86_64_allinc-4.2.0.AppImage.zsync", novidia_glob)
+    assert package_appimage_mod._variant_suffix(False, True) == ""
+
+
+def test_package_appimage_novidia_appdir_skips_nvencc_and_sets_marker(tmp_path, monkeypatch):
+    calls: list[str] = []
+    for name in ("ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc", "muxiveo_rife"):
+        monkeypatch.setattr(package_appimage_mod, f"_dl_{name}", lambda d, a, n=name: calls.append(n))
+    monkeypatch.setattr(package_appimage_mod, "_bundle_licenses", lambda appdir: None)
+    package_appimage_mod.bundle_tools(tmp_path, "x86_64", nvencc=False)
+    assert "nvencc" not in calls and "ffmpeg" in calls
+    calls.clear()
+    package_appimage_mod.bundle_tools(tmp_path, "x86_64")
+    assert "nvencc" in calls
+
+
+def test_bundle_windows_tools_novidia_then_nvencc(tmp_path, monkeypatch):
+    bundle = tmp_path / "Muxiveo"
+    bundle.mkdir()
+    calls: list[str] = []
+    for name in ("ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc", "muxiveo_rife"):
+        monkeypatch.setattr(package_mod, f"_dl_windows_{name}", lambda d, n=name: calls.append(n))
+    monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
+
+    package_mod.bundle_windows_tools(bundle, nvencc=False)
+    assert "nvencc" not in calls
+    assert (bundle / "_ALLINC").is_file() and (bundle / "_ALLINC_NOVIDIA").is_file()
+
+    package_mod.add_windows_nvencc(bundle)
+    assert calls[-1] == "nvencc"
+    assert (bundle / "_ALLINC").is_file() and not (bundle / "_ALLINC_NOVIDIA").exists()
+
+
+def test_build_nsis_installer_names_novidia_variant(tmp_path, monkeypatch):
+    monkeypatch.setattr(package_mod, "ROOT", tmp_path)
+    monkeypatch.setattr(package_mod, "_find_makensis", lambda: "makensis")
+
+    def fake_run(cmd):
+        nsi_text = (tmp_path / "Muxiveo.nsi").read_text(encoding="utf-8")
+        for line in nsi_text.splitlines():
+            if line.startswith("OutFile "):
+                Path(line.split("OutFile ", 1)[1].strip('"')).write_bytes(b"SETUP_EXE")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(package_mod, "_run", fake_run)
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    (bundle / "_ALLINC").touch()
+    (bundle / "_ALLINC_NOVIDIA").touch()
+    assert package_mod._build_nsis_installer(bundle, version_tag="4.0.3") == tmp_path / "Muxiveo-Setup-AllInc_NoVidia-4.0.3.exe"
+
+
+def test_build_windows_novidia_before_allinc_and_portable_with_nvencc(tmp_path, monkeypatch):
+    """Même bundle : standard → NoVidia (sans NVEncC) → AllInc + ZIP portable (avec NVEncC)."""
+    bundle = tmp_path / "Muxiveo-win"
+    bundle.mkdir()
+    (bundle / "Muxiveo.exe").write_bytes(b"MZ_EXE")
+    nsis_calls: list[str] = []
+    zip_markers: list[bool] = []
+
+    monkeypatch.setattr(package_mod, "_WIN_BUNDLE", bundle)
+    monkeypatch.setattr(package_mod, "_windows_bundle_inventory",  # bundle réutilisé : inventaire du préfixe Wine
+                        lambda b: [{"name": "PySide6", "version": "6.10.2"}])
+    monkeypatch.setattr(package_mod, "_ensure_wine", lambda: None)
+    monkeypatch.setattr(package_mod, "_ensure_makensis", lambda: None)
+    monkeypatch.setattr(package_mod, "bundle_windows_licenses", lambda b: None)
+    for name in ("ffmpeg", "mediainfo", "dovi_tool", "hdr10plus_tool", "nvencc", "muxiveo_rife"):
+        monkeypatch.setattr(package_mod, f"_dl_windows_{name}", lambda d, n=name: (d / n).touch())
+
+    def fake_build_nsis(b, version_tag=None):
+        if (b / "_ALLINC_NOVIDIA").exists():
+            name = "Muxiveo-Setup-AllInc_NoVidia-4.0.3.exe"
+            assert not (b / "tools" / "nvencc").exists()
+        elif (b / "_ALLINC").exists():
+            name = "Muxiveo-Setup-AllInc-4.0.3.exe"
+            assert (b / "tools" / "nvencc").exists()
+        else:
+            name = "Muxiveo-Setup-4.0.3.exe"
+        nsis_calls.append(name)
+        return tmp_path / name
+
+    monkeypatch.setattr(package_mod, "_build_nsis_installer", fake_build_nsis)
+    monkeypatch.setattr(package_mod, "_copy_final_file_if_requested", lambda p, d, version_tag=None: p)
+    monkeypatch.setattr(
+        package_mod, "_build_windows_portable_zip",
+        lambda b, version_tag=None: (zip_markers.append((b / "_ALLINC_NOVIDIA").exists()), tmp_path / "p.zip")[1],
+    )
+
+    package_mod.build_windows(
+        skip_wine=True, dest=None, version_tag="4.0.3", allinc=True, portable=True, allinc_novidia=True,
+    )
+
+    assert nsis_calls == [
+        "Muxiveo-Setup-4.0.3.exe", "Muxiveo-Setup-AllInc_NoVidia-4.0.3.exe", "Muxiveo-Setup-AllInc-4.0.3.exe",
+    ]
+    assert zip_markers == [False]
+
+
+def _check_allinc_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "check_allinc_rife", Path(__file__).resolve().parent.parent / "scripts" / "check_allinc_rife.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("novidia", [False, True])
+def test_check_allinc_nvencc_variant(tmp_path, novidia):
+    check = _check_allinc_module()
+    tools = tmp_path / "usr" / "bin" / "tools"
+    tools.mkdir(parents=True)
+    entries = [{"tool": "ffmpeg"}] + ([] if novidia else [{"tool": "nvencc"}])
+    (tools / "tools-manifest.json").write_text(json.dumps({"version": 1, "tools": entries,
+                                                           "python": [{"name": n, "version": "1"} for n in
+                                                                      ("PySide6", "numpy", "pymediainfo", "certifi",
+                                                                       "PyInstaller", "Pillow")]}),
+                                               encoding="utf-8")
+    if novidia:
+        (tmp_path / "usr" / "bin" / "_ALLINC_NOVIDIA").touch()
+    else:
+        (tools / "nvencc").write_bytes(b"x")
+    name = "Muxiveo-x86_64_allinc_novidia-1.AppImage" if novidia else "Muxiveo-x86_64_allinc-1.AppImage"
+    assert check.nvencc_errors(name, tmp_path) == []
+    # Variante inversée : anomalies signalées.
+    other = "Muxiveo-x86_64_allinc-1.AppImage" if novidia else "Muxiveo-x86_64_allinc_novidia-1.AppImage"
+    assert check.nvencc_errors(other, tmp_path)

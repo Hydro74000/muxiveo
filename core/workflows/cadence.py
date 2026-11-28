@@ -175,7 +175,11 @@ def parse_framerate_fraction(value: str | float | int | Fraction | None) -> Frac
             num = int(float(parts[0].strip()))
             den = int(float(parts[1].strip()))
             if den > 0 and num > 0:
-                return Fraction(num, den)
+                frac = Fraction(num, den)
+                # Artefact fréquent de ffprobe sur conteneurs MKV sans DefaultDuration explicite (1000 ms / 42 ms = 500/21 ≈ 23.81 FPS au lieu de 23.976)
+                if frac == Fraction(500, 21) or abs(float(frac) - (500 / 21)) < 0.0001:
+                    return Fraction(24000, 1001)
+                return frac
             return None
         except (ValueError, ZeroDivisionError):
             return None
@@ -267,6 +271,14 @@ def detect_cadence_from_metadata(
         description=description,
         speed_ratio=ratio_str,
     )
+
+
+def manual_cadence_choices() -> tuple[CadenceMismatch, ...]:
+    """Conversions proposées au choix quand les vidéos ne disent rien de la cadence des pistes
+    (piste d'un master PAL réunie à une piste cinéma dans le même fichier) : PAL → cinéma d'abord."""
+    pairs = (("24000/1001", "25/1"), ("24/1", "25/1"), ("25/1", "24000/1001"), ("25/1", "24/1"))
+    choices = (detect_cadence_from_metadata(master, donor) for master, donor in pairs)
+    return tuple(choice for choice in choices if choice is not None)
 
 
 def detect_cadence_from_acoustic_samples(

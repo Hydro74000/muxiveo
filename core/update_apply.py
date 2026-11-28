@@ -35,7 +35,16 @@ from collections.abc import Callable
 
 MARKER_NAME = ".muxiveo-installation"
 WORKDIR_PREFIX = ".muxiveo-update-"
+#: Marqueur des dossiers de travail des versions antérieures (propriétaire lu dans `prepared.json`).
 WORKDIR_TAG = ".muxiveo-update"
+#: Marqueur des transactions courantes : JSON `{"install": <racine résolue>}`, invisible aux collecteurs des
+#: versions antérieures (qui ne peuvent ni le signaler ni le supprimer).
+WORKDIR_TAG_V2 = ".muxiveo-update-v2"
+#: Journal des comptes rendus non signalés, par installation : `<parent>/.muxiveo-update.reports/<empreinte>.json`
+#: (hors du préfixe des dossiers de travail : jamais pris pour une transaction).
+REPORTS_DIR = ".muxiveo-update.reports"
+#: Attente maximale du verrou du journal (secondes).
+JOURNAL_LOCK_TIMEOUT_S = 10.0
 KIND_SOURCE = "source"
 KIND_MACOS = "macos-app"
 MACOS_APP_NAME = "Muxiveo.app"
@@ -488,7 +497,9 @@ def spawn_detached(command: list[str], cwd: Path) -> subprocess.Popen:
 
 
 def launch(template: list[str], root: Path) -> None:
-    """Lance une version installée, détachée de ce processus."""
+    """Lance une version installée, détachée de ce processus (commande vide : aucune relance, CLI)."""
+    if not template:
+        return
     spawn_detached(expand(template, root), root)
 
 
@@ -497,7 +508,8 @@ def _write_journal(path: Path, doc: dict) -> None:
     fd, name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        # Fins de ligne LF sur toutes les plates-formes : taille écrite = taille contrôlée (journal borné).
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             json.dump(doc, stream, ensure_ascii=False, indent=1)
             stream.flush()
             os.fsync(stream.fileno())
@@ -604,6 +616,41 @@ def commit(work: Path, pid: int, wait_timeout: float = WAIT_EXIT_S) -> int:
 # --------------------------------------------------------------------------- suivi
 
 
+def install_key(install: Path | str) -> str:
+    """Empreinte de la racine résolue d'une installation (nom du journal de ses comptes rendus)."""
+    import hashlib
+
+    return hashlib.sha256(os.path.realpath(str(install)).encode("utf-8")).hexdigest()[:32]
+
+
+def write_workdir_tag(work: Path, install: Path) -> None:
+    """Marque `work` comme transaction de l'installation `install` (format courant)."""
+    (work / WORKDIR_TAG_V2).write_text(json.dumps({"install": os.path.realpath(str(install))}), encoding="utf-8")
+
+
+def _tag(work: Path) -> str | None:
+    for name in (WORKDIR_TAG_V2, WORKDIR_TAG):
+        path = work / name
+        if path.is_file() and not path.is_symlink():
+            return name
+    return None
+
+
+def workdir_owner(work: Path) -> str | None:
+    """Racine résolue de l'installation d'une transaction ; `None` : inconnue (dossier ancien sans
+    `prepared.json`, marqueur illisible)."""
+    tag = _tag(work)
+    source = work / (WORKDIR_TAG_V2 if tag == WORKDIR_TAG_V2 else PREPARED_FILE)
+    try:
+        if source.is_symlink() or source.stat().st_size > MAX_METADATA_BYTES:
+            return None
+        doc = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    install = doc.get("install") if isinstance(doc, dict) else None
+    return os.path.realpath(install) if isinstance(install, str) and install else None
+
+
 def _workdirs(parent: Path) -> list[Path]:
     try:
         entries = list(parent.iterdir())
@@ -611,83 +658,268 @@ def _workdirs(parent: Path) -> list[Path]:
         return []
     return sorted(
         (p for p in entries if p.name.startswith(WORKDIR_PREFIX) and p.is_dir() and not p.is_symlink()
-         and (p / WORKDIR_TAG).is_file()),
+         and _tag(p) is not None),
         key=lambda p: p.stat().st_mtime,
     )
 
 
 def _remove_workdir(work: Path) -> None:
-    """Garde le marqueur jusqu'à la dernière suppression pour reprendre un ménage interrompu."""
+    """Garde le marqueur (de son format) jusqu'à la dernière suppression pour reprendre un ménage interrompu."""
+    tag = _tag(work)
     try:
+        # Résultat retiré en premier : un ménage concurrent ne recopie jamais le compte rendu d'un dossier en cours
+        # de suppression (il l'a recopié avant, ou il était signalé).
+        (work / RESULT_FILE).unlink(missing_ok=True)
         for child in work.iterdir():
-            if child.name == WORKDIR_TAG:
+            if child.name == tag:
                 continue
             if child.is_dir() and not child.is_symlink():
                 shutil.rmtree(child)
             else:
                 child.unlink(missing_ok=True)
-        (work / WORKDIR_TAG).unlink(missing_ok=True)
+        if tag is not None:
+            (work / tag).unlink(missing_ok=True)
         work.rmdir()
     except OSError:
         pass
 
 
-def collect_results(parent: Path, now: float | None = None, *, discard: list[Path] | None = None,
-                    report: bool = True) -> list[dict]:
-    """Résultats non encore signalés des mises à jour passées ; ménage des dossiers de travail.
+class JournalLock:
+    """Verrou OS non bloquant du journal d'une installation (`fcntl.flock` / `msvcrt.locking`), attente bornée :
+    toute lecture-modification-écriture du journal est sérialisée entre processus (application, auxiliaire
+    détaché lancé en `python -I`, ménage). Bibliothèque standard seule."""
 
+    def __init__(self, path: Path, timeout: float = JOURNAL_LOCK_TIMEOUT_S) -> None:
+        self._path = path
+        self._timeout = timeout
+        self._fd: int | None = None
+
+    def __enter__(self) -> "JournalLock":
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline = time.monotonic() + self._timeout
+        while True:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+                else:
+                    import fcntl
+
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    os.close(fd)
+                    raise
+                time.sleep(0.02)
+        self._fd = fd
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        fd, self._fd = self._fd, None
+        if fd is None:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _journal_paths(parent: Path, install: str) -> tuple[Path, Path]:
+    key = install_key(install)
+    folder = parent / REPORTS_DIR
+    return folder / f"{key}.json", folder / f"{key}.lock"
+
+
+#: Taille maximale lue d'un journal de comptes rendus (plusieurs dizaines de milliers d'entrées).
+MAX_REPORTS_BYTES = 64 * 1024**2
+
+
+def _read_reports(path: Path, *, strict: bool = False) -> list[dict]:
+    """Entrées du journal ; absent : liste vide. ``strict`` (avant toute modification) : journal illisible ou
+    trop volumineux → ``OSError``, jamais remplacé par une liste vide (comptes rendus en attente perdus)."""
+    try:
+        if path.is_symlink():
+            raise OSError(f"journal des mises à jour invalide : {path}")
+        if path.stat().st_size > MAX_REPORTS_BYTES:
+            raise OSError(f"journal des mises à jour trop volumineux : {path}")
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict) or not isinstance(doc.get("results"), list):
+            raise ValueError("journal sans liste de résultats")
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise OSError(f"journal des mises à jour illisible ({exc}) : conservé tel quel") from exc
+        return []
+    return [entry for entry in doc["results"] if isinstance(entry, dict) and isinstance(entry.get("id"), str)]
+
+
+def _update_reports(parent: Path, install: str, change: Callable[[list[dict]], list[dict]]) -> list[dict]:
+    """Lecture-modification-écriture du journal sous verrou ; renvoie les entrées après modification."""
+    path, lock = _journal_paths(parent, install)
+    with JournalLock(lock):
+        entries = _read_reports(path, strict=True)
+        updated = change(list(entries))
+        if updated != entries:
+            document = {"schema": 1, "install": install, "results": updated}
+            # Au-delà de la taille lue, le lecteur masquerait tout le journal : ajout refusé (dossier gardé).
+            if len(json.dumps(document, ensure_ascii=False, indent=1).encode("utf-8")) > MAX_REPORTS_BYTES:
+                raise OSError(f"journal des mises à jour plein ({path}) : compte rendu laissé dans son dossier")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_journal(path, document)
+        return updated
+
+
+def pending_reports(parent: Path, install: Path | str) -> list[dict]:
+    """Comptes rendus non signalés de l'installation conservés par le journal (dossiers déjà supprimés)."""
+    path, _lock = _journal_paths(parent, os.path.realpath(str(install)))
+    return _read_reports(path)
+
+
+def _keep_report(parent: Path, owner: str, entry: dict, work: Path | None = None) -> bool:
+    """Recopie dans le journal le compte rendu d'un dossier supprimé avant d'avoir été signalé ; ``work`` : dossier
+    dont le témoin ``reported`` est relu **sous le verrou** (un signalement concurrent l'a peut-être posé).
+    Faux si le journal n'a pas pu être écrit : le dossier, seule copie du compte rendu, doit alors être gardé."""
+    def change(entries: list[dict]) -> list[dict]:
+        # Sous le verrou : signalé entre-temps, ou dossier déjà retiré par un autre ménage (qui a recopié son compte
+        # rendu s'il n'était pas signalé) : rien à garder, jamais de compte rendu ressuscité. Témoin lu **avant** le
+        # résultat : un ménage concurrent (hors verrou) retire le résultat puis le témoin ; témoin absent puis
+        # résultat présent = jamais signalé (le signalement exige ce verrou), sinon le résultat a déjà disparu.
+        if work is not None and ((work / REPORTED_FILE).exists() or not (work / RESULT_FILE).is_file()):
+            return entries
+        return entries if any(item["id"] == entry["id"] for item in entries) else [*entries, entry]
+
+    try:
+        _update_reports(parent, owner, change)
+    except OSError:
+        return False
+    return True
+
+
+def mark_reported(parent: Path, install: Path | str, ids: list[str]) -> None:
+    """Comptes rendus signalés (écriture confirmée par l'appelant) : dossiers marqués, entrées du journal
+    retirées."""
+    wanted = set(ids)
+    if not wanted:
+        return
+    owner = os.path.realpath(str(install))
+
+    def change(entries: list[dict]) -> list[dict]:
+        # Sous le verrou du journal : témoins posés et entrées retirées ensemble (un ménage concurrent relit le
+        # témoin sous ce même verrou avant de recopier).
+        for work in _workdirs(parent):
+            if work.name in wanted:
+                try:
+                    (work / REPORTED_FILE).touch()
+                except OSError:
+                    pass
+        return [item for item in entries if item["id"] not in wanted]
+
+    _update_reports(parent, owner, change)
+
+
+def collect_results(parent: Path, now: float | None = None, *, discard: list[Path] | None = None,
+                    report: bool = True, install: Path | str | None = None) -> list[dict]:
+    """Comptes rendus non signalés des mises à jour de l'installation `install` ; ménage de ses dossiers de travail.
+
+    Seuls les dossiers de l'installation sont signalés et soumis à la rétention (dernière réussite **par
+    installation**) ; propriétaire inconnu : ni signalé ni supprimé, sauf téléchargement abandonné depuis plus
+    d'une heure. `install=None` (ménage) : chaque propriétaire connu a sa propre rétention.
     Conservés : dernière sauvegarde réussie, fichiers personnels en collision et états ambigus ou en cours.
     Supprimés : réussites remplacées, abandons/retours arrière confirmés, téléchargements abandonnés depuis
-    plus d'une heure. `discard` : dossiers à supprimer
-    ajoutés à cette liste au lieu d'être supprimés (sauvegardes volumineuses : suppression laissée à l'appelant).
+    plus d'une heure. `discard` : dossiers à supprimer ajoutés à cette liste au lieu d'être supprimés
+    (sauvegardes volumineuses : suppression laissée à l'appelant). Un dossier supprimable dont le compte rendu
+    n'a pas été signalé le recopie d'abord dans le journal de son installation.
+
+    Les comptes rendus renvoyés (`id` : nom du dossier) ne sont marqués signalés que par :func:`mark_reported`,
+    appelé une fois leur écriture confirmée.
     """
     now = time.time() if now is None else now
+    wanted = os.path.realpath(str(install)) if install is not None else None
 
-    def remove(work: Path) -> None:
+    def remove(work: Path, owner: str | None, entry: dict | None) -> None:
+        if entry is not None and owner is not None and not (work / REPORTED_FILE).exists():
+            if not _keep_report(parent, owner, entry, work):
+                return  # journal inaccessible : le dossier reste la seule copie du compte rendu
         if discard is not None:
             discard.append(work)
         else:
             _remove_workdir(work)
 
     results: list[dict] = []
-    finished: list[tuple[Path, dict]] = []
+    finished: dict[str, list[tuple[Path, dict, dict]]] = {}
     for work in _workdirs(parent):
+        owner = workdir_owner(work)
         result_path = work / RESULT_FILE
         age = now - work.stat().st_mtime
+        mine = owner is not None and (wanted is None or owner == wanted)
+        if owner is not None and not mine:
+            continue  # autre installation : ses comptes rendus et sa rétention ne regardent qu'elle
         if result_path.is_file():
+            if owner is None:
+                continue  # propriétaire inconnu : ni signalé ni supprimé
             try:
                 doc = json.loads(result_path.read_text(encoding="utf-8"))
                 if not isinstance(doc, dict) or type(doc.get("ok")) is not bool:
                     raise ValueError("Résultat invalide")
             except (OSError, ValueError):
                 doc = {"ok": False, "error": "Résultat de mise à jour illisible."}
+            entry = {**doc, "workdir": str(work), "id": work.name}
             if report and not (work / REPORTED_FILE).exists():
-                results.append({**doc, "workdir": str(work)})
-                (work / REPORTED_FILE).touch()
-            finished.append((work, doc))
+                results.append(entry)
+            finished.setdefault(owner, []).append((work, doc, entry))
         elif (work / READY_FILE).exists() or (work / TRANSACTION_FILE).exists():
-            if report and age > 86400 and not (work / REPORTED_FILE).exists():
-                results.append({"ok": False, "workdir": str(work),
+            if owner is not None and report and age > 86400 and not (work / REPORTED_FILE).exists():
+                results.append({"ok": False, "workdir": str(work), "id": work.name,
                                 "error": f"Mise à jour interrompue ; fichiers conservés dans {work}."})
-                (work / REPORTED_FILE).touch()
         elif age > 3600:
-            remove(work)
-    latest_ok = next((work for work, doc in reversed(finished) if doc.get("ok")), None)
-    for work, doc in finished:
-        # État ambigu ou fichiers personnels en collision : seule copie possible, jamais supprimée.
-        if (work != latest_ok and not any(doc.get(key) for key in
-                ("rollback_incomplete", "preserve_backup", "kept", "relaunch_error"))
-                and (doc.get("ok") is True or doc.get("cleanup_safe") is True)):
-            remove(work)
+            remove(work, None, None)  # téléchargement abandonné (propriétaire inconnu compris)
+    for owner, items in finished.items():
+        # Ordre des mises à jour : heure de fin consignée dans le résultat (jamais la date du dossier, modifiée
+        # par le témoin ``reported``), sinon date du dossier.
+        items.sort(key=lambda item: _finished_at(item[0], item[1]))
+        latest_ok = next((work for work, doc, _entry in reversed(items) if doc.get("ok")), None)
+        for work, doc, entry in items:
+            # État ambigu ou fichiers personnels en collision : seule copie possible, jamais supprimée.
+            if (work != latest_ok and not any(doc.get(key) for key in
+                    ("rollback_incomplete", "preserve_backup", "kept", "relaunch_error"))
+                    and (doc.get("ok") is True or doc.get("cleanup_safe") is True)):
+                remove(work, owner, entry)
+    if report and wanted is not None:
+        seen = {entry["id"] for entry in results}
+        results += [entry for entry in pending_reports(parent, wanted) if entry["id"] not in seen]
     return results
 
 
-def cleanup_stale(paths: list[Path]) -> None:
-    """Revérifie les dossiers confiés à l'auxiliaire : dernière sauvegarde et mises à jour actives préservées."""
+def _finished_at(work: Path, doc: dict) -> float:
+    finished = doc.get("finished")
+    if isinstance(finished, (int, float)) and not isinstance(finished, bool):
+        return float(finished)
+    try:
+        return work.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def cleanup_stale(paths: list[Path], install: Path | str | None = None) -> None:
+    """Revérifie les dossiers confiés à l'auxiliaire : dernière sauvegarde (par installation) et mises à jour
+    actives préservées, comptes rendus non signalés recopiés dans le journal avant suppression."""
     requested = {path.absolute() for path in paths}
     for parent in {path.parent for path in requested}:
         eligible: list[Path] = []
-        collect_results(parent, discard=eligible, report=False)
+        collect_results(parent, discard=eligible, report=False, install=install)
         for work in eligible:
             if work.absolute() in requested:
                 _remove_workdir(work)
@@ -709,13 +941,17 @@ def main(argv: list[str] | None = None) -> int:
         manifest = work / CLEANUP_FILE
         if manifest.is_symlink() or manifest.stat().st_size > MAX_METADATA_BYTES:
             raise UpdateApplyError("Manifeste de ménage invalide.")
-        paths = json.loads(manifest.read_text(encoding="utf-8"))
-        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+        # Manifeste courant : {"install", "paths"} ; ancien format : liste des dossiers seule.
+        paths = document.get("paths") if isinstance(document, dict) else document
+        install = document.get("install") if isinstance(document, dict) else None
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths) \
+                or not isinstance(install, (str, type(None))):
             raise UpdateApplyError("Manifeste de ménage invalide.")
         # Le dossier courant n'est jamais l'un des dossiers supprimés (Windows).
         os.chdir(work.parent)
         try:
-            cleanup_stale([Path(path) for path in paths])
+            cleanup_stale([Path(path) for path in paths], install=install)
         finally:
             shutil.rmtree(work, ignore_errors=True)
         return 0

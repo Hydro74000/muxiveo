@@ -13,6 +13,7 @@ import json
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Callable
 
 from core.bluray import ffprobe_input_args
@@ -61,6 +62,14 @@ from core.workflows.encode.planning.sources import resolve_source_layout
 from core.workflows.encode.planning.plan_models import PlannedTrackMetadata
 from core.workflows.encode.planning.track_metadata import resolve_track_metadata
 from core.workflows.remux_plan import MATROSKA_EXTENSIONS
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.matroska.validation import interleave_warning_lines, mux_track_labels
+from core.workflows.common.native_stream_inputs import (
+    StreamArtifacts,
+    StreamInputs,
+    StreamTrackSpec,
+    is_streamable_source,
+)
 
 
 #: Type Matroska « subtitle » dans les TrackEntry natifs.
@@ -94,14 +103,57 @@ class NativeEncodePreparation:
     resolved_subtitles: tuple[tuple[Path, int], ...] = ()
     subtitles_prepared: bool = False
     cleanup_paths: tuple[Path, ...] = ()
+    #: Pistes lues en flux (sources ISO BMFF) : producteur démarré au premier besoin.
+    stream_specs: dict[tuple[Path, int], StreamTrackSpec] = field(default_factory=dict)
+    context_specs: dict[Path, StreamTrackSpec] = field(default_factory=dict)
+    streams: StreamArtifacts | None = None
+
+    def _stream_spec(self, source: Path, stream_index: int) -> StreamTrackSpec | None:
+        if self.streams is None:
+            return None
+        return self.stream_specs.get((Path(source), int(stream_index)))
 
     def artifact_for_track(self, source: Path, stream_index: int) -> tuple[Path, int]:
         """Artefact lisible et position de piste ; une source Matroska se lit telle quelle."""
         key = (Path(source), int(stream_index))
+        spec = self._stream_spec(*key)
+        if spec is not None and self.streams is not None:
+            return self.streams.route(spec)
         return self.track_artifacts.get(key, key)
 
+    def declare_routes(self, keys: Iterable[tuple[Path, int]]) -> None:
+        """Pistes lues par l'assemblage : celles d'une même source partagent un producteur."""
+        if self.streams is None:
+            return
+        self.streams.declare(
+            spec for key in keys if (spec := self._stream_spec(*key)) is not None
+        )
+
+    def metadata_for_track(self, source: Path, stream_index: int) -> tuple[Path, int]:
+        """TrackEntry lisible d'une piste sans la faire lire (en flux : en-tête seul)."""
+        spec = self._stream_spec(source, stream_index)
+        if spec is not None and self.streams is not None:
+            return self.streams.metadata(spec)
+        return self.artifact_for_track(source, stream_index)
+
+    def rewrite_input_for_track(self, source: Path, stream_index: int) -> tuple[Path, int]:
+        """Entrée d'une réécriture FFmpeg : source d'origine pour une piste en flux, sinon artefact."""
+        key = (Path(source), int(stream_index))
+        if self._stream_spec(*key) is not None:
+            return key
+        return self.artifact_for_track(*key)
+
     def artifact_for_container(self, source: Path) -> Path:
+        spec = self.context_specs.get(Path(source)) if self.streams is not None else None
+        if spec is not None and self.streams is not None:
+            return self.streams.context(spec)
         return self.container_artifacts.get(Path(source), Path(source))
+
+    def track_tag_artifacts_for_container(self, source: Path) -> list[Path]:
+        """En-têtes en flux d'une source : seuls leurs tags de pistes sont copiés."""
+        if self.streams is not None and Path(source) in self.context_specs:
+            return self.streams.route_headers(source)
+        return []
 
 
 @dataclass(frozen=True)
@@ -230,8 +282,12 @@ def prepare_native_encode_inputs(
     resolved_subtitles: list[tuple[Path, int]] | None = None,
     ffprobe_bin: str = "ffprobe",
     video_refs: list[tuple[Path, int]] | None = None,
+    stream_artifacts: StreamArtifacts | None = None,
 ) -> NativeEncodePreparation:
     """Matérialise en MKV les entrées non Matroska de l'assemblage natif.
+
+    ``stream_artifacts`` : sources ISO BMFF (MP4, MOV…) lues en flux, piste par piste,
+    sans fichier intermédiaire (producteurs démarrés au premier besoin).
 
     Une seule canonicalisation par source : seuls les flux utilisés
     (``video_refs`` copiées, audio copié, sous-titres) sont transposés, les
@@ -245,6 +301,8 @@ def prepare_native_encode_inputs(
     work_dir.mkdir(parents=True, exist_ok=True)
     tracks: dict[tuple[Path, int], tuple[Path, int]] = {}
     containers: dict[Path, Path] = {}
+    stream_specs: dict[tuple[Path, int], StreamTrackSpec] = {}
+    context_specs: dict[Path, StreamTrackSpec] = {}
     cleanup: list[Path] = []
     probed: dict[Path, dict[int, ProbedStream] | None] = {}
 
@@ -340,6 +398,15 @@ def prepare_native_encode_inputs(
                 return streams[index].codec_name if index in streams else ""
 
             keep_context = source in context_sources
+            if stream_artifacts is not None and is_streamable_source(source):
+                # Lecture en flux : un producteur par piste, au premier besoin.
+                for index in indexes:
+                    stream_specs[(source, index)] = StreamTrackSpec(source, index, _kind(index), _codec(index))
+                if keep_context:
+                    context_specs[source] = StreamTrackSpec(
+                        source, indexes[0], _kind(indexes[0]), _codec(indexes[0]), carry_context=True,
+                    )
+                continue
             target = work_dir / f"native_source_{ordinal}.mkv"
             # Passe complète sur la source : progression machine pour l'UI.
             command = [
@@ -357,7 +424,9 @@ def prepare_native_encode_inputs(
                 [_codec(index) for index in indexes if _kind(index) == "subtitle"]
             ))
             context_arg = "0" if keep_context else "-1"
-            command.extend(["-map_metadata", context_arg, "-map_chapters", context_arg, str(target)])
+            command.extend(["-map_metadata", context_arg, "-map_chapters", context_arg])
+            command.extend(matroska_output_args(ffmpeg_bin, target))
+            command.append(str(target))
             _run(command, f"ffmpeg-native-canonical-source-{ordinal}", target)
             for position, index in enumerate(indexes):
                 tracks[(source, index)] = (target, position)
@@ -374,6 +443,9 @@ def prepare_native_encode_inputs(
         resolved_subtitles=tuple(subtitles),
         subtitles_prepared=(resolved_subtitles is not None or config.copy_subtitles),
         cleanup_paths=tuple(cleanup),
+        stream_specs=stream_specs,
+        context_specs=context_specs,
+        streams=stream_artifacts if (stream_specs or context_specs) else None,
     )
 
 
@@ -420,7 +492,7 @@ def _audio_rewrite_is_final(audio: AudioTrackSettings) -> bool:
 
 def _matroska_origin(preparation: NativeEncodePreparation, source: Path, stream_index: int) -> tuple[Path, int] | None:
     """Piste d'origine lisible (source Matroska ou artefact canonique), sinon ``None``."""
-    artifact, index = preparation.artifact_for_track(source, stream_index)
+    artifact, index = preparation.metadata_for_track(source, stream_index)
     return (artifact, index) if _is_matroska(artifact) and artifact.is_file() else None
 
 
@@ -487,8 +559,9 @@ def rewrite_native_sync_tracks(
             return None
         if modes.get(key) == SYNC_REWRITE_MODE_OFFSET and calibration is None:
             return None
-        # Entrée lisible : source Matroska, ou artefact canonique d'une source non MKV.
-        artifact, artifact_index = preparation.artifact_for_track(source, stream_index)
+        # Entrée lisible par FFmpeg : source Matroska, artefact canonique d'une source
+        # non MKV, ou source d'origine d'une piste lue en flux (jamais un en-tête seul).
+        artifact, artifact_index = preparation.rewrite_input_for_track(source, stream_index)
         try:
             prepared = service.maybe_materialize(
                 source_path=artifact,
@@ -512,12 +585,13 @@ def rewrite_native_sync_tracks(
 
             target = work_dir / f"native_empty_subtitle_{len(cleanup_paths)}.mks"
             cleanup_paths.append(target)
-            track = MatroskaReader(artifact).tracks()[artifact_index]
+            metadata, metadata_index = preparation.metadata_for_track(source, stream_index)
+            track = MatroskaReader(metadata).tracks()[metadata_index]
             MatroskaWriter().write(
                 MatroskaMuxPlan(
                     output=target,
                     tracks=(MatroskaMuxTrack(
-                        artifact, track, 1, track.uid,
+                        metadata, track, 1, track.uid,
                         patch_language=False, patch_name=False, patch_flags=False,
                     ),),
                     packets=(),
@@ -586,6 +660,16 @@ def build_encode_assembly_plan(
             identities[path] = deterministic_source_identity(path)
         return identities[path]
 
+    subtitles = _assembly_subtitles(config, resolved_subtitles, preparation)
+    # Pistes lues en flux : vidéo et audio d'une même source sur un seul producteur.
+    preparation.declare_routes([
+        *((Path(ref.path), int(ref.track_index)) for ref in video_artifacts),
+        *(
+            (Path(audio.source_path or config.source), int(audio.stream_index))
+            for audio_index, audio in enumerate(config.audio_tracks) if audio_index not in materialized_audio
+        ),
+        *(key for key in subtitles if key not in sync_rewrites.subtitles),
+    ])
     ordered: list[MatroskaAssemblyTrack] = []
     for ref in video_artifacts:
         artifact, track_index = preparation.artifact_for_track(ref.path, ref.track_index)
@@ -622,7 +706,6 @@ def build_encode_assembly_plan(
                 time_shift_ms=_offset_ms(config, "audio", source, audio.stream_index),
             ))
 
-    subtitles = _assembly_subtitles(config, resolved_subtitles, preparation)
     for subtitle_path, subtitle_index in subtitles:
         rewritten = sync_rewrites.subtitles.get((subtitle_path, subtitle_index))
         if rewritten is not None:
@@ -719,6 +802,10 @@ def build_encode_assembly_plan(
         tag_copy_sources=tuple(
             preparation.artifact_for_container(Path(path)) for path in config.tag_sources
         ) if config.tag_overrides is None else (),
+        track_tag_sources=tuple(
+            artifact for path in config.tag_sources
+            for artifact in preparation.track_tag_artifacts_for_container(Path(path))
+        ) if config.tag_overrides is None else (),
         segment_title=(
             config.file_title
             if config.file_title.strip() or config.tag_overrides is not None
@@ -782,6 +869,7 @@ def materialize_audio_artifacts(
             "-i", str(source), "-map", f"0:{stream_index}",
         ]
         command.extend(audio_codec_args(0, audio))
+        command.extend(matroska_output_args(ffmpeg_bin, target))
         command.append(str(target))
         run_cmd(command, f"ffmpeg-native-audio-{audio_index}")
         artifacts[audio_index] = target
@@ -816,6 +904,19 @@ def assemble_encode_output_native(
     log("INFO", "Assemblage final Matroska natif (plan partagé remux/encode).")
     audio_cleanup_paths: list[Path] = []
     preparation_cleanup_paths: tuple[Path, ...] = ()
+    # Pistes des sources ISO BMFF lues en flux (producteurs FFmpeg sur pipes) :
+    # arrêtés en fin d'assemblage, d'erreur ou d'annulation.
+    stream_inputs = StreamInputs(
+        ffmpeg_bin, work_dir, ffprobe_bin=ffprobe_bin,
+        cancelled=signals._cancel_event.is_set if signals is not None else (lambda: False),
+        register=signals._register_proc if signals is not None else None,
+        unregister=signals._unregister_proc if signals is not None else None,
+        log=log,
+    )
+    duration_s = getattr(config, "duration_s", None)
+    streams = StreamArtifacts(
+        stream_inputs, duration_ns=int(float(duration_s) * 1_000_000_000) if duration_s else None,
+    )
     try:
         # Seules les pistes vidéo copiées depuis une source déclarée sont
         # canonicalisables : un artefact encodé non Matroska doit échouer,
@@ -833,6 +934,7 @@ def assemble_encode_output_native(
                 for ref in video_artifacts
                 if Path(ref.path) in declared_sources
             ],
+            stream_artifacts=streams,
         )
         preparation_cleanup_paths = preparation.cleanup_paths
         sync_rewrites = rewrite_native_sync_tracks(
@@ -873,7 +975,11 @@ def assemble_encode_output_native(
             require_block_addition_mapping=dovi_video_indexes,
         )
         assembly = replace(assembly, expected_output_contract=contract)
-        mux_plan = compile_assembly_plan(assembly)
+        mux_plan = compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen,
+                                         stream_keys=streams.stream_keys)
+        if mux_plan.chapters_removed and signals is not None:
+            signals.progress.emit(f"[WARN] {mux_plan.chapters_removed} chapitre(s) retiré(s) : toutes leurs pistes "
+                                  "ciblées (ChapterTrack) sont absentes de la sortie.")
 
         def _validate(path: Path, packet_validation: MatroskaPacketValidation) -> None:
             errors = validate_matroska_output(
@@ -892,6 +998,10 @@ def assemble_encode_output_native(
                 cancelled=signals._cancel_event.is_set if signals is not None else lambda: False,
                 warn=lambda message: log("WARN", message),
             )
+            for message in interleave_warning_lines(
+                packet_validation.interleave, lambda: mux_track_labels(mux_plan.tracks),
+            ):
+                log("WARN", message)
 
         try:
             MatroskaWriter().write(
@@ -912,6 +1022,7 @@ def assemble_encode_output_native(
         log("INFO", "Assemblage Matroska natif terminé (aucun post-patch conteneur).")
         return config.output
     finally:
+        stream_inputs.close()
         for path in (*audio_cleanup_paths, *preparation_cleanup_paths):
             remove_path(path)
 

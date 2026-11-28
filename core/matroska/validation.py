@@ -8,13 +8,15 @@ la source unique de vérité.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import contract as _contract
 from .ids import CHAPTERS_ID, CLUSTER_ID, INFO_ID, TAGS_ID, TRACKS_ID
 from .language import matroska_legacy_language
-from .reader import MatroskaAttachmentHeader, MatroskaReader, MatroskaTrack
+from .reader import MatroskaAttachmentHeader, MatroskaBlockSummary, MatroskaReader, MatroskaTrack
 
 
 #: Types de piste Matroska → libellés publics du remux.
@@ -37,6 +39,172 @@ class MatroskaPacketValidation:
     track_numbers: frozenset[int]
     max_packet_timestamp_ns: int | None
     last_delta_by_track: dict[int, int]
+    #: Entrelacement mesuré pendant l'écriture (avertissement seulement).
+    interleave: "InterleaveReport | None" = None
+
+
+#: Retard d'écriture au-delà duquel l'entrelacement est signalé : un lecteur
+#: qui se place à un instant donné (Cues vidéo) ne retrouve plus les paquets
+#: d'une piste écrits beaucoup plus tôt ou plus tard dans le fichier.
+INTERLEAVE_WARN_LAG_NS = 2_000_000_000
+
+
+@dataclass(frozen=True)
+class InterleaveReport:
+    """Entrelacement d'une sortie : retard d'écriture des paquets, par piste.
+
+    Retard d'un paquet = plus grand timestamp déjà écrit (toutes pistes) − son
+    timestamp. Une piste écrite d'un bloc en avance fait apparaître les autres
+    en retard : la piste signalée est celle dont les paquets arrivent trop tard.
+    """
+
+    max_lag_ns: dict[int, int] = field(default_factory=dict)
+    lag_at_ns: dict[int, int] = field(default_factory=dict)
+    lagged_packets: dict[int, int] = field(default_factory=dict)
+    backward_clusters: int = 0
+    threshold_ns: int = INTERLEAVE_WARN_LAG_NS
+
+
+class InterleaveTracker:
+    """Accumule l'entrelacement dans l'ordre d'écriture (writer natif ou relecture)."""
+
+    def __init__(self, threshold_ns: int = INTERLEAVE_WARN_LAG_NS) -> None:
+        self._threshold = threshold_ns
+        self._highest: int | None = None
+        self._highest_cluster: int | None = None
+        self._max_lag: dict[int, int] = {}
+        self._lag_at: dict[int, int] = {}
+        self._lagged: dict[int, int] = {}
+        self._backward_clusters = 0
+
+    def packet(self, track_number: int, timestamp_ns: int) -> None:
+        if self._highest is None or timestamp_ns > self._highest:
+            self._highest = timestamp_ns
+        lag = self._highest - timestamp_ns
+        if lag > self._max_lag.get(track_number, -1):
+            self._max_lag[track_number] = lag
+            self._lag_at[track_number] = timestamp_ns
+        if lag > self._threshold:
+            self._lagged[track_number] = self._lagged.get(track_number, 0) + 1
+
+    def cluster(self, timestamp_ns: int) -> None:
+        if self._highest_cluster is not None and timestamp_ns < self._highest_cluster - self._threshold:
+            self._backward_clusters += 1
+        if self._highest_cluster is None or timestamp_ns > self._highest_cluster:
+            self._highest_cluster = timestamp_ns
+
+    def report(self) -> InterleaveReport:
+        return InterleaveReport(
+            max_lag_ns=dict(self._max_lag), lag_at_ns=dict(self._lag_at),
+            lagged_packets=dict(self._lagged), backward_clusters=self._backward_clusters,
+            threshold_ns=self._threshold,
+        )
+
+
+def _seconds(value_ns: int) -> str:
+    return f"{value_ns / 1_000_000_000:.1f}".replace(".", ",") + " s"
+
+
+def interleave_warnings(
+    report: InterleaveReport | None,
+    *,
+    track_labels: Mapping[int, str] | None = None,
+) -> list[str]:
+    """Avertissements d'entrelacement (jamais bloquants : la sortie reste publiée)."""
+    if report is None:
+        return []
+    labels = track_labels or {}
+    messages = []
+    for track_number in sorted(report.lagged_packets):
+        label = labels.get(track_number, f"piste #{track_number}")
+        messages.append(
+            f"Entrelacement : {label} — paquets écrits jusqu'à {_seconds(report.max_lag_ns[track_number])} "
+            f"en retard sur l'horodatage le plus avancé déjà écrit (à {_seconds(report.lag_at_ns[track_number])} "
+            f"du film, {report.lagged_packets[track_number]} paquet(s) au-delà de {_seconds(report.threshold_ns)}) : "
+            "après un déplacement, un lecteur peut perdre cette piste."
+        )
+    if report.backward_clusters:
+        messages.append(
+            f"Entrelacement : {report.backward_clusters} Cluster(s) revenant de plus de "
+            f"{_seconds(report.threshold_ns)} en arrière dans le temps."
+        )
+    return messages
+
+
+_TRACK_KIND_LABELS = {1: "vidéo", 2: "audio", 17: "sous-titres"}
+
+
+def track_label(number: int, track_type: int, language: str = "", name: str = "") -> str:
+    """Libellé d'une piste de sortie pour les messages (numéro, nature, langue, nom)."""
+    details = " ".join(part for part in (_TRACK_KIND_LABELS.get(track_type, ""), language) if part and part != "und")
+    if name:
+        details = f"{details} « {name} »" if details else f"« {name} »"
+    return f"piste #{number}" + (f" ({details})" if details else "")
+
+
+def mux_track_labels(tracks: Iterable[Any]) -> dict[int, str]:
+    """Libellés des pistes d'un plan d'écriture natif (``MatroskaMuxTrack``)."""
+    labels: dict[int, str] = {}
+    for track in tracks:
+        source = track.source_track
+        language = (track.language_bcp47 or track.language) if track.patch_language else (
+            source.language_bcp47 or source.language
+        )
+        name = track.name if track.patch_name else source.name
+        labels[track.output_number] = track_label(track.output_number, source.track_type, language or "", name or "")
+    return labels
+
+
+def file_track_labels(path: Path) -> dict[int, str]:
+    """Libellés des pistes d'un fichier écrit (sorties FFmpeg)."""
+    try:
+        tracks = MatroskaReader(path).tracks()
+    except (OSError, ValueError):
+        return {}
+    return {
+        track.number: track_label(track.number, track.track_type, track.language_bcp47 or track.language, track.name)
+        for track in tracks
+    }
+
+
+def interleave_from_summaries(
+    summaries: Iterable[MatroskaBlockSummary],
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> InterleaveReport | None:
+    """Entrelacement d'après les résumés de blocs, dans l'ordre du fichier.
+
+    ``None`` si l'évaluation est impossible (Cluster sans Timestamp : horodatages
+    des blocs inconnus) ou interrompue par ``cancelled``.
+    """
+    tracker = InterleaveTracker()
+    current_cluster: int | None = None
+    for count, summary in enumerate(summaries):
+        if cancelled is not None and count % 4096 == 0 and cancelled():
+            return None
+        if summary.cluster_offset != current_cluster:
+            current_cluster = summary.cluster_offset
+            if summary.cluster_timestamp_ns is None:
+                return None
+            tracker.cluster(summary.cluster_timestamp_ns)
+        tracker.packet(summary.track_number, summary.timestamp_ns)
+    return tracker.report()
+
+
+def scan_interleave(path: Path, *, cancelled: Callable[[], bool] | None = None) -> InterleaveReport | None:
+    """Entrelacement d'un fichier existant (sorties FFmpeg) : en-têtes de blocs seuls, sans payload."""
+    return interleave_from_summaries(MatroskaReader(path).block_summaries(), cancelled=cancelled)
+
+
+def interleave_warning_lines(
+    report: InterleaveReport | None,
+    track_labels: Callable[[], Mapping[int, str]],
+) -> list[str]:
+    """Avertissements d'entrelacement sans jamais lever : un diagnostic n'empêche pas une publication."""
+    try:
+        return interleave_warnings(report, track_labels=track_labels())
+    except Exception:  # noqa: BLE001 - diagnostic seulement
+        return []
 
 
 #: Clusters de fin sondés pour l'horodatage du dernier paquet. Les Clusters
@@ -476,7 +644,17 @@ def validate_matroska_output(
 
 
 __all__ = [
+    "INTERLEAVE_WARN_LAG_NS",
+    "InterleaveReport",
+    "InterleaveTracker",
     "MatroskaPacketValidation",
     "TRACK_TYPE_LABELS",
+    "file_track_labels",
+    "interleave_from_summaries",
+    "interleave_warning_lines",
+    "interleave_warnings",
+    "mux_track_labels",
+    "scan_interleave",
+    "track_label",
     "validate_matroska_output",
 ]

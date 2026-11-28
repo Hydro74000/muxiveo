@@ -104,7 +104,7 @@ class VideoPreparationResourcePolicy:
 
         if video.quality_mode == QualityMode.SIZE:
             base += 128 * mib
-        if video.copy_dv or video.copy_hdr10plus:
+        if video.copy_dv or video.copy_hdr10plus or video.generate_hdr10plus:
             base += 256 * mib
         if video.fel_context is not None:
             # Deux décodeurs HEVC, files BL/EL bornées et images RGB : réserve

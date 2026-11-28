@@ -1,37 +1,30 @@
-"""Remux workflow runtime helpers for the CLI."""
+"""Exécution d'un remux depuis le CLI (implémentation partagée : ``core.jobs.runtime``)."""
 
 from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import QCoreApplication, QEventLoop
-
 from core.config import AppConfig
+from core.jobs.errors import exit_code_for
+from core.jobs.logging import JobLogger
+from core.jobs.encode import resolve_from_job
+from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
+from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
+from core.service.context import CancelToken
+from core.service.errors import ApiError
 from core.workflows.remux import RemuxWorkflow
 from core.workflows.remux_models import RemuxConfig
 
-from cli.constants import EXIT_EXISTS, EXIT_OK, EXIT_VALIDATION, EXIT_WORKFLOW
-from cli.errors import CliError
-from cli.logging import Logger
+from cli.constants import EXIT_OK, EXIT_VALIDATION
+from cli.interrupts import interrupt_guard
 from cli.options import CommonOptions
 
 
-def workflow(config: AppConfig, options: CommonOptions, logger: Logger) -> RemuxWorkflow:
-    return RemuxWorkflow(
-        ffmpeg_bin=str(options.ffmpeg or config.tool_ffmpeg),
-        ffprobe_bin=str(options.ffprobe or config.tool_ffprobe),
-        ffmpeg_threads=options.threads if options.threads is not None else config.ffmpeg_threads,
-        writing_application=str(options.writing_application or ""),
-        generate_nfo=config.generate_nfo if options.nfo is None else bool(options.nfo),
-        mediainfo_bin=str(options.mediainfo or config.tool_mediainfo),
-        sync_rewrite_enabled=config.sync_rewrite_enabled,
-        sync_advanced_audio_rewrite_enabled=config.sync_advanced_audio_rewrite_enabled,
-        aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
-        eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
-    )
+def workflow(config: AppConfig, options: CommonOptions, logger: JobLogger) -> RemuxWorkflow:
+    return remux_workflow(config, options)
 
 
-def preview_remux_config(config: AppConfig, options: CommonOptions, logger: Logger, remux_config: RemuxConfig) -> int:
+def preview_remux_config(config: AppConfig, options: CommonOptions, logger: JobLogger, remux_config: RemuxConfig) -> int:
     errors = workflow(config, options, logger).validate(remux_config)
     if errors:
         for error in errors:
@@ -44,73 +37,68 @@ def preview_remux_config(config: AppConfig, options: CommonOptions, logger: Logg
 def run_remux_config(
     config: AppConfig,
     options: CommonOptions,
-    logger: Logger,
+    logger: JobLogger,
     remux_config: RemuxConfig,
     *,
     force: bool = False,
+    cancel: CancelToken | None = None,
 ) -> int:
+    """Remuxe ``remux_config`` ; Ctrl+C annule proprement. Renvoie le code de sortie.
+
+    ``cancel`` : jeton d'un appelant qui gère lui-même Ctrl+C (lot) ; sinon une garde est posée.
+    """
     if options.export_workflow:
-        from pathlib import Path
-        from core.profiles.selectors import remux_config_to_exact_job
-        from core.workflows.workflow_store import save_workflow
-        destination = Path(options.export_workflow)
-        if options.export_directory:
-            destination.mkdir(parents=True, exist_ok=True)
-            destination /= remux_config.output.stem + ".exact-job.json"
-        save_workflow(destination, remux_config_to_exact_job(remux_config))
+        export_exact_job(remux_config, options)
         return EXIT_OK
-    if remux_config.output.exists() and not force:
-        raise CliError(f"Sortie déjà existante : {remux_config.output} (utiliser --force)", EXIT_EXISTS)
-    wf = workflow(config, options, logger)
-    wf.log_message.connect(logger.workflow_log)
-    wf.backend_event.connect(
-        lambda report: logger.emit(
-            "info", "Sélection du backend de remuxage.",
-            event="mux_backend", **dict(report),
-        )
-    )
-    signals = wf.run(remux_config)
-    loop = QEventLoop()
-    state_exit = {"value": EXIT_OK}
+    if cancel is not None:
+        return _run(remux_config, config, options, logger, cancel, force)
+    with interrupt_guard(CancelToken()) as token:
+        return _run(remux_config, config, options, logger, token, force)
 
-    def done(message: str = "") -> None:
-        if message:
-            logger.emit("info", message)
-        state_exit["value"] = EXIT_OK
-        loop.quit()
 
-    def failed(message: str, exc: object) -> None:
-        logger.emit("error", message, exception=repr(exc))
-        state_exit["value"] = EXIT_WORKFLOW
-        loop.quit()
-
-    def cancelled() -> None:
-        logger.emit("error", "Opération annulée.")
-        state_exit["value"] = EXIT_WORKFLOW
-        loop.quit()
-
-    if options.verbose:
-        signals.progress.connect(lambda line: logger.emit("info", line))
-    signals.connect_terminal(finished=done, failed=failed, cancelled=cancelled)
-
-    stop = threading.Event()
-
-    def _watch_stdin() -> None:
-        # Reserved for future cancellation while keeping the CLI non-interactive.
-        stop.wait()
-
-    watcher = threading.Thread(target=_watch_stdin, daemon=True)
-    watcher.start()
+def _run(remux_config: RemuxConfig, config: AppConfig, options: CommonOptions, logger: JobLogger, cancel: CancelToken,
+         force: bool) -> int:
     try:
-        loop.exec()
-    finally:
-        stop.set()
-        # Le signal terminal précède le finally du worker (nettoyage work_dir) :
-        # l'attendre rend la sortie déterministe (batch, résumé, code retour).
-        signals.wait_for_workers()
-        # Les slots de nettoyage (work_dir) sont postés après l'événement de
-        # fin qui quitte la boucle : sans ce vidage, le dispatcher Windows peut
-        # sortir avant de les traiter et laisser des dossiers résiduels.
-        QCoreApplication.sendPostedEvents()
-        QCoreApplication.processEvents()
-    return state_exit["value"]
+        run_remux(remux_config, config=config, options=options, logger=logger, cancel=cancel, force=force,
+                  workflow_factory=lambda: workflow(config, options, logger))
+    except ApiError as error:
+        if not error.logged:
+            raise
+        return exit_code_for(error)
+    return EXIT_OK
+
+
+def resolve_job_encode_config(job: dict, remux_config: RemuxConfig, config: AppConfig, options: CommonOptions,
+                              logger: JobLogger, *, cancel_event: threading.Event | None = None):
+    """Encodage d'un job (bloc ``encode``) ; ``None`` sans bloc ou en copie pure (le job reste un remux)."""
+    resolved = resolve_from_job(job.get("encode"), remux_config, config=config, options=options, logger=logger,
+                                cancel_event=cancel_event)
+    return None if resolved is None else resolved.config
+
+
+def preview_encode_config(config: AppConfig, options: CommonOptions, logger: JobLogger, encode_config, *,
+                          accept_dovi_nvenc_crop: bool = False, cancel_event: threading.Event | None = None) -> int:
+    """Aperçu d'un encodage avec les refus du lancement (géométrie DV + NVENC comprise)."""
+    wf = encode_workflow(config, options)
+    encode_config, errors = checked_encode(encode_config, wf, config=config, options=options,
+                                           accept_dovi_nvenc_crop=accept_dovi_nvenc_crop, cancel_event=cancel_event)
+    if errors:
+        for error in errors:
+            logger.emit("error", error)
+        return EXIT_VALIDATION
+    print(preview_encode(encode_config, wf, cancel_event))
+    return EXIT_OK
+
+
+def run_encode_config(config: AppConfig, options: CommonOptions, logger: JobLogger, encode_config, *,
+                      force: bool = False, accept_dovi_nvenc_crop: bool = False) -> int:
+    """Encode ; Ctrl+C annule proprement (garde imbriquée dans celle d'un lot). Renvoie le code de sortie."""
+    with interrupt_guard(CancelToken()) as cancel:
+        try:
+            run_encode(encode_config, config=config, options=options, logger=logger, cancel=cancel, force=force,
+                       accept_dovi_nvenc_crop=accept_dovi_nvenc_crop)
+        except ApiError as error:
+            if not error.logged:
+                raise
+            return exit_code_for(error)
+    return EXIT_OK

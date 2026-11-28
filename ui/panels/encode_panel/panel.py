@@ -12,15 +12,15 @@ import dataclasses
 import json
 import re
 import shutil
-import subprocess
 import sys
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 from concurrent.futures import Future, ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QSize, Qt, Signal, QTimer, QUrl
+from PySide6.QtCore import QSignalBlocker, QSize, Qt, Signal, QTimer, QUrl
 from PySide6.QtGui import QBrush, QColor, QFont, QIntValidator, QPixmap, QCursor, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog,
@@ -32,26 +32,27 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from core.bluray import ffprobe_input_args
-from core.subprocess_utils import subprocess_text_kwargs
 from core.config import AppConfig
 from core.inspector import FileInfo, HDRType, VideoTrack
 from core.i18n import apply_translations, current_language, set_current_language, translate_text
 from core.workflows.remux_models import TrackEntry
+from core.output_commit import ExistingPolicy
 from core.runner import TaskSignals
 from core.workflows.encode import (
     HARDWARE_VIDEO_CODECS, SOFTWARE_VIDEO_CODECS,
     TONEMAP_ALGORITHMS, EncodeConfig,
     EncodePreviewRequest,
     EncodePreset, EncodeWorkflow, HardwareEncoderDetector,
-    FrameInterpolationSettings, ProfileManager, QualityMode, VideoCropSettings, VideoEncodeSettings,
+    FrameInterpolationSettings, ProfileManager, QualityMode, RestoreSettings, VideoCropSettings, VideoEncodeSettings,
     VideoFilterSettings, VideoResizeSettings, VideoTrackEncodePlan, presets_for_codec,
 )
+from core.workflows.encode.progress_tracking import progress_target
 from core.workflows.encode.interpolation import (
     INTERPOLATION_DEFAULT_QUALITY,
     INTERPOLATION_FACTORS,
     INTERPOLATION_PRESETS,
     INTERPOLATION_TTA_LEVELS,
+    rife_capabilities,
 )
 from core.workflows.encode.catalog import (
     AMF_VIDEO_CODECS,
@@ -71,12 +72,56 @@ from core.workflows.encode.catalog import (
     supports_hdr_output,
 )
 from core.workflows.encode.domain.codecs import (
-    rate_control_values, transfer_kind, resolve_output_bit_depth, source_bit_depth_from_stream,
+    rate_control_values, transfer_kind, resolve_output_bit_depth,
 )
 from core.workflows.encode.runtime.nvencc import (
     detect_nvencc_10bit_codecs, is_nvencc_codec, nvencc_requires_ffmpeg_filter_pipe,
 )
-from core.workflows.encode.hdr_policy import default_static_hdr_checked, source_is_hdr
+from core.workflows.encode.planning.track_settings import (
+    HDR10PLUS_GENERATION_OPTION,
+    HDR_COMMON_OPTIONS,
+    MASTER_DISPLAY_PRIMARIES,
+    PER_SOURCE_HDR_KEYS,
+    EncoderEnvironment,
+    SourceVideoContext,
+    apply_codec_hdr_policy,
+    apply_preset_to_state,
+    copy_state,
+    default_video_state,
+    effective_dynamic_hdr_flags,
+    effective_hdr10plus_generation,
+    effective_static_hdr_fields,
+    effective_static_hdr_injection,
+    extract_hdr_meta_fields,
+    hdr_option_carried,
+    hdr_option_in_source,
+    hdr_meta_from_ffprobe_frames,
+    hdr_meta_from_ffprobe_raw,
+    hdr_meta_from_mediainfo,
+    hdr_meta_from_mediainfo_json,
+    hdr10plus_generation_available,
+    is_pure_copy,
+    normalize_video_state,
+    preset_problem,
+    propagate_state,
+    requires_dovi_profile_normalization,
+    resolved_tonemap,
+    restore_flags,
+    routing_video_tracks,
+    source_dovi_profile,
+    source_has_dv,
+    source_has_hdr10plus,
+    source_has_static_hdr10,
+    state_allows_copy_static_hdr_edit,
+    state_target_codec,
+    static_hdr_editable,
+    static_hdr_field_manual,
+    tonemap_choice_of,
+    video_settings_from_state,
+    video_source_bit_depth,
+    video_source_pix_fmt,
+)
+from core.workflows.encode.hdr_policy import source_is_hdr
 from core.workflows.encode.runtime.dovi_geometry import DOVI_UHD_CANVAS, NvencDoviGeometryResult
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.dovi_policy import (
@@ -104,6 +149,10 @@ from ui.confirm import ValidationOverridePrompt
 from ui.design_system import scale as _scale
 from ui.dialogs.extra_params_dialog import edit_extra_params
 from ui.panels.encode_panel.widgets import _AudioSourceDialog, _AudioTable
+from ui.panels.remux_panel.widgets.output_bar import OutputBar, ScrollFade
+
+if TYPE_CHECKING:
+    from core.hdr10plus_generation import EngineSupport
 
 
 # Taille > 0 ; débit selon le mode (VBR NVENC / NVEncC : 0 = illimité).
@@ -133,6 +182,26 @@ _INTERPOLATION_PRESET_ITEMS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# Filtres de débruitage (libellé, valeur) : MVO-R2 par défaut, NLMeans au choix.
+_DENOISE_FILTER_ITEMS: tuple[tuple[str, str], ...] = (("MVO-R2", "mvo-r2"), ("NLMeans", "nlmeans"))
+_DENOISE_FILTER_TIPS = {
+    "mvo-r2": "MVO-R2 : réseau appris sur plusieurs images recalées (GPU Vulkan ou NVIDIA TensorRT) ; retire le grain "
+              "et le bruit en gardant le détail, dosé plan par plan. Sortie en 10 bits en profondeur Auto.",
+    "nlmeans": "NLMeans : filtre FFmpeg image par image (CPU, ou GPU Vulkan en 10 bits).",
+}
+
+# MVO-R2 : niveaux (libellé, valeur, infobulle), dosage adapté à chaque plan (D-a).
+_RESTORE_LEVEL_ITEMS: tuple[tuple[str, str, str], ...] = (
+    ("Auto", "auto",
+     "Auto : le grain retiré est dosé plan par plan d'après le grain mesuré ; un cran vers Fort pour un contenu "
+     "animé."),
+    ("Léger", "leger", "Léger : retire moins de grain, texture d'origine davantage préservée."),
+    ("Moyen", "moyen", "Moyen : équilibre entre retrait du grain et texture, dosé plan par plan."),
+    ("Fort", "fort", "Fort : retire le plus de grain, pour les grains épais ou le bruit numérique marqué."),
+)
+_RESTORE_LEVEL_BADGES = {"auto": "Auto", "leger": "Léger", "moyen": "Moyen", "fort": "Fort"}
+
+
 def _format_fps(value: float) -> str:
     """Cadence lisible à la française (ex. 59,94)."""
     return f"{value:.3f}".rstrip("0").rstrip(".").replace(".", ",")
@@ -158,6 +227,7 @@ class EncodePanel(QWidget):
     log_message              = Signal(str, str)
     ready_changed            = Signal(bool)     # émis quand la source vidéo change
     operation_changed = Signal()
+    preview_running_changed = Signal(bool)  # aperçu en cours ou terminé (outils en usage)
     audio_track_meta_changed = Signal(int, object, str, str, object)  # (stream_index, source_path, lang, title, entry_id)
     audio_track_encoding_changed = Signal(object, str, int)  # (entry_id, codec, bitrate_kbps)
     audio_track_add_requested = Signal(object, str, str, int)  # (template TrackEntry, entry_id, codec, bitrate_kbps)
@@ -168,10 +238,11 @@ class EncodePanel(QWidget):
     extensions_page_requested = Signal()      # lien « Gérer les extensions » → page Extensions
     hdr_studio_requested = Signal(object, int)  # clic droit « Inspecter le HDR… » : chemin, index ffprobe
     fel_analysis_requested = Signal(object, int)  # « Analyser l'apport du FEL… » : chemin, index ffprobe
-    rife_install_requested   = Signal()       # lien « Installer » de l'extension Interpolation (moteur absent)
+    failed_work_dir_retained = Signal(object)  # encodage en échec : dossier de travail gardé (RetainedProcessWorkDir)
+    rife_install_requested   = Signal()       # lien « Installer » du moteur vidéo MVO (moteur absent)
     # Encodeurs HW/SW, binaire FFmpeg HW, modes de débit, capacités 10 bits NVEncC,
     # presets acceptés par le FFmpeg utilisé (NVENC / AMF / QSV / VAAPI), pilote VAAPI.
-    _hw_detected             = Signal(object, object, object, object, object, object, object)
+    _hw_detected             = Signal(object, object, object, object, object, object, object, object)
     _hdr_meta_frame_probe_ready = Signal(int, str, str)
     _track_hdr_ready = Signal(str, object, object, str, str)
     _command_preview_ready = Signal(int, str)
@@ -197,10 +268,10 @@ class EncodePanel(QWidget):
             dovi_tool_bin=config.tool_dovi_tool,
             hdr10plus_bin=config.tool_hdr10plus,
             mediainfo_bin=config.tool_mediainfo,
-            ram_buffer_enabled=config.ram_buffer_enabled,
             ram_buffer_threshold_pct=config.ram_buffer_threshold_pct,
             ffmpeg_threads=config.ffmpeg_threads,
             max_parallel_video_encodes=config.max_parallel_video_encodes,
+            x265_frame_threads=getattr(config, "x265_frame_threads", 0),
             parent=self,
             writing_application=writing_application,
             generate_nfo=config.generate_nfo,
@@ -210,6 +281,7 @@ class EncodePanel(QWidget):
             aac_bitrate_per_channel_kbps=config.aac_bitrate_per_channel_kbps,
             eac3_bitrate_per_channel_kbps=config.eac3_bitrate_per_channel_kbps,
             regenerate_statistics=getattr(config, "matroska_regenerate_statistics", True),
+            measurement_cache_dir=config.app_data_dir / "hdr_inspection",
         )
         self._profiles  = ProfileManager(config.app_data_dir / "encode_profiles")
         self._workflow.set_validation_override(self._validation_prompt.request)
@@ -230,6 +302,10 @@ class EncodePanel(QWidget):
         self._dynamic_hdr_disabled_by_codec: tuple[bool, bool] = (False, False)
         # Tone-mapping coché d'office pour un codec sans HDR (source HDR) ; décoché au retour.
         self._tonemap_enabled_by_codec = False
+        #: Choix explicite (clic) du tone mapping de la piste affichée ; ``None`` : défaut du codec.
+        self._tonemap_choice: bool | None = None
+        #: « Appliquer à toutes » : choix commun du tone mapping (initialisé à l'activation, modifié au clic).
+        self._tonemap_common_choice: bool | None = None
         # (codec, piste) pour lesquels ce défaut a été appliqué : les synchronisations
         # suivantes respectent le choix manuel.
         self._tonemap_policy_key: tuple[str, str | None] | None = None
@@ -237,6 +313,22 @@ class EncodePanel(QWidget):
         self._syncing_video_selectors = False
         self._video_selector_combos: list[QComboBox] = []
         self._video_apply_all = False
+        #: Saisies HDR10 explicites de la piste affichée (``static_hdr_values_manual``) : case cochée par
+        #: l'utilisateur, champ Master Display / MaxCLL modifié à la main.
+        self._static_hdr_manual = False
+        self._static_hdr_field_manual: dict[str, bool] = {"master_display": False, "max_cll": False}
+        #: « Appliquer à toutes » : HDR10 / Dolby Vision / HDR10+ voulus pour les pistes dont la source en porte
+        #: (option absente : aucune intention connue). Tenu hors de l'état des pistes : une piste affichée dont la
+        #: source n'a pas l'option ne la modifie pas.
+        self._hdr_common_intent: dict[str, bool] = {}
+        #: HDR10+ généré depuis le Dolby Vision voulu pour la piste affichée (mémorisé même quand le codec, le tone
+        #: mapping ou la source ne le permettent pas ; case cochée seulement s'il s'applique).
+        self._generate_hdr10plus_intent = False
+        #: Copie HDR10+ décochée par la génération (rétablie quand la génération est retirée).
+        self._hdr10plus_copy_replaced = False
+        #: Couches mesurables par l'extension mvo-fel installée, par (dossier, version) : repli L1 annoncé.
+        self._generation_support_key: tuple[str, str] | None = None
+        self._generation_support_cache: EngineSupport | None = None
         # Mode de débit affiché ; modes acceptés par le pilote, par codec sondé.
         self._current_rc_spec: RateControlSpec | None = None
         self._quality_scale_by_family: dict[str, tuple[tuple[int, int], str]] = {}
@@ -301,6 +393,9 @@ class EncodePanel(QWidget):
 
         self._sw_encoders: set[str] = {codec_id for codec_id, _ in SOFTWARE_VIDEO_CODECS}
         self._workflow.log_message.connect(self.log_message, Qt.ConnectionType.QueuedConnection)
+        self._workflow.failed_work_dir_retained.connect(
+            self.failed_work_dir_retained, Qt.ConnectionType.QueuedConnection,
+        )
         self._hw_detected.connect(self._on_hw_detected, Qt.ConnectionType.QueuedConnection)
         self._hdr_meta_frame_probe_ready.connect(
             self._on_hdr_meta_frame_probe_ready,
@@ -318,6 +413,7 @@ class EncodePanel(QWidget):
         self._build_ui()
         self._initial_video_state = self._current_video_state()
         apply_translations(self)
+        self._detection_tools = (config.tool_ffmpeg, getattr(config, "tool_nvencc", None) or None)
         self._executor.submit(self._detect_hw_encoders)
         try:
             EncodeWorkflow.cleanup_preview_dir(self._config.work_dir)
@@ -333,6 +429,7 @@ class EncodePanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self._page_layout = root     # défilement puis barre « Fichier de sortie »
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -381,6 +478,14 @@ class EncodePanel(QWidget):
 
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)
+        self._scroll = scroll
+        ScrollFade(scroll)
+
+    def host_output_bar(self, bar: OutputBar) -> None:
+        """Affiche la barre « Fichier de sortie » du panneau Conteneur sous le défilement de cette page."""
+        self._page_layout.addWidget(bar)
+        bar.show()      # reparentée : réaffichée tout de suite (le layout ne le fait qu'au tour de boucle suivant)
+        bar.follow_scroll(self._scroll)
 
     def _new_tab_page(self) -> tuple[QWidget, QVBoxLayout]:
         page = QWidget()
@@ -727,8 +832,14 @@ class EncodePanel(QWidget):
                 self._video_list.setCurrentRow(row)
                 if not self._inject_hdr_cb.isEnabled() or self._max_cll.isReadOnly():
                     return False
+                # Choix de l'utilisateur dans HDR Studio : saisie explicite, comme un clic et une frappe.
+                self._static_hdr_manual = True
+                self._static_hdr_field_manual["max_cll"] = True
                 self._inject_hdr_cb.setChecked(True)
                 self._max_cll.setText(f"{int(max_cll)},{int(max_fall)}")
+                self._on_hdr_option_clicked("inject_hdr_meta", True)
+                self._save_current_video_state()
+                self._sync_hdr_metadata_provenance()
                 return True
         return False
 
@@ -825,6 +936,8 @@ class EncodePanel(QWidget):
         self._video_settings_by_entry_id.clear()
         self._static_hdr_estimate_prompted.clear()
         self._apply_all_video_cb.setChecked(False)
+        self._hdr_common_intent = {}
+        self._tonemap_common_choice = None
         self._apply_video_state(self._initial_video_state)
         self._update_passthrough_controls()
         self._profile_combo.setCurrentIndex(-1)
@@ -859,7 +972,7 @@ class EncodePanel(QWidget):
             )
         self._save_current_video_state()
         selected_entry_id = self._current_video_entry_id
-        self._video_tracks = tracks
+        self._video_tracks = tracks  # intention HDR commune conservée : paramètre du mode global
         self._sync_codec_item_availability()
         self._video_list.blockSignals(True)
         self._video_list.clear()
@@ -969,6 +1082,16 @@ class EncodePanel(QWidget):
             # suivent peuvent le sauvegarder. Auto suit la profondeur de la
             # source sans figer une valeur qui fuirait vers d'autres pistes
             # (« Appliquer à toutes ») ou dans un profil.
+            # Piste sans état (nouvelle source) : rien des saisies de la piste affichée avant elle.
+            self._static_hdr_manual = False
+            self._static_hdr_field_manual = {"master_display": False, "max_cll": False}
+            # Mode global : choix commun du tone mapping, comme les pistes qui le reçoivent par propagation.
+            self._tonemap_choice = self._tonemap_common_choice if self._video_apply_all else None
+            if track is not None and self._current_video_entry_id is not None:
+                # Valeurs HDR10 de la source connues dès le premier état : le préremplissage ci-dessous
+                # reste classé « source » (provenance par champ, mesure FEL), pas « saisie ».
+                self._video_settings_by_entry_id[self._current_video_entry_id] = (
+                    self._default_video_state_for_track(info=info, track=track))
             blocked = self._bit_depth_combo.blockSignals(True)
             self._set_combo_data(self._bit_depth_combo, "auto")
             self._bit_depth_combo.blockSignals(blocked)
@@ -987,6 +1110,9 @@ class EncodePanel(QWidget):
             self._update_passthrough_controls(auto_check=False)
         else:
             self._update_passthrough_controls(auto_check=True)
+            # Piste sans état affichée dans le codec courant (Copy au départ) : édition HDR10 selon la règle du cœur,
+            # comme après un changement de codec ou un état relu.
+            self._sync_hdr_metadata_field_editability(str(self._codec_combo.currentData() or "copy"))
             self._save_current_video_state()
             if self._video_apply_all:
                 self._propagate_current_video_state_to_all(force_current=False)
@@ -1247,6 +1373,7 @@ class EncodePanel(QWidget):
         self._inject_hdr_cb = QCheckBox("Injecter les métadonnées HDR10 statiques (ST 2086 / MaxCLL)")
         self._inject_hdr_cb.setStyleSheet(_checkbox_style())
         self._inject_hdr_cb.stateChanged.connect(self._on_hdr_toggle)
+        self._inject_hdr_cb.clicked.connect(self._on_hdr_clicked)
         cl.addWidget(self._inject_hdr_cb)
 
         self._hdr_meta_widget = QWidget()
@@ -1297,6 +1424,9 @@ class EncodePanel(QWidget):
         hm_l.addWidget(self._hdr_meta_provenance)
         self._master_display.textChanged.connect(lambda _: self._sync_hdr_metadata_provenance())
         self._max_cll.textChanged.connect(lambda _: self._sync_hdr_metadata_provenance())
+        # Saisie de l'utilisateur (textEdited : jamais un remplissage programmatique) : valeur explicite.
+        self._master_display.textEdited.connect(lambda _: self._mark_static_hdr_field("master_display"))
+        self._max_cll.textEdited.connect(lambda _: self._mark_static_hdr_field("max_cll"))
 
         self._hdr_meta_widget.setVisible(False)
         cl.addWidget(self._hdr_meta_widget)
@@ -1308,6 +1438,7 @@ class EncodePanel(QWidget):
         self._copy_dv_cb.setStyleSheet(_checkbox_style())
         self._copy_dv_cb.setEnabled(False)
         self._copy_dv_cb.stateChanged.connect(self._on_dv_toggle)
+        self._copy_dv_cb.clicked.connect(lambda checked: self._on_hdr_option_clicked("copy_dv", checked))
         cl.addWidget(self._copy_dv_cb)
         # Conversion P8.1 : choix de l'utilisateur, affichage figé quand le traitement l'impose.
         self._dovi_profile_choice = "0"
@@ -1416,7 +1547,22 @@ class EncodePanel(QWidget):
         self._copy_hdr10plus_cb.setStyleSheet(_checkbox_style())
         self._copy_hdr10plus_cb.setEnabled(False)
         self._copy_hdr10plus_cb.stateChanged.connect(lambda _: self._on_hdr10plus_toggled())
+        self._copy_hdr10plus_cb.clicked.connect(self._on_copy_hdr10plus_clicked)
         cl.addWidget(self._copy_hdr10plus_cb)
+        # 3 bis. HDR10+ généré depuis le Dolby Vision (remplace celui de la source, Copy compris).
+        self._generate_hdr10plus_cb = QCheckBox("Générer les métadonnées HDR10+ depuis le Dolby Vision")
+        self._generate_hdr10plus_cb.setStyleSheet(_checkbox_style())
+        self._generate_hdr10plus_cb.setEnabled(False)
+        self._generate_hdr10plus_cb.clicked.connect(self._on_generate_hdr10plus_clicked)
+        cl.addWidget(self._generate_hdr10plus_cb)
+        self._generate_hdr10plus_note = QLabel()
+        self._generate_hdr10plus_note.setWordWrap(True)
+        self._generate_hdr10plus_note.setStyleSheet(
+            f"color:{_C.TEXT_SEC};font-size:11px;background:transparent;padding-left:20px;"
+        )
+        self._generate_hdr10plus_note.linkActivated.connect(lambda _: self.extensions_page_requested.emit())
+        self._generate_hdr10plus_note.setVisible(False)
+        cl.addWidget(self._generate_hdr10plus_note)
         # FEL intégré : HDR10+ mesuré sur l'image reconstruite, ou celui de la source (BL).
         self._fel_hdr10plus_choice = "recompute"
         self._fel_hdr10plus_combo = QComboBox()
@@ -1439,6 +1585,7 @@ class EncodePanel(QWidget):
         self._tonemap_cb = QCheckBox("Tone-mapping HDR → SDR  (zscale + tonemap)")
         self._tonemap_cb.setStyleSheet(_checkbox_style())
         self._tonemap_cb.stateChanged.connect(self._on_tonemap_toggle)
+        self._tonemap_cb.clicked.connect(self._on_tonemap_clicked)
         cl.addWidget(self._tonemap_cb)
 
         self._tonemap_algo_widget = QWidget()
@@ -1853,23 +2000,68 @@ class EncodePanel(QWidget):
             self._deblock_block_combo,
         ))
 
-        self._nlmeans_cb = QCheckBox("Débruitage")
-        self._nlmeans_cb.setStyleSheet(_checkbox_style())
-        self._nlmeans_cb.setToolTip("Débruitage spatial/temporal. Plus lent mais utile sur sources bruitées.")
-        self._nlmeans_cb.toggled.connect(lambda _: self._rebuild_preview())
-        self._nlmeans_filter_combo = QComboBox()
-        self._nlmeans_filter_combo.setStyleSheet(_combo_style())
-        self._nlmeans_filter_combo.setToolTip("Filtre de débruitage utilisé.")
-        self._nlmeans_filter_combo.addItem("NLMeans", "nlmeans")
-        self._nlmeans_filter_combo.setEnabled(False)
-        self._nlmeans_filter_combo.setVisible(False)
+        # Débruitage : MVO-R2 (réseau de muxiveo-rife, par défaut) ou NLMeans (FFmpeg) ; options selon le filtre.
+        self._r2_available = False
+        self._restore_fast_available = False
+        self._restore_sharpen_available = False
+        # NLMeans sélectionné faute de MVO-R2 (pas par l'utilisateur) : MVO-R2 rétabli dès qu'il est disponible.
+        self._denoise_fallback = False
+        self._denoise_cb = QCheckBox("Débruitage")
+        self._denoise_cb.setStyleSheet(_checkbox_style())
+        self._denoise_cb.setToolTip(
+            "Retire le grain et le bruit : MVO-R2 (réseau appris, GPU) par défaut, ou NLMeans (FFmpeg)."
+        )
+        self._denoise_cb.toggled.connect(lambda _: self._on_denoise_changed())
+        self._denoise_filter_combo = QComboBox()
+        self._denoise_filter_combo.setStyleSheet(_combo_style())
+        self._denoise_filter_combo.setToolTip("Filtre de débruitage utilisé.")
+        for label, value in _DENOISE_FILTER_ITEMS:
+            self._denoise_filter_combo.addItem(label, value)
+        self._denoise_filter_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._denoise_filter_combo.activated.connect(lambda _: setattr(self, "_denoise_fallback", False))
         self._nlmeans_strength_combo = self._preset_combo_widget(("ultralight", "light", "medium", "strong"))
         self._nlmeans_strength_combo.setToolTip("Intensité du débruitage NLMeans.")
         self._nlmeans_profile_combo = self._preset_combo_widget(("standard", "grain", "animation", "high motion", "sprite"))
         self._nlmeans_profile_combo.setToolTip("Profil de contenu qui ajuste légèrement les paramètres NLMeans.")
+        self._restore_level_combo = QComboBox()
+        self._restore_level_combo.setStyleSheet(_combo_style())
+        for label, value, _tip in _RESTORE_LEVEL_ITEMS:
+            self._restore_level_combo.addItem(label, value)
+        self._restore_level_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._restore_mode_combo = QComboBox()
+        self._restore_mode_combo.setStyleSheet(_combo_style())
+        self._restore_mode_tip = (
+            "Mode Auto : rapide au-delà de 2560 px de large (UHD), normal en dessous. Mode rapide : flux optique "
+            "calculé au quart de la définition au lieu de la moitié ; plus rapide, perte de qualité très faible."
+        )
+        for label, mode in (("Mode : Auto", "auto"), ("Mode : Normal", "normal"), ("Mode : Rapide", "fast")):
+            self._restore_mode_combo.addItem(label, mode)
+        self._restore_mode_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._restore_animation_combo = QComboBox()
+        self._restore_animation_combo.setStyleSheet(_combo_style())
+        self._restore_animation_tip = (
+            "Contenu animé : le niveau Auto retire un cran de plus. Auto : d'après le genre « Animation » de la "
+            "fiche TMDB de la sortie, sinon de la source."
+        )
+        for label, value in (("Animation : Auto", "auto"), ("Animation : Oui", "on"), ("Animation : Non", "off")):
+            self._restore_animation_combo.addItem(label, value)
+        self._restore_animation_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
+        self._restore_sharpen_combo = QComboBox()
+        self._restore_sharpen_combo.setStyleSheet(_combo_style())
+        self._restore_sharpen_tip = (
+            "Compensation de netteté : rend une petite part du détail fin que le débruitage a retiré, seulement là où "
+            "il est stable d'une image à l'autre (jamais le grain, jamais plus que ce qui a été retiré)."
+        )
+        for label, sharpen in (("Netteté : Compensée", True), ("Netteté : Telle quelle", False)):
+            self._restore_sharpen_combo.addItem(label, sharpen)
+        self._restore_sharpen_combo.currentIndexChanged.connect(lambda _: self._on_denoise_changed())
         fl.addWidget(self._build_filter_row(
-            self._nlmeans_cb,
-            self._filter_tech_label(self._nlmeans_filter_combo.currentText()),
+            self._denoise_cb,
+            self._denoise_filter_combo,
+            self._restore_level_combo,
+            self._restore_mode_combo,
+            self._restore_animation_combo,
+            self._restore_sharpen_combo,
             self._nlmeans_strength_combo,
             self._nlmeans_profile_combo,
         ))
@@ -1955,7 +2147,7 @@ class EncodePanel(QWidget):
         self._rife_hint.setTextFormat(Qt.TextFormat.RichText)
         self._rife_hint.setText(
             "<a href='install' style='color:" + _C.ACCENT + ";'>"
-            + translate_text("Interpolation non installée — Installer…") + "</a>"
+            + translate_text("Moteur vidéo MVO non installé — Installer…") + "</a>"
             + " · <a href='manage' style='color:" + _C.TEXT_SEC + ";'>"
             + translate_text("Gérer les extensions") + "</a>"
         )
@@ -1997,12 +2189,135 @@ class EncodePanel(QWidget):
                 "Dolby Vision et HDR10+ suivent la nouvelle cadence."
             )
             if available
-            else translate_text("Extension Interpolation d'images non installée : page Extensions.")
+            else translate_text("Moteur vidéo MVO non installé : page Extensions.")
         )
         self._rife_hint.setVisible(not available and not getattr(self._rife_state, "busy", ""))
         if not available and self._interp_cb.isChecked():
             self._interp_cb.setChecked(False)
         self._sync_interpolation_controls()
+        self._sync_denoise_availability()
+
+    def _restore_capabilities(self) -> tuple[bool, bool, str]:
+        """(MVO-R2 disponible, mode rapide disponible, raison) d'après les capacités du moteur installé."""
+        if not self._interpolation_tool_available():
+            return False, False, "MVO-R2 : moteur vidéo MVO non installé (page Extensions)."
+        rife = str(getattr(self._config, "tool_muxiveo_rife", "") or "")
+        capabilities = rife_capabilities(rife)
+        if capabilities is None or not capabilities.supports("restore") or "r2" not in capabilities.restore_models:
+            return False, False, "MVO-R2 absent du moteur vidéo MVO installé : le mettre à jour (page Extensions)."
+        return True, "r2q" in capabilities.restore_models, ""
+
+    def _sync_denoise_availability(self) -> None:
+        """Entrée MVO-R2 du filtre de débruitage selon le moteur installé ; absent → NLMeans sélectionné (case
+        décochée si MVO-R2 était actif : jamais de substitution silencieuse d'un filtre par l'autre)."""
+        if not hasattr(self, "_denoise_cb"):
+            return
+        available, fast, reason = self._restore_capabilities()
+        self._r2_available = available
+        self._restore_fast_available = fast
+        rife = str(getattr(self._config, "tool_muxiveo_rife", "") or "")
+        capabilities = rife_capabilities(rife) if available else None
+        self._restore_sharpen_available = capabilities is not None and capabilities.supports("restore-sharpen")
+        combo = self._denoise_filter_combo
+        row = combo.findData("mvo-r2")
+        model = combo.model()
+        item = model.item(row) if isinstance(model, QStandardItemModel) else None
+        if item is not None:
+            item.setEnabled(available)
+        combo.setItemData(row, translate_text(_DENOISE_FILTER_TIPS["mvo-r2"] if available else reason),
+                          Qt.ItemDataRole.ToolTipRole)
+        combo.setItemData(combo.findData("nlmeans"), translate_text(_DENOISE_FILTER_TIPS["nlmeans"]),
+                          Qt.ItemDataRole.ToolTipRole)
+        if not available and combo.currentData() == "mvo-r2":
+            if self._denoise_cb.isChecked():
+                self._denoise_cb.setChecked(False)
+            self._denoise_fallback = True
+            self._set_combo_data(combo, "nlmeans")
+        elif available and self._denoise_fallback and not self._denoise_cb.isChecked():
+            self._denoise_fallback = False
+            self._set_combo_data(combo, "mvo-r2")
+        self._sync_denoise_controls()
+
+    def _denoise_filter(self) -> str:
+        """Filtre de débruitage sélectionné (« mvo-r2 » seulement si disponible)."""
+        value = str(self._denoise_filter_combo.currentData() or "nlmeans")
+        return value if value == "nlmeans" or self._r2_available else "nlmeans"
+
+    def _sync_denoise_controls(self) -> None:
+        """Options affichées selon le filtre : niveau / mode / animation (MVO-R2), intensité / profil (NLMeans)."""
+        r2 = self._denoise_filter() == "mvo-r2"
+        for widget in (self._restore_level_combo, self._restore_mode_combo, self._restore_animation_combo,
+                       self._restore_sharpen_combo):
+            widget.setVisible(r2)
+        for widget in (self._nlmeans_strength_combo, self._nlmeans_profile_combo):
+            widget.setVisible(not r2)
+        self._denoise_filter_combo.setToolTip(translate_text(_DENOISE_FILTER_TIPS[self._denoise_filter()]))
+        fast = self._restore_fast_available
+        level = self._restore_level_combo.currentData()
+        self._restore_mode_combo.setEnabled(fast)
+        # L'animation ne déplace que le niveau Auto.
+        self._restore_animation_combo.setEnabled(level == "auto")
+        self._restore_sharpen_combo.setEnabled(self._restore_sharpen_available)
+        self._restore_sharpen_combo.setToolTip(translate_text(
+            self._restore_sharpen_tip if self._restore_sharpen_available
+            else "Compensation de netteté absente du moteur vidéo MVO installé : le mettre à jour (page Extensions)."
+        ))
+        for index in range(self._restore_level_combo.count()):
+            item_tip = next((t for _label, value, t in _RESTORE_LEVEL_ITEMS
+                             if value == self._restore_level_combo.itemData(index)), "")
+            self._restore_level_combo.setItemData(index, translate_text(item_tip), Qt.ItemDataRole.ToolTipRole)
+        tip = next((t for _label, value, t in _RESTORE_LEVEL_ITEMS if value == level), "")
+        self._restore_level_combo.setToolTip(translate_text(tip))
+        self._restore_mode_combo.setToolTip(translate_text(
+            self._restore_mode_tip if fast
+            else "Mode rapide absent du moteur vidéo MVO installé : le mettre à jour (page Extensions)."
+        ))
+        self._restore_animation_combo.setToolTip(translate_text(
+            self._restore_animation_tip if level == "auto"
+            else "Sans effet hors du niveau Auto : le niveau choisi s'applique tel quel."
+        ))
+
+    def _on_denoise_changed(self) -> None:
+        self._sync_denoise_controls()
+        self._rebuild_preview()
+
+    def _current_restore_mode(self) -> str:
+        """Mode choisi ; rapide sans ses graphes → Auto (qui retombe alors sur le mode normal)."""
+        mode = str(self._restore_mode_combo.currentData() or "auto")
+        return "auto" if mode == "fast" and not self._restore_fast_available else mode
+
+    def _current_restore_settings(self) -> RestoreSettings:
+        if not hasattr(self, "_denoise_cb"):
+            return RestoreSettings()
+        return RestoreSettings(
+            enabled=self._denoise_cb.isChecked() and self._denoise_cb.isEnabled() and self._denoise_filter() == "mvo-r2",
+            level=str(self._restore_level_combo.currentData() or "auto"),
+            mode=self._current_restore_mode(),
+            animation=str(self._restore_animation_combo.currentData() or "auto"),
+            sharpen=bool(self._restore_sharpen_combo.currentData()),
+        )
+
+    def _apply_denoise_settings(self, filters: VideoFilterSettings, restoration: RestoreSettings) -> None:
+        """Ligne Débruitage d'après les réglages effectifs : MVO-R2 actif (s'il est disponible), sinon NLMeans
+        actif, sinon case décochée sur le filtre mémorisé."""
+        if not hasattr(self, "_denoise_cb"):
+            return
+        self._set_combo_data(self._nlmeans_strength_combo, filters.nlmeans_strength)
+        self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
+        self._set_combo_data(self._restore_level_combo, restoration.level)
+        self._set_combo_data(self._restore_mode_combo, restoration.mode)
+        self._set_combo_data(self._restore_animation_combo, restoration.animation)
+        self._set_combo_data(self._restore_sharpen_combo, bool(restoration.sharpen))
+        if restoration.enabled and self._r2_available:
+            choice, enabled = "mvo-r2", True
+        elif filters.nlmeans_enabled:
+            choice, enabled = "nlmeans", True
+        else:
+            choice, enabled = filters.denoise_filter, False
+        self._denoise_fallback = choice == "mvo-r2" and not self._r2_available
+        self._set_combo_data(self._denoise_filter_combo, choice if self._r2_available else "nlmeans")
+        self._denoise_cb.setChecked(enabled)
+        self._sync_denoise_controls()
 
     def _interpolation_tool_flag(self) -> bool:
         """État propre de la case RIFE (outil disponible), indépendant des parents
@@ -2264,9 +2579,16 @@ class EncodePanel(QWidget):
         for name, value in (("master_display", md), ("max_cll", cll)):
             if not value:
                 continue
+            # Provenance lue avant toute mise à jour (marqueur, ou valeur différente de la source : ancien état) et
+            # figée en marqueur : elle survit au complément de la référence. Saisie : jamais remplacée ; champ vide :
+            # jamais manuel (un ancien marqueur ne l'empêche pas d'être complété).
+            manual = static_hdr_field_manual(state, name)
+            state[f"static_hdr_{name}_manual"] = manual
+            if self._current_video_entry_id == key:
+                self._static_hdr_field_manual[name] = manual
             if not state.get("default_" + name):
                 state["default_" + name] = value
-            if state.get(name, "") == expected[name]:
+            if state.get(name, "") == expected[name] and not manual:
                 state[name] = value
         if self._current_video_entry_id == key:
             # Les deux champs font partie d'une seule mise à jour : leurs
@@ -2277,6 +2599,7 @@ class EncodePanel(QWidget):
             self._max_cll.setText(str(state.get("max_cll") or ""))
             self._master_display.blockSignals(md_blocked)
             self._max_cll.blockSignals(cll_blocked)
+            self._sync_hdr_metadata_provenance()  # libellé et « Valeurs source » d'après les valeurs complétées
         self._rebuild_preview()
 
     def _probe_hdr_meta_from_frames(self, generation: int, source_path: Path) -> None:
@@ -2299,11 +2622,28 @@ class EncodePanel(QWidget):
             return
         self._hdr_meta_probe_expected = None
         expected_master_display, expected_max_cll = expected[1:]
-        # Ne pas écraser une valeur saisie par l'utilisateur pendant le probe.
-        if master_display and self._master_display.text() == expected_master_display:
-            self._master_display.setText(master_display)
-        if max_cll and self._max_cll.text() == expected_max_cll:
-            self._max_cll.setText(max_cll)
+        state = (self._video_settings_by_entry_id.get(self._current_video_entry_id)
+                 if self._current_video_entry_id is not None else None)
+        for name, value, widget, expected_text in (
+                ("master_display", master_display, self._master_display, expected_master_display),
+                ("max_cll", max_cll, self._max_cll, expected_max_cll)):
+            if not value:
+                continue
+            shown = {name: widget.text(), f"default_{name}": (state or {}).get(f"default_{name}", ""),
+                     f"static_hdr_{name}_manual": self._static_hdr_field_manual[name]}
+            manual = static_hdr_field_manual(shown, name)  # provenance avant mise à jour, figée (ancien état)
+            self._static_hdr_field_manual[name] = manual
+            if state is not None and not state.get("default_" + name):
+                state["default_" + name] = value  # valeur de référence de la source (provenance « source »)
+            # Ne pas écraser une valeur modifiée pendant la sonde, ni une saisie même identique ; les deux champs
+            # ensemble (aucun état intermédiaire).
+            if widget.text() == expected_text and not manual:
+                blocked = widget.blockSignals(True)
+                widget.setText(value)
+                widget.blockSignals(blocked)
+        self._save_current_video_state()
+        self._sync_hdr_metadata_provenance()
+        self._rebuild_preview()
 
     def _extract_hdr_meta_fields(
         self,
@@ -2313,249 +2653,40 @@ class EncodePanel(QWidget):
         mediainfo_json: dict | None = None,
         include_frame_probe: bool = True,
     ) -> tuple[str, str]:
-        # 1. Priorité mediainfo (parse de tous les SEI HEVC d'un coup).
-        master_display, max_cll = "", ""
-        if mediainfo_json is not None:
-            master_display, max_cll = self._extract_hdr_meta_from_mediainfo_json(mediainfo_json)
-        elif source_path is not None:
-            master_display, max_cll = self._extract_hdr_meta_from_mediainfo(source_path)
-        if master_display and max_cll:
-            return master_display, max_cll
-
-        # 2. Fallback ffprobe via side_data_list **stream-level** (rare —
-        #    seuls quelques fichiers exposent MDCV/CLL au niveau stream).
-        ff_md, ff_cll = self._extract_hdr_meta_from_ffprobe_raw(raw)
-        master_display = master_display or ff_md
-        max_cll = max_cll or ff_cll
-        if master_display and max_cll:
-            return master_display, max_cll
-
-        # 3. Fallback ffprobe -show_frames : lit le SEI MDCV/CLL directement
-        #    dans les frames HEVC (cas typique : mediainfo absent et stream-
-        #    level n'expose pas les side_data). Indispensable quand
-        #    `WARN Outils manquants : mediainfo` au démarrage.
-        if include_frame_probe and source_path is not None:
-            ff2_md, ff2_cll = self._extract_hdr_meta_from_ffprobe_frames(source_path)
-            master_display = master_display or ff2_md
-            max_cll = max_cll or ff2_cll
-        return master_display, max_cll
+        """HDR10 statique de la source (``track_settings.extract_hdr_meta_fields``) ; sondes de ce panneau."""
+        return extract_hdr_meta_fields(
+            raw,
+            mediainfo_json=mediainfo_json,
+            from_mediainfo=(lambda: self._extract_hdr_meta_from_mediainfo(source_path))
+            if source_path is not None else None,
+            from_frames=(lambda: self._extract_hdr_meta_from_ffprobe_frames(source_path))
+            if include_frame_probe and source_path is not None else None,
+        )
 
     def _extract_hdr_meta_from_ffprobe_frames(
         self, source_path: Path, stream_index: int | None = None,
     ) -> tuple[str, str]:
-        """
-        Fallback alternatif quand mediainfo est absent : lit MDCV/CLL via
-        ``ffprobe -show_frames -read_intervals "%+#1"``.
-
-        ffprobe expose les chromaticités au format ``num/50000`` et la
-        luminance au format ``num/10000`` — exactement les unités ffmpeg/x265.
-        Retourne ``("", "")`` si ffprobe absent ou si le SEI n'est pas présent.
-        """
-        cmd = [
-            self._config.tool_ffprobe,
-            "-v", "error",
-            "-select_streams", str(stream_index) if stream_index is not None else "v:0",
-            "-show_frames",
-            "-read_intervals", "%+#1",
-            "-print_format", "json",
-        ]
-        cmd.extend(ffprobe_input_args(source_path))
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True, check=False, timeout=20, **subprocess_text_kwargs(),
-            )
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-            return "", ""
-        if result.returncode != 0:
-            return "", ""
-        try:
-            data = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
-            return "", ""
-        frames = data.get("frames") or []
-        if not frames:
-            return "", ""
-        side_data_list = frames[0].get("side_data_list") or []
-
-        def _num(rat: object) -> int:
-            try:
-                return int(str(rat).split("/", 1)[0])
-            except (ValueError, AttributeError):
-                return 0
-
-        master_display = ""
-        max_cll = ""
-        for sd in side_data_list:
-            stype = sd.get("side_data_type") or ""
-            if stype == "Mastering display metadata":
-                gx, gy = _num(sd.get("green_x")), _num(sd.get("green_y"))
-                bx, by = _num(sd.get("blue_x")), _num(sd.get("blue_y"))
-                rx, ry = _num(sd.get("red_x")), _num(sd.get("red_y"))
-                wx, wy = _num(sd.get("white_point_x")), _num(sd.get("white_point_y"))
-                lmin = _num(sd.get("min_luminance"))
-                lmax = _num(sd.get("max_luminance"))
-                if lmax > 0 and (rx > 0 or gx > 0 or bx > 0):
-                    master_display = (
-                        f"G({gx},{gy})B({bx},{by})R({rx},{ry})"
-                        f"WP({wx},{wy})L({lmax},{lmin})"
-                    )
-            elif stype == "Content light level metadata":
-                try:
-                    mc = int(sd.get("max_content") or 0)
-                    ma = int(sd.get("max_average") or 0)
-                except (TypeError, ValueError):
-                    mc = ma = 0
-                if mc > 0:
-                    max_cll = f"{mc},{ma}"
-        return master_display, max_cll
+        """MDCV / CLL de la première image (``ffprobe -show_frames``) ; ("", "") si absents."""
+        return hdr_meta_from_ffprobe_frames(self._config.tool_ffprobe, source_path, stream_index)
 
     def _extract_hdr_meta_from_mediainfo(
         self, source_path: Path,
     ) -> tuple[str, str]:
-        """Renvoie (master_display, max_cll) depuis le JSON mediainfo,
-        ou ('', '') si mediainfo est absent ou sans champs HDR statiques.
-
-        Le format master_display est celui attendu par x265/ffmpeg
-        (chromaticité ×50000, luminance ×10000).
-        Mediainfo n'expose pas les chromaticités du Mastering Display ;
-        on dérive donc depuis ``MasteringDisplay_ColorPrimaries`` quand
-        c'est un primaire connu (BT.2020, Display P3, BT.709).
-        """
-        try:
-            result = subprocess.run(
-                [self._config.tool_mediainfo, "--Output=JSON", str(source_path)],
-                capture_output=True, check=False, timeout=60, **subprocess_text_kwargs(),
-            )
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-            return "", ""
-        if result.returncode != 0:
-            return "", ""
-        try:
-            data = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
-            return "", ""
-        return self._extract_hdr_meta_from_mediainfo_json(data)
+        """(master_display, max_cll) d'après MediaInfo ; ("", "") si absent ou sans HDR10 statique."""
+        return hdr_meta_from_mediainfo(self._config.tool_mediainfo, source_path)
 
     def _extract_hdr_meta_from_mediainfo_json(
         self,
         data: dict,
     ) -> tuple[str, str]:
         """Renvoie (master_display, max_cll) depuis un JSON MediaInfo déjà chargé."""
-        media = data.get("media") or {}
-        mi_video = next(
-            (t for t in (media.get("track") or []) if isinstance(t, dict) and t.get("@type") == "Video"),
-            None,
-        )
-        if mi_video is None:
-            return "", ""
+        return hdr_meta_from_mediainfo_json(data)
 
-        master_display = ""
-        primaries_label = str(mi_video.get("MasteringDisplay_ColorPrimaries") or "").lower()
-        primaries = self._MASTER_DISPLAY_PRIMARIES.get(primaries_label.strip())
-        try:
-            lmin = float(mi_video.get("MasteringDisplay_Luminance_Min") or 0)
-            lmax = float(mi_video.get("MasteringDisplay_Luminance_Max") or 0)
-        except (TypeError, ValueError):
-            lmin = lmax = 0.0
-        if primaries and lmax > 0:
-            (gx, gy), (bx, by), (rx, ry), (wx, wy) = primaries
-
-            def c(value: float) -> int:
-                return int(round(value * 50000))
-
-            def l_(value: float) -> int:
-                return int(round(value * 10000))
-
-            master_display = (
-                f"G({c(gx)},{c(gy)})"
-                f"B({c(bx)},{c(by)})"
-                f"R({c(rx)},{c(ry)})"
-                f"WP({c(wx)},{c(wy)})"
-                f"L({l_(lmax)},{l_(lmin)})"
-            )
-
-        max_cll = ""
-        def _first_int(value: object) -> int:
-            match = re.search(r"\d+(?:[ \u00a0\u202f_]\d{3})*", str(value or ""))
-            if match is None:
-                return 0
-            return int(
-                match.group(0)
-                .replace(" ", "")
-                .replace("\u00a0", "")
-                .replace("\u202f", "")
-                .replace("_", "")
-            )
-
-        try:
-            max_content = _first_int(mi_video.get("MaxCLL"))
-            max_average = _first_int(mi_video.get("MaxFALL"))
-        except (TypeError, ValueError):
-            max_content = max_average = 0
-        if max_content > 0:
-            max_cll = f"{max_content},{max_average}"
-        return master_display, max_cll
-
-    # Chromaticités CIE 1931 (x, y) standard pour les primaires courants
-    # exposés par mediainfo via MasteringDisplay_ColorPrimaries.
-    _MASTER_DISPLAY_PRIMARIES: dict[str, tuple[tuple[float, float], ...]] = {
-        # G, B, R, WP (D65)
-        "bt.2020":    ((0.170, 0.797), (0.131, 0.046), (0.708, 0.292), (0.3127, 0.3290)),
-        "display p3": ((0.265, 0.690), (0.150, 0.060), (0.680, 0.320), (0.3127, 0.3290)),
-        "bt.709":     ((0.300, 0.600), (0.150, 0.060), (0.640, 0.330), (0.3127, 0.3290)),
-        "p3-d65":     ((0.265, 0.690), (0.150, 0.060), (0.680, 0.320), (0.3127, 0.3290)),
-    }
+    _MASTER_DISPLAY_PRIMARIES = MASTER_DISPLAY_PRIMARIES
 
     @staticmethod
     def _extract_hdr_meta_from_ffprobe_raw(raw: dict) -> tuple[str, str]:
-        master_display = ""
-        max_cll = ""
-
-        def _rat(v) -> float:
-            s = str(v)
-            if "/" in s:
-                a, b = s.split("/", 1)
-                return float(a) / float(b)
-            return float(s)
-
-        for sd in raw.get("side_data_list", []):
-            if sd.get("side_data_type") == "Mastering display metadata":
-                try:
-                    rx = _rat(sd.get("red_x", 0))
-                    ry = _rat(sd.get("red_y", 0))
-                    gx = _rat(sd.get("green_x", 0))
-                    gy = _rat(sd.get("green_y", 0))
-                    bx = _rat(sd.get("blue_x", 0))
-                    by = _rat(sd.get("blue_y", 0))
-                    wx = _rat(sd.get("white_point_x", 0))
-                    wy = _rat(sd.get("white_point_y", 0))
-                    lmax = _rat(sd.get("max_luminance", 0))
-                    lmin = _rat(sd.get("min_luminance", 0))
-
-                    def c(value: float) -> int:
-                        return int(round(value * 50000))
-
-                    def l_(value: float) -> int:
-                        return int(round(value * 10000))
-
-                    master_display = (
-                        f"G({c(gx)},{c(gy)})"
-                        f"B({c(bx)},{c(by)})"
-                        f"R({c(rx)},{c(ry)})"
-                        f"WP({c(wx)},{c(wy)})"
-                        f"L({l_(lmax)},{l_(lmin)})"
-                    )
-                except Exception:
-                    pass
-            elif sd.get("side_data_type") == "Content light level metadata":
-                try:
-                    max_content = int(sd.get("max_content", 0))
-                    max_average = int(sd.get("max_average", 0))
-                    max_cll = f"{max_content},{max_average}"
-                except Exception:
-                    pass
-        return master_display, max_cll
+        return hdr_meta_from_ffprobe_raw(raw)
 
     # ------------------------------------------------------------------
     # Détection encodeurs matériels
@@ -2572,7 +2703,7 @@ class EncodePanel(QWidget):
         # Modes de débit acceptés par le pilote (VAAPI) : la liste Mode s'y limite.
         self._hw_detected.emit(
             hw, sw, hw_ffmpeg, dict(detector.rate_controls), detect_nvencc_10bit_codecs(nvencc),
-            detector.detect_presets(hw_ffmpeg, set(hw)), dict(detector.vaapi_drivers),
+            detector.detect_presets(hw_ffmpeg, set(hw)), dict(detector.vaapi_drivers), (ffmpeg, nvencc),
         )
 
     def _on_hw_detected(
@@ -2584,7 +2715,15 @@ class EncodePanel(QWidget):
         ten_bit_codecs: frozenset[str] | None = None,
         presets: dict[str, frozenset[str]] | None = None,
         vaapi_drivers: dict[str, str] | None = None,
+        tools: tuple[str, str | None] | None = None,
     ) -> None:
+        if tools is not None and tools != getattr(self, "_detection_tools", tools):
+            return      # détection d'outils remplacés depuis (Paramètres) : la suivante fait foi
+        if self._runtime_busy():
+            # Traitement ou aperçu en cours : il garde son FFmpeg ; résultat appliqué à sa fin.
+            self._pending_hw_result = (hw, sw, hw_ffmpeg, rate_controls, ten_bit_codecs, presets,
+                                       vaapi_drivers, tools)
+            return
         self._hw_encoders = hw
         self._hw_presets = dict(presets or {})
         self._vaapi_drivers = dict(vaapi_drivers or {})
@@ -2670,25 +2809,45 @@ class EncodePanel(QWidget):
         self._update_bit_depth_control(codec)
         self._sync_hdr_metadata_field_editability(str(codec))
         self._update_passthrough_controls()
+        self._apply_hdr_intent_to_displayed()
         self._sync_transform_controls_enabled()
         self._rebuild_preview()
+
+    def _defer_tool_refresh(self, kind: str, value: object = None) -> bool:
+        """Traitement ou aperçu en cours : il garde ses outils, le changement est rejoué à sa fin (vrai si différé)."""
+        if not self._runtime_busy():
+            return False
+        self.__dict__.setdefault("_pending_tool_refresh", {})[kind] = value
+        return True
 
     def set_trt_plugin(self, plugin_dir: str) -> None:
         """Dossier de l'accélération NVIDIA (TensorRT) à passer à MVO-RIFE ("" : Vulkan seul)."""
         from core.plugins import trt_engine_cache_dir
 
+        if self._defer_tool_refresh("trt", plugin_dir):
+            return
         self._trt_plugin_dir = plugin_dir or ""
         self._workflow.set_rife_trt_plugin(self._trt_plugin_dir or None, trt_engine_cache_dir())
         self._refresh_video_source_rows()
         self._rebuild_preview()
 
     def set_rife_state(self, state: object) -> None:
-        """État de l'extension Interpolation (RifeState) : indication d'installation pendant le téléchargement."""
+        """État du moteur vidéo MVO (RifeState) : indication d'installation pendant le téléchargement."""
         self._rife_state = state
         self._sync_interpolation_availability()
 
+    def refresh_nvencc_tool(self) -> None:
+        """NVEncC installé ou supprimé (page Extensions) : workflow et nouvelle détection des encodeurs."""
+        if self._defer_tool_refresh("nvencc"):
+            return
+        self._workflow.set_nvencc_bin(getattr(self._config, "tool_nvencc", None) or None)
+        self._detection_tools = (self._config.tool_ffmpeg, getattr(self._config, "tool_nvencc", None) or None)
+        self._executor.submit(self._detect_hw_encoders)
+
     def refresh_rife_tool(self) -> None:
         """Moteur muxiveo-rife changé (extension installée ou supprimée) : workflow, disponibilité, aperçu."""
+        if self._defer_tool_refresh("rife"):
+            return
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
         self._sync_interpolation_availability()
         self._refresh_video_source_rows()
@@ -2793,11 +2952,12 @@ class EncodePanel(QWidget):
     def _sync_hdr_metadata_field_editability(self, codec: str) -> None:
         if not hasattr(self, "_master_display") or not hasattr(self, "_max_cll"):
             return
+        if self._loading_video_settings:
+            # État en cours de restauration (cases DV / P8.1 pas encore toutes relues) : décidé une fois à la fin de
+            # ``_apply_video_state``, jamais sur un mélange avec la piste précédente (saisies remplacées sinon).
+            return
         codec_id = str(codec or "").strip().lower()
-        editable = (
-            self._backend_capabilities(codec_id).supports_manual_static_hdr
-            or self._current_state_allows_copy_static_hdr_edit(codec_id)
-        )
+        editable = static_hdr_editable(self._displayed_hdr_edit_state(), codec_id)  # règle du cœur
         if not editable:
             prev = (
                 self._video_settings_by_entry_id.get(self._current_video_entry_id)
@@ -2806,6 +2966,10 @@ class EncodePanel(QWidget):
             ) or {}
             default_md = str(prev.get("default_master_display") or "")
             default_cll = str(prev.get("default_max_cll") or "")
+            # Valeurs remplacées par celles de la source : plus des saisies ; Copy impose aussi la case.
+            self._static_hdr_field_manual = {"master_display": False, "max_cll": False}
+            if codec_id == "copy":
+                self._static_hdr_manual = False
             self._master_display.blockSignals(True)
             self._max_cll.blockSignals(True)
             self._master_display.setText(default_md)
@@ -2826,16 +2990,15 @@ class EncodePanel(QWidget):
         self._master_display.setToolTip(tooltip)
         self._max_cll.setToolTip(tooltip)
 
-    def _current_state_allows_copy_static_hdr_edit(self, codec_id: str) -> bool:
-        if codec_id != "copy":
-            return False
+    def _displayed_hdr_edit_state(self) -> dict[str, object]:
+        """Cases de la piste affichée dont dépend l'édition du HDR10 statique en Copy (DV normalisé P8.1)."""
         if not hasattr(self, "_copy_dv_cb") or not hasattr(self, "_dovi_p81_cb"):
-            return False
-        return bool(
-            self._copy_dv_cb.isChecked()
-            and self._dovi_profile_choice == NORMALIZE_P81
-            and self._inject_hdr_cb.isChecked()
-        )
+            return {}
+        return {"inject_hdr_meta": self._inject_hdr_cb.isChecked(), "copy_dv": self._copy_dv_cb.isChecked(),
+                "dovi_profile": self._dovi_profile_choice}
+
+    def _current_state_allows_copy_static_hdr_edit(self, codec_id: str) -> bool:
+        return state_allows_copy_static_hdr_edit(self._displayed_hdr_edit_state(), codec_id)
 
     def _static_hdr_metadata_tooltip(self) -> str:
         state = (
@@ -2924,6 +3087,11 @@ class EncodePanel(QWidget):
     def _on_apply_all_video_toggled(self, checked: bool) -> None:
         self._video_apply_all = bool(checked)
         if checked:
+            self._initialize_hdr_intent()
+        else:
+            self._hdr_common_intent = {}
+            self._tonemap_common_choice = None
+        if checked:
             self._propagate_current_video_state_to_all()
         else:
             self._save_current_video_state()
@@ -2958,6 +3126,8 @@ class EncodePanel(QWidget):
         prompt_key = f"{entry_id}:p5_to_p8"
         if prompt_key in self._static_hdr_estimate_prompted:
             return
+        if str(state.get("static_hdr_analysis_disabled_by_codec") or "").strip():
+            return  # analyse mémorisée (codec sans HDR) : reprise dès que l'état le permet, sans redemander
         self._static_hdr_estimate_prompted.add(prompt_key)
         mode = self._ask_static_hdr_estimate_mode()
         if mode:
@@ -3039,9 +3209,48 @@ class EncodePanel(QWidget):
         state: dict[str, object],
     ) -> tuple[dict[str, object], bool]:
         request_mode = str(state.get("static_hdr_metadata_analysis_request") or "").strip()
+        remembered = str(state.get("static_hdr_analysis_disabled_by_codec") or "").strip()
         if not request_mode:
+            if remembered and self._static_hdr_request_valid(entry_id, state):
+                # Retour sur un codec HDR : l'analyse déprogrammée par le codec sans HDR est reprise.
+                restored = self._copy_video_state(state)
+                restored.update(static_hdr_metadata_analysis_request=remembered,
+                                static_hdr_analysis_disabled_by_codec="")
+                self.log_message.emit("INFO", translate_text(
+                    "Analyse HDR10 estimée P5→P8.1 {mode} reprogrammée.",
+                    mode=self._static_hdr_estimate_mode_label(remembered)))
+                return restored, False
+            if remembered and not self._static_hdr_request_possible(entry_id, state):
+                # Choix de l'utilisateur entre-temps (valeurs saisies, profil, piste) : plus rien à reprendre.
+                forgotten = self._copy_video_state(state)
+                forgotten["static_hdr_analysis_disabled_by_codec"] = ""
+                return forgotten, False
+            return state, False
+        if self._static_hdr_request_valid(entry_id, state):
             return state, False
 
+        normalized = self._copy_video_state(state)
+        normalized.update(
+            {
+                "static_hdr_metadata_analysis_request": "",
+                "static_hdr_metadata_analysis_mode": "",
+                "static_hdr_metadata_source": "",
+                "static_hdr_metadata_confidence": "",
+                # Codec sans HDR : demande mémorisée, reprise au retour sur un codec HDR (comme les cases).
+                "static_hdr_analysis_disabled_by_codec": (
+                    request_mode if not supports_hdr_output(str(state.get("codec") or "")) else ""),
+            }
+        )
+        self._static_hdr_estimate_prompted.discard(f"{entry_id}:p5_to_p8")
+        return normalized, True
+
+    def _static_hdr_request_valid(self, entry_id: str, state: dict[str, object]) -> bool:
+        """Analyse HDR10 estimée P5→P8.1 encore applicable à cet état (piste unique P5, DV P8.1, sans saisie)."""
+        return (self._static_hdr_request_possible(entry_id, state) and bool(state.get("inject_hdr_meta"))
+                and bool(state.get("copy_dv")))
+
+    def _static_hdr_request_possible(self, entry_id: str, state: dict[str, object]) -> bool:
+        """Conditions de l'analyse qui ne dépendent pas des cases HDR rétablies au retour sur un codec HDR."""
         matching_track = next(
             (
                 (info, track)
@@ -3055,31 +3264,15 @@ class EncodePanel(QWidget):
             if matching_track is not None
             else None
         )
-        request_is_valid = bool(
+        return bool(
             len(self._video_tracks) == 1
             and source_video is not None
             and int(source_video.dovi_profile or 0) == 5
-            and bool(state.get("inject_hdr_meta"))
-            and bool(state.get("copy_dv"))
             and str(state.get("dovi_profile") or "0").strip() == "2"
             and not str(state.get("codec") or "").strip().lower().startswith("nvencc_")
             and not str(state.get("master_display") or "").strip()
             and not str(state.get("max_cll") or "").strip()
         )
-        if request_is_valid:
-            return state, False
-
-        normalized = self._copy_video_state(state)
-        normalized.update(
-            {
-                "static_hdr_metadata_analysis_request": "",
-                "static_hdr_metadata_analysis_mode": "",
-                "static_hdr_metadata_source": "",
-                "static_hdr_metadata_confidence": "",
-            }
-        )
-        self._static_hdr_estimate_prompted.discard(f"{entry_id}:p5_to_p8")
-        return normalized, True
 
     @staticmethod
     def _state_allows_static_hdr_estimate(state: dict[str, object]) -> bool:
@@ -3145,10 +3338,11 @@ class EncodePanel(QWidget):
         if not str(state.get("static_hdr_metadata_analysis_request") or "").strip():
             return
         source = str(state.get("static_hdr_metadata_source") or "")
-        if source != StaticHdrEstimateService.SOURCE_LABEL and any(
-            str(state.get(key) or "").strip()
-            for key in ("master_display", "max_cll")
-        ):
+        if any(static_hdr_field_manual(state, name) for name in ("master_display", "max_cll")) or (
+            source != StaticHdrEstimateService.SOURCE_LABEL and any(
+                str(state.get(key) or "").strip()
+                for key in ("master_display", "max_cll")
+            )):
             self.log_message.emit(
                 "WARN",
                 "Résultat de l’analyse HDR10 ignoré : des valeurs manuelles sont désormais présentes.",
@@ -3166,6 +3360,8 @@ class EncodePanel(QWidget):
                 "static_hdr_metadata_confidence": estimate_obj.confidence,
                 "static_hdr_metadata_analysis_mode": estimate_obj.mode,
                 "static_hdr_metadata_analysis_request": "",
+                "static_hdr_master_display_manual": False,
+                "static_hdr_max_cll_manual": False,
             }
         )
         self._video_settings_by_entry_id[entry_id] = state
@@ -3271,15 +3467,26 @@ class EncodePanel(QWidget):
         # DV / HDR10+ décochés parce que le codec ne les porte pas : rétablis au
         # retour sur un codec compatible, indépendamment de la case HDR10.
         restore_dv, restore_hdr10plus = self._dynamic_hdr_disabled_by_codec
-        if not self._loading_video_settings and not self._video_apply_all:
-            restore_dv = restore_dv or (has_dv and not dv_ok and self._copy_dv_cb.isChecked())
-            restore_hdr10plus = restore_hdr10plus or (
-                has_hdr10plus and not hdr10plus_ok and self._copy_hdr10plus_cb.isChecked()
-            )
-        if dv_ok and restore_dv and not auto_check:
+        # « Appliquer à toutes » : les cases portent le choix commun à toutes les pistes ; seul le codec
+        # (pas la source de la piste affichée) les retire, et elles reviennent avec un codec qui les porte.
+        codec_dv_ok = self._is_dovi_codec(codec) if self._video_apply_all else dv_ok
+        codec_hdr10plus_ok = self._is_hdr10plus_codec(codec) if self._video_apply_all else hdr10plus_ok
+        if not self._loading_video_settings:
+            # Copie HDR10+ masquée par la génération qui la remplace : toujours l'intention de la piste.
+            copy_hdr10plus = self._copy_hdr10plus_cb.isChecked() or self._hdr10plus_copy_replaced
+            if self._video_apply_all:
+                restore_dv = restore_dv or (not codec_dv_ok and self._copy_dv_cb.isChecked())
+                restore_hdr10plus = restore_hdr10plus or (not codec_hdr10plus_ok and copy_hdr10plus)
+            else:
+                restore_dv = restore_dv or (has_dv and not dv_ok and self._copy_dv_cb.isChecked())
+                restore_hdr10plus = restore_hdr10plus or (has_hdr10plus and not hdr10plus_ok and copy_hdr10plus)
+            if restore_hdr10plus:
+                # Intention reprise par la mémoire du codec (rétablie avec un codec qui porte le HDR10+).
+                self._hdr10plus_copy_replaced = False
+        if codec_dv_ok and restore_dv and not auto_check:
             self._copy_dv_cb.setChecked(True)
             restore_dv = False
-        if hdr10plus_ok and restore_hdr10plus and not auto_check:
+        if codec_hdr10plus_ok and restore_hdr10plus and not auto_check:
             self._copy_hdr10plus_cb.setChecked(True)
             restore_hdr10plus = False
         self._dynamic_hdr_disabled_by_codec = (restore_dv, restore_hdr10plus)
@@ -3303,6 +3510,7 @@ class EncodePanel(QWidget):
         self._syncing_hdr_controls = True
         try:
             self._apply_codec_hdr_policy_to_widgets(str(self._codec_combo.currentData() or "libx265"))
+            self._sync_generate_hdr10plus()
         finally:
             self._syncing_hdr_controls = False
 
@@ -3319,6 +3527,7 @@ class EncodePanel(QWidget):
             self._tonemap_cb.setChecked(False)
             self._tonemap_cb.setEnabled(False)
             self._tonemap_cb.setToolTip(locked_tip)
+            self._tonemap_policy_key = (codec, self._current_video_entry_id)  # sortie de Copy : choix ou défaut
             for checkbox, checked in (
                 (self._inject_hdr_cb, self._source_has_static_hdr10(hdr, self._selected_video_transfer())),
                 (self._copy_dv_cb, self._source_has_dv(hdr)),
@@ -3336,16 +3545,13 @@ class EncodePanel(QWidget):
         hdr_ok = self._backend_capabilities(codec).supports_hdr
         policy_key = (str(codec), self._current_video_entry_id)
         if not self._loading_video_settings and policy_key != self._tonemap_policy_key:
-            # Défaut appliqué au changement de codec ou de piste seulement.
+            # Au changement de codec ou de piste : choix explicite, sinon défaut du codec (source HDR vers un
+            # codec sans HDR : coché d'office, retiré au retour sur un codec HDR) — règle du cœur.
             self._tonemap_policy_key = policy_key
-            if hdr_ok and self._tonemap_enabled_by_codec:
-                # Retour sur un codec HDR : le tone-mapping coché d'office est retiré.
-                self._tonemap_enabled_by_codec = False
-                self._tonemap_cb.setChecked(False)
-            elif not hdr_ok and not self._tonemap_cb.isChecked() and self._selected_source_is_hdr():
-                # Source HDR vers un codec sans HDR : sortie SDR cohérente pré-remplie.
-                self._tonemap_cb.setChecked(True)
-                self._tonemap_enabled_by_codec = True
+            tonemap, self._tonemap_enabled_by_codec = resolved_tonemap(
+                codec, source_hdr=self._selected_source_is_hdr(), choice=self._tonemap_choice)
+            if self._tonemap_cb.isChecked() != tonemap:
+                self._tonemap_cb.setChecked(tonemap)
         tonemap = self._tonemap_cb.isChecked()
         self._inject_hdr_cb.setEnabled(hdr_ok and not tonemap)
         if hdr_ok:
@@ -3420,12 +3626,38 @@ class EncodePanel(QWidget):
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
         if self._loading_video_settings:
             return
-        if not self._tonemap_cb.isChecked() and not self._syncing_hdr_controls:
-            # Décoché à la main : choix de l'utilisateur, plus de retrait automatique.
-            self._tonemap_enabled_by_codec = False
         # Sortie SDR : HDR10 / DV / HDR10+ grisés, leur état est conservé.
         self._update_passthrough_controls()
         self._rebuild_preview()
+
+    def _on_tonemap_clicked(self, checked: bool) -> None:
+        """Case cochée ou décochée par l'utilisateur : choix explicite, gardé aux changements de codec (Copy
+        compris) ; en mode global, choix commun de toutes les pistes."""
+        if self._loading_video_settings:
+            return
+        self._tonemap_choice = bool(checked)
+        self._tonemap_enabled_by_codec = False
+        if self._video_apply_all:
+            self._tonemap_common_choice = bool(checked)
+        self._save_current_video_state()
+
+    def _apply_common_tonemap_choice(self) -> None:
+        """Mode global : la piste affichée suit le choix commun du tone mapping (les autres le reçoivent par
+        ``propagate_state``) ; case recalculée pour son codec (hors Copy, qui l'impose)."""
+        common = self._tonemap_common_choice
+        if not self._video_apply_all or common is None or self._loading_video_settings:
+            return
+        changed = self._tonemap_choice != common
+        self._tonemap_choice = common
+        codec = str(self._codec_combo.currentData() or "libx265")
+        if codec != "copy":
+            tonemap, self._tonemap_enabled_by_codec = resolved_tonemap(
+                codec, source_hdr=self._selected_source_is_hdr(), choice=common)
+            if self._tonemap_cb.isChecked() != tonemap:
+                self._tonemap_cb.setChecked(tonemap)  # contrôles HDR grisés / rétablis par _on_tonemap_toggle
+                changed = True
+        if changed:
+            self._save_current_video_state()
 
     def _tonemap_tooltip(self) -> str:
         source_hdr = self._selected_video_hdr_type()
@@ -3443,8 +3675,20 @@ class EncodePanel(QWidget):
             if self._current_video_entry_id is not None
             else None
         ) or {}
+        self._static_hdr_field_manual = {"master_display": False, "max_cll": False}  # valeurs de la source
         self._master_display.setText(str(state.get("default_master_display") or ""))
         self._max_cll.setText(str(state.get("default_max_cll") or ""))
+        self._save_current_video_state()
+
+    def _on_hdr_clicked(self, checked: bool) -> None:
+        """Case HDR10 cochée ou décochée par l'utilisateur : injection explicite (``static_hdr_manual``)."""
+        self._static_hdr_manual = bool(checked)
+        self._save_current_video_state()
+        self._on_hdr_option_clicked("inject_hdr_meta", checked)
+
+    def _mark_static_hdr_field(self, name: str) -> None:
+        self._static_hdr_field_manual[name] = True
+        self._sync_hdr_metadata_provenance()
 
     def _sync_hdr_metadata_provenance(self) -> None:
         """Libellé de provenance des valeurs HDR10 statiques affichées (V25)."""
@@ -3460,8 +3704,21 @@ class EncodePanel(QWidget):
         default_md = str(state.get("default_master_display") or "").strip()
         default_cll = str(state.get("default_max_cll") or "").strip()
         editable = not self._master_display.isReadOnly()
+        shown = {"master_display": md, "max_cll": cll, "default_master_display": default_md,
+                 "default_max_cll": default_cll,
+                 **{f"static_hdr_{name}_manual": flag for name, flag in self._static_hdr_field_manual.items()}}
+        manual = editable and any(static_hdr_field_manual(shown, name) for name in ("master_display", "max_cll"))
         if str(state.get("static_hdr_metadata_analysis_request") or ""):
             text = translate_text("Analyse HDR10 P5→P8.1 programmée : valeurs calculées au lancement.")
+        elif manual:
+            text = (
+                translate_text(
+                    "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
+                    field="MaxCLL/MaxFALL" if md else "Master Display",
+                )
+                if self._selected_source_is_p5() and not (md and cll)
+                else translate_text("Saisie manuelle.")
+            )
         elif str(state.get("static_hdr_metadata_source") or "") == StaticHdrEstimateService.SOURCE_LABEL:
             text = translate_text(
                 "Valeurs estimées (analyse P5→P8.1, confiance {confidence}).",
@@ -3482,15 +3739,8 @@ class EncodePanel(QWidget):
                     "(reconstruites si absentes et HDR dynamique copié)."
                 )
             )
-        elif md == default_md and cll == default_cll:
-            text = translate_text("Valeurs de la source.")
-        elif self._selected_source_is_p5() and not (md and cll):
-            text = translate_text(
-                "Saisie manuelle ; {field} estimé au lancement depuis le RPU Dolby Vision (P5).",
-                field="MaxCLL/MaxFALL" if md else "Master Display",
-            )
         else:
-            text = translate_text("Saisie manuelle.")
+            text = translate_text("Valeurs de la source.")
         self._hdr_meta_provenance.setText(text)
         if hasattr(self, "_hdr_meta_source_btn"):
             self._hdr_meta_source_btn.setEnabled(editable and bool(default_md or default_cll))
@@ -3578,8 +3828,9 @@ class EncodePanel(QWidget):
             return
         is_video = self._preview_mode_combo.currentData() == "video"
         self._preview_duration_spin.setEnabled(is_video)
-        self._preview_time_edit.setEnabled(is_video)
-        self._preview_random_btn.setEnabled(is_video)
+        # Image comme vidéo : instant choisi ou tiré au hasard (image de la sortie encodée à cet instant).
+        self._preview_time_edit.setEnabled(True)
+        self._preview_random_btn.setEnabled(True)
         self._preview_video_result_row.setVisible(is_video)
 
     def _on_preview_time_edited(self, _text: str) -> None:
@@ -3599,12 +3850,22 @@ class EncodePanel(QWidget):
         self._preview_time_edit.blockSignals(True)
         self._preview_time_edit.setText(self._format_preview_timecode(seconds))
         self._preview_time_edit.blockSignals(False)
-        self._preview_scene_status.setText("Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.")
+        if self._preview_mode_combo.currentData() == "video":
+            self._preview_scene_status.setText("Scène aléatoire prête. Le recalage HDR sera appliqué à la génération.")
+        else:  # image : l'instant affiché est exactement celui de l'image livrée (ou la suivante)
+            self._preview_scene_status.setText(translate_text("Instant aléatoire prêt."))
 
     def _on_generate_preview(self) -> None:
         if getattr(self, "_operation_running", False):
             self._preview_status.setText(
                 translate_text("Preview indisponible pendant une opération en cours.")
+            )
+            return
+        guard = getattr(self, "_preview_guard", None)
+        if guard is not None and not guard():
+            self._preview_status.setText(
+                translate_text("Preview indisponible : une extension est en cours d'installation, de mise à jour "
+                               "ou de suppression.")
             )
             return
         config = self._current_preview_config()
@@ -3622,7 +3883,8 @@ class EncodePanel(QWidget):
             mode=mode,
             timecode_s=timecode_s,
             duration_s=duration_s,
-            random_scene=self._preview_random_scene,
+            # Image : l'instant tiré est déjà affiché et utilisé tel quel ; vidéo : recalage HDR du workflow.
+            random_scene=self._preview_random_scene and mode == "video",
         )
         self._preview_random_scene = False
         self._set_preview_running(True)
@@ -3853,19 +4115,26 @@ class EncodePanel(QWidget):
         self._preview_status.setText("Preview annulée.")
         self._set_preview_running(False)
 
+    def set_preview_guard(self, guard) -> None:
+        """Garde de lancement d'un aperçu (fenêtre principale : aucune extension en cours de modification)."""
+        self._preview_guard = guard
+
     def _set_preview_running(self, running: bool) -> None:
+        if bool(running) != bool(getattr(self, "_preview_running_flag", False)):
+            self._preview_running_flag = bool(running)
+            QTimer.singleShot(0, self, lambda: self.preview_running_changed.emit(self.is_preview_running()))
         self._preview_generate_btn.setEnabled(not running and not getattr(self, "_operation_running", False))
         self._preview_cancel_btn.setEnabled(running)
         self._preview_mode_combo.setEnabled(not running)
         is_video = self._preview_mode_combo.currentData() == "video"
-        active = (not running) and is_video
-        self._preview_time_edit.setEnabled(active)
-        self._preview_random_btn.setEnabled(active)
-        self._preview_duration_spin.setEnabled(active)
+        self._preview_time_edit.setEnabled(not running)
+        self._preview_random_btn.setEnabled(not running)
+        self._preview_duration_spin.setEnabled((not running) and is_video)
         if not running:
             self._preview_signals = None
             self._preview_progress.setVisible(False)
             self._preview_progress.setValue(0)
+            QTimer.singleShot(0, self, self._apply_deferred_runtime_settings)
 
     def _open_preview_video(self) -> None:
         if self._preview_video_path is None:
@@ -3971,92 +4240,46 @@ class EncodePanel(QWidget):
             self._refresh_profiles()
             return
         preset = presets[name]
-        vs = preset.to_video_settings()
         # Profil validé avant toute modification : un codec, mode ou preset
         # indisponible ne doit pas appliquer le reste au codec courant.
-        problem = self._profile_incompatibility(vs)
+        problem = self._profile_incompatibility(preset.to_video_settings())
         if problem:
             self.log_message.emit(
                 "WARN",
                 translate_text("Profil « {name} » non chargé : {reason}", name=name, reason=problem),
             )
             return
-        self._bake_fel_choice = vs.bake_dovi_fel
-        self._fel_device_choice = vs.fel_device
-        self._fel_device_combo.set_choice(vs.fel_device)
-        self._fel_precision_choice = vs.fel_precision
-        self._fel_precision_combo.set_choice(vs.fel_precision)
-        self._fel_hdr10plus_choice = vs.fel_hdr10plus
-        # Codec — déclenche _on_codec_changed → reconstruit le mode_combo
-        for i in range(self._codec_combo.count()):
-            if self._codec_combo.itemData(i) == vs.codec:
-                self._codec_combo.setCurrentIndex(i)
-                break
-        # Mode de débit (après refresh par _on_codec_changed) ; ancien format migré.
-        rc_spec, rc_quality = rate_control_values(vs)
-        if rc_spec is not None:
-            self._set_combo_data(self._mode_combo, rc_spec.rc_id)
-        # Preset codec
-        for i in range(self._preset_combo.count()):
-            if self._preset_combo.itemData(i) == preset.preset:
-                self._preset_combo.setCurrentIndex(i)
-                break
-        self._crf_slider.setValue(vs.crf)
-        self._cq_slider.setValue(vs.cq)
-        if rc_spec is not None and rc_spec.uses_quality:
-            target = self._crf_spin if rc_spec.family == QualityMode.CRF.value else self._cq_spin
-            target.setValue(rc_quality)
-        self._bitrate_edit.setText(str(vs.bitrate_kbps))
-        self._size_edit.setText(str(vs.target_size_mb))
-        self._extra_params.setText(vs.extra_params)
-        self._set_combo_data(self._bit_depth_combo, vs.bit_depth)
-        self._apply_resize_settings(vs.resize)
-        self._apply_crop_settings(vs.crop)
-        self._apply_filter_settings(vs.filters)
-        self._apply_interpolation_settings(vs.interpolation)
-        # Les options HDR (inject_hdr_meta / master_display / max_cll /
-        # tonemap_to_sdr) dépendent de la source, pas du profil — un même
-        # profil "x265 CRF18 slow" doit s'appliquer à une source SDR ou HDR
-        # sans imposer/écraser ce qui a été détecté côté source.
-        idx_algo = next((i for i in range(self._tonemap_algo.count())
-                         if self._tonemap_algo.itemData(i) == vs.tonemap_algorithm), 0)
-        self._tonemap_algo.setCurrentIndex(idx_algo)
+        # Application partagée avec le CLI (`apply_preset_to_state`) : les options HDR (inject_hdr_meta,
+        # master_display, max_cll, tonemap_to_sdr, copies DV / HDR10+) dépendent de la source, pas du profil.
+        current = next(((info, track) for info, track, _color in self._video_tracks
+                        if self._video_entry_id(track) == self._current_video_entry_id), None)
+        ctx = self._source_context(*current) if current is not None else SourceVideoContext()
+        if self._video_apply_all:
+            # « Appliquer à toutes » : l'intention commune suit le preset (sinon elle le contredirait à la propagation).
+            self._hdr_common_intent[HDR10PLUS_GENERATION_OPTION] = bool(preset.generate_hdr10plus)
+        self._apply_video_state(apply_preset_to_state(self._current_video_state(), preset, ctx,
+                                                      self._encoder_environment()))
         self._save_current_video_state()
         self._rebuild_preview()
         self.log_message.emit("OK", translate_text("Profil chargé : {name}", name=name))
 
     def _profile_incompatibility(self, vs: VideoEncodeSettings) -> str:
-        """Raison pour laquelle un profil ne peut pas s'appliquer ("" si compatible)."""
-        if vs.bit_depth not in {"auto", "8", "10"}:
-            return translate_text("profondeur invalide")
-        if vs.bit_depth == "10" and not self._codec_supports_10bit(vs.codec):
-            return translate_text("sortie 10 bits indisponible pour {codec}", codec=vs.codec)
-        if vs.bit_depth == "8" and supports_hdr_output(vs.codec) and self._selected_source_is_hdr() and not self._tonemap_cb.isChecked():
-            return translate_text("une sortie HDR exige une profondeur de 10 bits")
+        """Raison pour laquelle un profil ne peut pas s'appliquer ("" si compatible) : règle du cœur, détection du panneau."""
         model = self._codec_combo.model()
         available = {
             self._codec_combo.itemData(i)
             for i in range(self._codec_combo.count())
             if model.flags(model.index(i, 0)) & Qt.ItemFlag.ItemIsEnabled
         }
-        if vs.codec not in available:
-            return translate_text("codec {codec} indisponible", codec=vs.codec)
-        rc_spec = rate_control_values(vs)[0]
-        available_modes = {spec.rc_id for spec in self._available_rate_controls(vs.codec)}
-        if rc_spec is None or rc_spec.rc_id not in available_modes:
-            return translate_text(
-                "mode {mode} non supporté par {codec}",
-                mode=rc_spec.label if rc_spec is not None else vs.quality_mode.label(),
-                codec=vs.codec,
-            )
-        codec_presets = self._available_presets(vs.codec)
-        if codec_presets and vs.preset not in codec_presets:
-            return translate_text(
-                "preset {preset} inconnu pour {codec}",
-                preset=vs.preset,
-                codec=vs.codec,
-            )
-        return ""
+        return preset_problem(
+            vs,
+            SourceVideoContext(hdr_type=self._selected_video_hdr_type(), transfer=self._selected_video_transfer()),
+            self._encoder_environment(),
+            tonemap=self._tonemap_cb.isChecked(),
+            codecs=available,
+            rate_controls={spec.rc_id for spec in self._available_rate_controls(vs.codec)},
+            presets=self._available_presets(vs.codec),
+        )
 
     def _save_profile(self) -> None:
         name = self._profile_name.text().strip()
@@ -4102,10 +4325,13 @@ class EncodePanel(QWidget):
             crop=vs.crop,
             filters=vs.filters,
             interpolation=vs.interpolation,
+            restoration=vs.restoration,
             bake_dovi_fel=vs.bake_dovi_fel,
             fel_device=vs.fel_device,
             fel_precision=vs.fel_precision,
             fel_hdr10plus=vs.fel_hdr10plus,
+            # Intention (s'applique à toute source Dolby Vision), jamais la copie propre à la source.
+            generate_hdr10plus=self._generate_hdr10plus_intent,
             inject_hdr_meta=False,
             master_display="",
             max_cll="",
@@ -4207,26 +4433,10 @@ class EncodePanel(QWidget):
             if current_info is None and self._file_info is not None and Path(self._file_info.path) == source_path:
                 current_info = self._file_info
 
-            duration_s: float | None = None
-            total_frames: int | None = None
-            if current_info is not None:
-                resolved_track = self._video_track_for_entry(current_info, current_track)
-                duration_s = (
-                    getattr(resolved_track, "duration_s", None)
-                    or getattr(current_info, "duration_s", None)
-                    or config.duration_s
-                )
-                frames_obj = getattr(current_info, "frame_count", None)
-                if isinstance(frames_obj, int) and frames_obj > 0:
-                    total_frames = frames_obj
-            else:
-                duration_s = config.duration_s
-
-            targets[index] = {
-                "duration_s": duration_s if isinstance(duration_s, (int, float)) and duration_s > 0 else None,
-                "total_frames": total_frames,
-                "source_name": source_path.name,
-            }
+            resolved_track = (
+                self._video_track_for_entry(current_info, current_track) if current_info is not None else None
+            )
+            targets[index] = progress_target(current_info, resolved_track, config.duration_s, source_path.name)
         return targets
 
     def set_operation_running(self, running: bool) -> None:
@@ -4235,16 +4445,24 @@ class EncodePanel(QWidget):
         self._preview_generate_btn.setEnabled(
             not self._operation_running and self._preview_signals is None
         )
+        if not self._operation_running:
+            QTimer.singleShot(0, self, self._apply_deferred_runtime_settings)
 
     def is_preview_running(self) -> bool:
         """Vrai tant qu'une preview est en cours de génération."""
         return getattr(self, "_preview_signals", None) is not None
 
-    def run_operation(self, config: "EncodeConfig") -> "TaskSignals":
-        """Lance l'encodage et retourne les signaux de progression."""
+    def run_operation(self, config: "EncodeConfig", *, existing: ExistingPolicy | None = None) -> "TaskSignals":
+        """Lance l'encodage et retourne les signaux de progression.
+
+        En cas d'échec, le dossier de travail qui contient déjà des fichiers produits
+        est gardé : ``failed_work_dir_retained`` laisse l'utilisateur décider.
+        ``existing`` : état de la sortie confirmé par l'utilisateur, exigé jusqu'à la publication.
+        """
         # MainWindow valide juste avant l'appel ; éviter un second passage I/O
         # dans le thread UI au moment de démarrer l'encodage.
-        return self._workflow.run(config, validate=False)
+        policy = {"existing": existing} if existing is not None else {}
+        return self._workflow.run(config, validate=False, retain_failed_work_dir=True, **policy)
 
     def validate_config(self, config: "EncodeConfig") -> list[str]:
         """Retourne la liste des erreurs de validation (vide = OK)."""
@@ -4256,23 +4474,7 @@ class EncodePanel(QWidget):
 
     def is_pure_copy(self, config: "EncodeConfig") -> bool:
         """True si tout est en copie et qu'aucune transformation vidéo n'est demandée."""
-        video_tracks = self._routing_video_tracks(config)
-        if not video_tracks:
-            return False
-        return (
-            all(
-                str(getattr(video, "codec", "") or "").strip().lower() == "copy"
-                and not bool(getattr(video, "inject_hdr_meta", False))
-                and not bool(getattr(video, "tonemap_to_sdr", False))
-                and not bool(getattr(video, "has_video_transform", lambda: False)())
-                and not self._video_requires_dovi_profile_normalization(video)
-                for video in video_tracks
-            )
-            and all(
-                str(getattr(audio, "codec", "") or "").strip().lower() == "copy"
-                for audio in getattr(config, "audio_tracks", []) or []
-            )
-        )
+        return is_pure_copy(config)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -4311,42 +4513,24 @@ class EncodePanel(QWidget):
         *,
         codec: str,
     ) -> tuple[str, str]:
-        current_md = str(state.get("master_display") or "").strip()
-        current_cll = str(state.get("max_cll") or "").strip()
-        default_md = str(state.get("default_master_display") or "").strip()
-        default_cll = str(state.get("default_max_cll") or "").strip()
-        if (
-            backend_capabilities_for_codec(codec).supports_manual_static_hdr
-            or EncodePanel._state_allows_copy_static_hdr_edit(state, codec)
-        ):
-            return current_md or default_md, current_cll or default_cll
-        return default_md, default_cll
+        return effective_static_hdr_fields(state, codec=codec)
 
     @staticmethod
     def _state_allows_copy_static_hdr_edit(state: dict[str, object], codec: str) -> bool:
-        return bool(
-            str(codec or "").strip().lower() == "copy"
-            and bool(state.get("inject_hdr_meta"))
-            and bool(state.get("copy_dv"))
-            and str(state.get("dovi_profile") or "0").strip() == "2"
-        )
+        return state_allows_copy_static_hdr_edit(state, codec)
 
     @staticmethod
     def _source_has_static_hdr10(source_hdr: HDRType | None, source_transfer: str = "") -> bool:
-        """Source PQ portant (ou pouvant porter) des métadonnées HDR10 statiques.
-
-        Base HLG (HLG, Dolby Vision P8.4) exclue : case décochée par défaut,
-        mais disponible ; la VUI HLG de la source est conservée.
-        """
-        return default_static_hdr_checked(source_hdr, source_transfer)
+        """Source PQ portant (ou pouvant porter) des métadonnées HDR10 statiques (base HLG exclue)."""
+        return source_has_static_hdr10(source_hdr, source_transfer)
 
     @staticmethod
     def _source_has_dv(source_hdr: HDRType) -> bool:
-        return source_hdr in (HDRType.DOLBY_VISION, HDRType.DOLBY_VISION_HDR10PLUS)
+        return source_has_dv(source_hdr)
 
     @staticmethod
     def _source_has_hdr10plus(source_hdr: HDRType) -> bool:
-        return source_hdr in (HDRType.HDR10PLUS, HDRType.DOLBY_VISION_HDR10PLUS)
+        return source_has_hdr10plus(source_hdr)
 
     def _effective_dynamic_hdr_flags(
         self,
@@ -4355,14 +4539,7 @@ class EncodePanel(QWidget):
         source_hdr: HDRType,
         target_codec: str | None = None,
     ) -> tuple[bool, bool]:
-        codec = (
-            str(target_codec or "").strip().lower()
-            if target_codec is not None
-            else self._video_state_target_codec(state)
-        )
-        copy_dv = bool(state.get("copy_dv")) and self._is_dovi_codec(codec) and self._source_has_dv(source_hdr)
-        copy_hdr10plus = bool(state.get("copy_hdr10plus")) and self._is_hdr10plus_codec(codec) and self._source_has_hdr10plus(source_hdr)
-        return copy_dv, copy_hdr10plus
+        return effective_dynamic_hdr_flags(state, source_hdr=source_hdr, target_codec=target_codec)
 
     def _normalized_video_state_for_track(
         self,
@@ -4371,28 +4548,7 @@ class EncodePanel(QWidget):
         track: TrackEntry,
         state: dict[str, object],
     ) -> dict[str, object]:
-        normalized = self._copy_video_state(state)
-        source_hdr = self._hdr_type_for_entry(info, track)
-        target_codec = self._video_state_target_codec(normalized)
-        depth = str(normalized.get("bit_depth") or "auto")
-        normalized["bit_depth"] = "auto" if depth == "10" and target_codec != "copy" and not self._codec_supports_10bit(target_codec) else depth
-        self._apply_codec_hdr_policy_to_state(
-            normalized,
-            source_hdr=source_hdr,
-            codec=target_codec,
-            source_transfer=self._transfer_for_entry(info, track),
-        )
-        copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
-            normalized,
-            source_hdr=source_hdr,
-            target_codec=target_codec,
-        )
-        normalized["copy_dv"] = copy_dv
-        normalized["copy_hdr10plus"] = copy_hdr10plus
-        md, cll = self._effective_static_hdr_fields(normalized, codec=target_codec)
-        normalized["master_display"] = md
-        normalized["max_cll"] = cll
-        return normalized
+        return normalize_video_state(state, self._source_context(info, track), self._encoder_environment())
 
     def _apply_codec_hdr_policy_to_state(
         self,
@@ -4402,41 +4558,11 @@ class EncodePanel(QWidget):
         codec: str,
         source_transfer: str = "",
     ) -> None:
-        """Miroir, sur un état de piste, de la politique HDR des widgets.
-
-        - copy        : HDR source recopié tel quel (cases calquées sur la source).
-        - codec SDR   : aucune option HDR (H.264…).
-        - source sans HDR10 statique : pas d'injection HDR10 héritée d'une autre piste.
-        """
-        if codec == "copy":
-            state["inject_hdr_meta"] = self._source_has_static_hdr10(source_hdr, source_transfer)
-            state["copy_dv"] = self._source_has_dv(source_hdr)
-            state["copy_hdr10plus"] = self._source_has_hdr10plus(source_hdr)
-            state["tonemap_to_sdr"] = False
-            return
-        if not supports_hdr_output(codec):
-            state["inject_hdr_meta"] = False
-            state["copy_dv"] = False
-            state["copy_hdr10plus"] = False
-            state["static_hdr_metadata_analysis_request"] = ""
-            return
-        if not self._source_has_static_hdr10(source_hdr, source_transfer):
-            state["inject_hdr_meta"] = False
+        """Politique HDR des widgets appliquée à un état de piste (``track_settings.apply_codec_hdr_policy``)."""
+        apply_codec_hdr_policy(state, source_hdr=source_hdr, codec=codec, source_transfer=source_transfer)
 
     # Champs HDR propres à chaque source : jamais recopiés d'une piste à l'autre.
-    _PER_SOURCE_HDR_KEYS: tuple[str, ...] = (
-        "master_display",
-        "max_cll",
-        "default_master_display",
-        "default_max_cll",
-        "static_hdr_metadata_source",
-        "static_hdr_metadata_confidence",
-        "static_hdr_metadata_analysis_mode",
-        "static_hdr_metadata_analysis_request",
-        "hdr_disabled_by_codec",
-        "dynamic_hdr_disabled_by_codec",
-        "tonemap_enabled_by_codec",
-    )
+    _PER_SOURCE_HDR_KEYS = PER_SOURCE_HDR_KEYS
 
     def _state_propagated_to_track(
         self,
@@ -4445,20 +4571,110 @@ class EncodePanel(QWidget):
         track: TrackEntry,
         template: dict[str, object],
     ) -> dict[str, object]:
-        """Applique les réglages communs de ``template`` à une piste.
-
-        Les métadonnées HDR statiques restent celles de la source de la piste
-        et les cases HDR sont réalignées sur ce que sa source et le codec
-        autorisent.
-        """
+        """Applique les réglages communs de ``template`` à une piste (HDR statique propre à sa source)."""
         entry_id = self._video_entry_id(track)
         own = self._video_settings_by_entry_id.get(entry_id)
         if own is None:
             own = self._default_video_state_for_track(info=info, track=track)
-        state = self._copy_video_state(template)
-        for key in self._PER_SOURCE_HDR_KEYS:
-            state[key] = own.get(key, "")
-        return self._normalized_video_state_for_track(info=info, track=track, state=state)
+        intent = self._hdr_intent()
+        if intent:  # jamais stockée dans l'état d'une piste
+            template = {**template, "hdr_common": intent}
+        return propagate_state(template, own, self._source_context(info, track), self._encoder_environment())
+
+    def _hdr_intent(self) -> dict[str, bool]:
+        """Intention HDR commune de « Appliquer à toutes » (``propagate_state``) ; vide hors mode global."""
+        if not self._video_apply_all:
+            return {}
+        intent = dict(self._hdr_common_intent)
+        if self._tonemap_common_choice is not None:
+            intent["tonemap_choice"] = self._tonemap_common_choice
+        return intent
+
+    def _initialize_hdr_intent(self) -> None:
+        """À l'activation du mode global : piste affichée d'abord, puis les autres, option par option.
+
+        Case de la piste si son codec porte l'option, sinon sa mémoire (piste affichée en H.264 : la mémoire
+        fait foi) ; seulement une piste dont la source porte l'option, jamais une piste en Copy (cases imposées).
+        """
+        self._hdr_common_intent = {}
+        self._tonemap_common_choice = self._tonemap_choice  # piste affichée seule : jamais celui d'une autre
+        ordered = sorted(self._video_tracks, key=lambda item: self._video_entry_id(item[1]) != self._current_video_entry_id)
+        for info, track, _color in ordered:
+            entry_id = self._video_entry_id(track)
+            state = (self._current_video_state() if entry_id == self._current_video_entry_id
+                     else self._video_settings_by_entry_id.get(entry_id))
+            if not state or state_target_codec(state) == "copy":
+                continue
+            ctx = self._source_context(info, track)
+            codec = state_target_codec(state)
+            if HDR10PLUS_GENERATION_OPTION not in self._hdr_common_intent and hdr_option_in_source(
+                    HDR10PLUS_GENERATION_OPTION, ctx):
+                # Intention de génération : l'état de la piste (mémorisée même si son codec ne la porte pas).
+                self._hdr_common_intent[HDR10PLUS_GENERATION_OPTION] = bool(state.get(HDR10PLUS_GENERATION_OPTION))
+            for option in HDR_COMMON_OPTIONS:
+                if option in self._hdr_common_intent or not hdr_option_in_source(option, ctx):
+                    continue
+                if hdr_option_carried(option, codec):
+                    self._hdr_common_intent[option] = bool(state.get(option))
+                else:
+                    memory = (state.get("hdr_disabled_by_codec") if option == "inject_hdr_meta"
+                              else restore_flags(state)[0 if option == "copy_dv" else 1])
+                    self._hdr_common_intent[option] = bool(memory)
+
+    def _on_hdr_option_clicked(self, option: str, checked: bool) -> None:
+        """Case HDR cliquée par l'utilisateur : seule action qui modifie l'intention commune (mode global)."""
+        if not self._video_apply_all or self._loading_video_settings:
+            return
+        current = next(((info, track) for info, track, _color in self._video_tracks
+                        if self._video_entry_id(track) == self._current_video_entry_id), None)
+        codec = str(self._codec_combo.currentData() or "libx265")
+        if (current is not None and codec != "copy" and hdr_option_carried(option, codec)
+                and hdr_option_in_source(option, self._source_context(*current))):
+            self._hdr_common_intent[option] = bool(checked)
+            self._save_current_video_state()
+
+    def _apply_hdr_intent_to_displayed(self) -> None:
+        """Codec de la piste affichée changé (Copy → HEVC compris) : ses cases HDR suivent l'intention commune.
+
+        Les cases imposées par Copy ou rétablies d'une mémoire ne deviennent jamais l'intention.
+        """
+        codec = str(self._codec_combo.currentData() or "libx265")
+        if not self._video_apply_all or self._loading_video_settings or codec == "copy":
+            return
+        self._apply_common_tonemap_choice()
+        current = next(((info, track) for info, track, _color in self._video_tracks
+                        if self._video_entry_id(track) == self._current_video_entry_id), None)
+        if current is None:
+            return
+        ctx = self._source_context(*current)
+        boxes = {"inject_hdr_meta": self._inject_hdr_cb, "copy_dv": self._copy_dv_cb,
+                 "copy_hdr10plus": self._copy_hdr10plus_cb}
+        restore_dv, restore_hdr10plus = self._dynamic_hdr_disabled_by_codec
+        changed = False
+        for option, intent in self._hdr_common_intent.items():
+            if option == HDR10PLUS_GENERATION_OPTION:
+                # Intention propre (aucune mémoire de copie) : suivie dès que la source porte du Dolby Vision.
+                if hdr_option_in_source(option, ctx) and self._generate_hdr10plus_intent != intent:
+                    self._generate_hdr10plus_intent = intent
+                    changed = True
+                continue
+            if not hdr_option_in_source(option, ctx) or not hdr_option_carried(option, codec):
+                continue
+            if boxes[option].isChecked() != intent:
+                boxes[option].setChecked(intent)
+                changed = True
+            if option == "copy_hdr10plus" and not intent:
+                self._hdr10plus_copy_replaced = False  # copie retirée par l'intention commune : jamais rétablie
+            if option == "inject_hdr_meta":
+                self._hdr_disabled_by_codec = False
+            elif option == "copy_dv":
+                restore_dv = False
+            else:
+                restore_hdr10plus = False
+        self._dynamic_hdr_disabled_by_codec = (restore_dv, restore_hdr10plus)
+        self._sync_generate_hdr10plus()
+        if changed:
+            self._save_current_video_state()
 
     def _propagate_state_to_active_tracks(self, template: dict[str, object]) -> None:
         for info, track, _color in self._video_tracks:
@@ -4478,7 +4694,6 @@ class EncodePanel(QWidget):
         info: FileInfo,
         track: TrackEntry,
     ) -> dict[str, object]:
-        source_hdr = self._hdr_type_for_entry(info, track)
         source_video = self._video_track_for_entry(info, track)
         raw = source_video.raw if source_video is not None else {}
         master_display, max_cll = self._extract_hdr_meta_fields(
@@ -4486,52 +4701,18 @@ class EncodePanel(QWidget):
             mediainfo_json=info.mediainfo_json or {},
             include_frame_probe=False,
         )
-        # Source HDR (HDR10/HDR10+/DV) → injection HDR statique activée par
-        # défaut. Sans master_display/max-cll dans le HEVC encodé, les TV
-        # et players appliquent un tone-mapping générique → image fade.
-        is_hdr_source = self._source_has_static_hdr10(source_hdr, self._transfer_for_entry(info, track))
-        state: dict[str, object] = {
-            "codec": "copy",
-            "quality_mode": QualityMode.CRF,
-            "rate_control": "",
-            "preset": "slow",
-            "crf": 18,
-            "cq": 26,
-            "bitrate_kbps": "5000",
-            "target_size_mb": "4000",
-            "extra_params": "",
-            "extra_params_by_codec": {},
-            # Auto = profondeur source (10 bits si HDR) : jamais une valeur figée par piste.
-            "bit_depth": "auto",
-            "resize": VideoResizeSettings(),
-            "crop": VideoCropSettings(),
-            "filters": VideoFilterSettings(),
-            "interpolation": FrameInterpolationSettings(),
-            "inject_hdr_meta": is_hdr_source,
-            "master_display": master_display,
-            "max_cll": max_cll,
-            # Valeurs source figées (extraites mediainfo/ffprobe au 1er chargement) :
-            # servent de mémoire pour reset après décoche/recoche, ou si l'utilisateur
-            # vide les champs par erreur. Ne sont jamais écrasées au cours de la session.
-            "default_master_display": master_display,
-            "default_max_cll": max_cll,
-            "static_hdr_metadata_source": "",
-            "static_hdr_metadata_confidence": "",
-            "static_hdr_metadata_analysis_mode": "",
-            "static_hdr_metadata_analysis_request": "",
-            "copy_dv": self._source_has_dv(source_hdr),
-            "bake_dovi_fel": None,
-            "fel_device": "auto",
-            "copy_hdr10plus": self._source_has_hdr10plus(source_hdr),
-            "dovi_profile": "0",
-            "tonemap_to_sdr": False,
-            "tonemap_algorithm": "hable",
-        }
-        return self._normalized_video_state_for_track(
-            info=info,
-            track=track,
-            state=state,
-        )
+        ctx = self._source_context(info, track, master_display=master_display, max_cll=max_cll)
+        return default_video_state(ctx, self._encoder_environment())
+
+    def _source_context(self, info: FileInfo, track: TrackEntry | None, *, master_display: str = "",
+                        max_cll: str = "") -> SourceVideoContext:
+        """Ce que la source de la piste impose aux réglages (``track_settings.SourceVideoContext``)."""
+        return SourceVideoContext.from_file_info(info, track.mkv_tid if track is not None else None,
+                                                 master_display=master_display, max_cll=max_cll)
+
+    def _encoder_environment(self) -> EncoderEnvironment:
+        """Capacités détectées par ce panneau : 10 bits (NVEncC sondé), préréglage par défaut (pilote VAAPI)."""
+        return EncoderEnvironment(supports_10bit=self._codec_supports_10bit, default_preset=self._default_preset)
 
     def _should_propagate_global_state(self, state: dict[str, object] | None) -> bool:
         """Règle unique de « Appliquer à toutes » : réglages d'encodage, jamais Copy (passthrough par source)."""
@@ -4540,26 +4721,17 @@ class EncodePanel(QWidget):
         return self._video_state_target_codec(state) != "copy"
 
     def _video_source_bit_depth(self, info: FileInfo, track: TrackEntry) -> int:
-        video_track = self._video_track_for_entry(info, track)
-        if video_track is None:
-            return 0
-        try:
-            bit_depth = int(getattr(video_track, "bit_depth", 0) or 0)
-        except (TypeError, ValueError):
-            bit_depth = 0
-        return bit_depth if bit_depth in {8, 10, 12, 16} else source_bit_depth_from_stream(video_track.raw or {})
+        return video_source_bit_depth(self._video_track_for_entry(info, track))
 
     @staticmethod
     def _video_source_pix_fmt(video: VideoTrack | None) -> str:
         """pix_fmt ffprobe de la piste ("" inconnu) : sous-échantillonnage de la source."""
-        raw = getattr(video, "raw", None) or {}
-        return str(raw.get("pix_fmt") or "").strip().lower() if isinstance(raw, dict) else ""
+        return video_source_pix_fmt(video)
 
     @staticmethod
     def _source_dovi_profile(video: VideoTrack | None) -> str:
         """Contexte inspecté pour la profondeur (P8.2 SDR), confirmé par le workflow."""
-        profile = sub_profile_from_track(getattr(video, "dovi_profile", None), getattr(video, "dovi_compat_id", None))
-        return "" if profile.value == "unknown" else profile.value
+        return source_dovi_profile(video)
 
     def _video_source_row_text(
         self,
@@ -4610,9 +4782,7 @@ class EncodePanel(QWidget):
 
     @staticmethod
     def _video_state_target_codec(state: dict[str, object] | None) -> str:
-        if state is None:
-            return "copy"
-        return str(state.get("codec") or "copy").strip().lower()
+        return state_target_codec(state)
 
     def _apply_video_source_item_style(
         self,
@@ -4710,6 +4880,125 @@ class EncodePanel(QWidget):
         self._sync_fel_hdr10plus_option()
         self._rebuild_preview()
 
+    def _on_copy_hdr10plus_clicked(self, checked: bool) -> None:
+        """Copie HDR10+ cochée : la génération depuis le Dolby Vision (exclusive) est retirée."""
+        self._hdr10plus_copy_replaced = False
+        if checked and self._generate_hdr10plus_intent:
+            self._generate_hdr10plus_intent = False
+            self._on_hdr_option_clicked(HDR10PLUS_GENERATION_OPTION, False)
+            self._sync_generate_hdr10plus()
+        self._on_hdr_option_clicked("copy_hdr10plus", checked)
+        self._sync_fel_hdr10plus_option()
+
+    def _on_generate_hdr10plus_clicked(self, checked: bool) -> None:
+        """Génération HDR10+ cochée : remplace la copie HDR10+ de la source (exclusives)."""
+        self._generate_hdr10plus_intent = bool(checked)
+        self._on_hdr_option_clicked(HDR10PLUS_GENERATION_OPTION, checked)
+        self._sync_hdr_controls_for_codec()
+        self._sync_fel_hdr10plus_option()
+        self._save_current_video_state()
+        self._rebuild_preview()
+
+    def _generation_support(self) -> EngineSupport:
+        """Capacités de l'extension mvo-fel installée (relues à chaque installation / mise à jour)."""
+        from core import plugins
+        from core.hdr10plus_generation import EngineSupport, engine_generation_support
+
+        installed = plugins.installed_plugin(plugins.FEL)
+        key = None if installed is None else (str(installed.path), str(installed.version))
+        if key != self._generation_support_key or self._generation_support_cache is None:
+            self._generation_support_key = key
+            self._generation_support_cache = (engine_generation_support() if installed is not None
+                                              else EngineSupport())
+        return self._generation_support_cache
+
+    def _selected_source_context(self) -> SourceVideoContext:
+        """Contexte source de la piste affichée (``track_settings.SourceVideoContext``)."""
+        row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
+        if 0 <= row < len(self._video_tracks):
+            file_info, track, _color = self._video_tracks[row]
+            return self._source_context(file_info, track)
+        if self._file_info is not None:
+            return self._source_context(self._file_info, None)
+        return SourceVideoContext()
+
+    def _generates_hdr10plus(self, codec: str | None = None) -> bool:
+        """HDR10+ généré pour la piste affichée : règle effective du cœur (``hdr10plus_generation_available``)."""
+        if not self._generate_hdr10plus_intent or self._file_info is None:
+            return False
+        target = str(codec or self._codec_combo.currentData() or "libx265")
+        return hdr10plus_generation_available(self._selected_source_context(), target,
+                                              tonemap=self._tonemap_cb.isChecked())
+
+    @staticmethod
+    def _generate_hdr10plus_reason(ctx: SourceVideoContext, codec: str, tonemap: bool) -> str:
+        """Pourquoi la génération HDR10+ ne s'applique pas à la piste affichée."""
+        profile = str(ctx.dovi_profile or "").lower()
+        if not source_has_dv(ctx.hdr_type):
+            return translate_text("Source sans Dolby Vision.")
+        if tonemap:
+            return translate_text("Indisponible avec le tone-mapping HDR → SDR (sortie SDR).")
+        if not hdr_option_carried(HDR10PLUS_GENERATION_OPTION, codec):
+            return translate_text("Le codec sélectionné ne porte pas de HDR10+.")
+        if profile in {"p8_2", "p8_4"}:
+            return translate_text("Image de base Dolby Vision non PQ (SDR ou HLG) : aucun HDR10+ possible.")
+        return translate_text("En copie, l'image de base d'une source Dolby Vision P5 (IPT) ne peut pas porter de "
+                              "HDR10+ ; réencoder la piste.")
+
+    def _sync_generate_hdr10plus(self) -> None:
+        """Case « Générer HDR10+ » : active si la génération s'applique, cochée selon l'intention de la piste ;
+        copie HDR10+ décochée quand elle est remplacée ; méthode estimée signalée (repli L1)."""
+        if not hasattr(self, "_generate_hdr10plus_cb"):
+            return
+        codec = str(self._codec_combo.currentData() or "libx265")
+        tonemap = self._tonemap_cb.isChecked()
+        ctx = self._selected_source_context() if self._file_info is not None else None
+        available = ctx is not None and hdr10plus_generation_available(ctx, codec, tonemap=tonemap)
+        generating = available and self._generate_hdr10plus_intent
+        with QSignalBlocker(self._generate_hdr10plus_cb):
+            self._generate_hdr10plus_cb.setEnabled(available)
+            self._generate_hdr10plus_cb.setChecked(generating)
+        self._generate_hdr10plus_cb.setToolTip(
+            translate_text(
+                "Statistiques HDR10+ (profil A) mesurées sur chaque image par l’extension mvo-fel, une scène par "
+                "plan Dolby Vision ; sans extension ou source P5 : estimation depuis le L1 du RPU. Remplace le "
+                "HDR10+ de la source ; en copie, le flux est patché sans réencodage.")
+            if available or ctx is None else self._generate_hdr10plus_reason(ctx, codec, tonemap))
+        if generating and self._copy_hdr10plus_cb.isChecked():
+            self._copy_hdr10plus_cb.setChecked(False)  # remplacement du HDR10+ de la source
+            self._hdr10plus_copy_replaced = True
+        elif not generating and self._hdr10plus_copy_replaced and (
+                self._copy_hdr10plus_cb.isEnabled() or codec == "copy"):
+            # Génération retirée ou inapplicable : la copie qu'elle remplaçait revient (Copy : imposée par la
+            # source). Codec sans HDR10+ : remplacement gardé jusqu'au retour d'un codec qui le porte.
+            self._hdr10plus_copy_replaced = False
+            if codec != "copy":
+                self._copy_hdr10plus_cb.setChecked(True)
+        note = ""
+        if generating and ctx is not None:
+            # Méthode prévue (règle du lancement) : estimation L1 annoncée, lien Extensions sans capacité de mesure.
+            from types import SimpleNamespace
+
+            from core.hdr10plus_generation import resolve_generation_method
+            from core.workflows.encode.dovi_policy import sub_profile_from_value
+            from core.workflows.encode.hdr10plus_output import hevc_output
+
+            support = self._generation_support()
+            track = self._selected_video_track()
+            # FEL intégré au lancement : extension présente et couche FEL (une MEL est sans effet).
+            fel = (self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled() and support.installed
+                   and getattr(track, "dovi_profile", None) == 7 and getattr(track, "dovi_el_type", None) != "MEL")
+            choice = resolve_generation_method(
+                sub_profile=sub_profile_from_value(ctx.dovi_profile), fel_bake=fel,
+                fel_statistics=fel and support.frame_statistics,
+                hevc_output=hevc_output(SimpleNamespace(codec=codec)), measure_layers=support.layers)
+            if choice.approximate:
+                note = translate_text("HDR10+ généré : {reason}.", reason=choice.reason)
+                if not support.layers:
+                    note += " <a href='manage'>" + translate_text("Gérer les extensions") + "</a>"
+        self._generate_hdr10plus_note.setText(note)
+        self._generate_hdr10plus_note.setVisible(bool(note))
+
     def _sync_fel_hdr10plus_option(self) -> None:
         """Choix HDR10+ visible quand le FEL est intégré et la copie HDR10+ cochée."""
         if not hasattr(self, "_fel_hdr10plus_widget"):
@@ -4718,6 +5007,8 @@ class EncodePanel(QWidget):
         self._fel_hdr10plus_widget.setVisible(
             self._bake_fel_cb.isChecked() and self._bake_fel_cb.isEnabled()
             and self._copy_hdr10plus_cb.isChecked() and self._copy_hdr10plus_cb.isEnabled()
+            # HDR10+ généré : toujours l'image produite, pas de choix.
+            and not self._generates_hdr10plus()
             # Injection hdr10plus_tool : sorties HEVC seulement (recomputes_hdr10plus).
             and (codec == "libx265" or "hevc" in codec)
         )
@@ -4791,6 +5082,7 @@ class EncodePanel(QWidget):
         self._dovi_p81_note.setVisible(bool(conversion_notes))
         self._dovi_plan_label.setText("\n".join(notes))
         self._dovi_plan_label.setVisible(bool(notes))
+        self._sync_generate_hdr10plus()  # méthode HDR10+ annoncée d'après le choix FEL affiché
 
     def _selected_video_hdr_type(self) -> HDRType:
         row = self._video_list.currentRow() if hasattr(self, "_video_list") else -1
@@ -4815,18 +5107,11 @@ class EncodePanel(QWidget):
 
     @staticmethod
     def _routing_video_tracks(config: object) -> list[object]:
-        tracks = list(getattr(config, "video_tracks", []) or [])
-        if tracks:
-            return tracks
-        primary = getattr(config, "video", None)
-        return [primary] if primary is not None else []
+        return routing_video_tracks(config)
 
     @staticmethod
     def _video_requires_dovi_profile_normalization(video: object) -> bool:
-        return bool(
-            getattr(video, "copy_dv", False)
-            and str(getattr(video, "dovi_profile", "0") or "0").strip() == "2"
-        )
+        return requires_dovi_profile_normalization(video)
 
     def _ensure_video_states_for_active_tracks(self) -> None:
         """Garantit un état UI pour chaque piste vidéo active du remux."""
@@ -4903,9 +5188,10 @@ class EncodePanel(QWidget):
             deblock_enabled=self._deblock_cb.isChecked(),
             deblock_strength=str(self._deblock_strength_combo.currentData() or "medium"),
             deblock_block=int(str(self._deblock_block_combo.currentData() or "8")),
-            nlmeans_enabled=self._nlmeans_cb.isChecked(),
+            nlmeans_enabled=self._denoise_cb.isChecked() and self._denoise_filter() == "nlmeans",
             nlmeans_strength=str(self._nlmeans_strength_combo.currentData() or "light"),
             nlmeans_profile=str(self._nlmeans_profile_combo.currentData() or "standard"),
+            denoise_filter=str(self._denoise_filter_combo.currentData() or "mvo-r2"),
             chroma_smooth_enabled=self._chroma_cb.isChecked(),
             chroma_smooth_strength=str(self._chroma_strength_combo.currentData() or "medium"),
         )
@@ -4940,26 +5226,34 @@ class EncodePanel(QWidget):
             "crop": self._current_crop_settings(),
             "filters": self._current_filter_settings(),
             "interpolation": self._current_interpolation_settings(),
+            "restoration": self._current_restore_settings(),
             "inject_hdr_meta": self._inject_hdr_cb.isChecked(),
             "hdr_disabled_by_codec": self._hdr_disabled_by_codec,
             "dynamic_hdr_disabled_by_codec": self._dynamic_hdr_disabled_by_codec,
             "tonemap_enabled_by_codec": self._tonemap_enabled_by_codec,
             "master_display": self._master_display.text(),
             "max_cll": self._max_cll.text(),
+            "static_hdr_manual": self._static_hdr_manual,
+            "static_hdr_master_display_manual": self._static_hdr_field_manual["master_display"],
+            "static_hdr_max_cll_manual": self._static_hdr_field_manual["max_cll"],
             "default_master_display": str(prev.get("default_master_display") or ""),
             "default_max_cll": str(prev.get("default_max_cll") or ""),
             "static_hdr_metadata_source": str(prev.get("static_hdr_metadata_source") or ""),
             "static_hdr_metadata_confidence": str(prev.get("static_hdr_metadata_confidence") or ""),
             "static_hdr_metadata_analysis_mode": str(prev.get("static_hdr_metadata_analysis_mode") or ""),
             "static_hdr_metadata_analysis_request": str(prev.get("static_hdr_metadata_analysis_request") or ""),
+            "static_hdr_analysis_disabled_by_codec": str(prev.get("static_hdr_analysis_disabled_by_codec") or ""),
             "copy_dv": self._copy_dv_cb.isChecked(),
             "bake_dovi_fel": self._bake_fel_choice,
             "fel_device": self._fel_device_choice,
             "fel_precision": self._fel_precision_choice,
             "fel_hdr10plus": self._fel_hdr10plus_choice,
-            "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked(),
+            # Intention de copie : gardée sous la génération qui la remplace (exclusion appliquée aux réglages).
+            "copy_hdr10plus": self._copy_hdr10plus_cb.isChecked() or self._hdr10plus_copy_replaced,
+            "generate_hdr10plus": self._generate_hdr10plus_intent,
             "dovi_profile": self._dovi_profile_choice,
             "tonemap_to_sdr": self._tonemap_cb.isChecked(),
+            "tonemap_choice": self._tonemap_choice,
             "tonemap_algorithm": self._combo_data(self._tonemap_algo),
         }
 
@@ -4980,10 +5274,7 @@ class EncodePanel(QWidget):
         return spec.rc_id if spec is not None else ""
 
     def _copy_video_state(self, state: dict[str, object]) -> dict[str, object]:
-        copied = dict(state)
-        by_codec = state.get("extra_params_by_codec")
-        copied["extra_params_by_codec"] = dict(by_codec) if isinstance(by_codec, dict) else {}
-        return copied
+        return copy_state(state)
 
     def _propagate_current_video_state_to_all(self, *, force_current: bool = True) -> None:
         if not self._video_tracks:
@@ -5027,10 +5318,13 @@ class EncodePanel(QWidget):
             source_hdr=source_hdr,
             target_codec=target_codec,
         )
+        generated = effective_hdr10plus_generation(
+            state, SourceVideoContext(hdr_type=source_hdr, dovi_profile=source_dovi_profile(source_video)),
+            codec=target_codec)
         if target_codec == "copy":
-            if copy_dv and str(state.get("dovi_profile") or "0").strip() == "2":
-                return ("DV", "HDR")
-            return self._source_hdr_badges(source_hdr, source_video)
+            copied = (("DV", "HDR") if copy_dv and str(state.get("dovi_profile") or "0").strip() == "2"
+                      else self._source_hdr_badges(source_hdr, source_video))
+            return (*copied, "10+") if generated and "10+" not in copied else copied
         if bool(state.get("tonemap_to_sdr")):
             return ("SDR",)
 
@@ -5044,7 +5338,7 @@ class EncodePanel(QWidget):
                 badges.append("HDR")
         if copy_dv:
             badges.append("DV")
-        if copy_hdr10plus:
+        if copy_hdr10plus or generated:
             badges.append("10+")
 
         return tuple(badges)
@@ -5095,6 +5389,14 @@ class EncodePanel(QWidget):
             badges.append("NLMeans·Vulkan" if gpu else "NLMeans")
         if filters.chroma_smooth_enabled:
             badges.append("Chroma")
+        restoration = RestoreSettings.from_value(state.get("restoration"))
+        if restoration.is_active():
+            badge = "MVO-R2 " + translate_text(_RESTORE_LEVEL_BADGES.get(restoration.level, "Auto"))
+            if restoration.mode == "fast":
+                badge += " " + translate_text("Rapide")
+            if self._trt_plugin_dir and getattr(self._trt_state, "ready", False):
+                badge += " TRT"
+            badges.append(badge)
         interpolation = FrameInterpolationSettings.from_value(state.get("interpolation"))
         if interpolation.is_active():
             badge = (
@@ -5122,6 +5424,7 @@ class EncodePanel(QWidget):
             # V18b : NVEncC filtre lui-même, sauf préfiltres sans équivalent ou RIFE (pipe FFmpeg).
             piped = nvencc_requires_ffmpeg_filter_pipe(VideoEncodeSettings(
                 codec=codec, resize=resize, crop=crop, filters=filters, interpolation=interpolation,
+                restoration=restoration,
             ))
             badges.append(translate_text("Filtres FFmpeg") if piped else translate_text("Filtres NVEncC"))
         return tuple(badges)
@@ -5156,12 +5459,16 @@ class EncodePanel(QWidget):
             or bool(VideoCropSettings.from_value(state.get("crop")).is_active())
             or bool(VideoFilterSettings.from_value(state.get("filters")).is_active())
             or bool(FrameInterpolationSettings.from_value(state.get("interpolation")).is_active())
+            or bool(RestoreSettings.from_value(state.get("restoration")).is_active())
             or bool(state.get("inject_hdr_meta"))
             or bool(state.get("tonemap_to_sdr"))
             or bool(state.get("extra_params"))
             or (codec != "copy" and copy_dv)
             or (codec != "copy" and copy_hdr10plus)
             or (copy_dv and str(state.get("dovi_profile") or "0").strip() == "2")
+            or effective_hdr10plus_generation(
+                state, SourceVideoContext(hdr_type=source_hdr, dovi_profile=source_dovi_profile(source_video)),
+                codec=target_codec)
         )
         return VideoTrackEncodePlan(
             track_entry_id=entry_id,
@@ -5197,11 +5504,14 @@ class EncodePanel(QWidget):
         if not hasattr(self, "_codec_combo") or not hasattr(self, "_copy_dv_cb"):
             return
         state = self._current_video_state()
+        request_before = str(state.get("static_hdr_metadata_analysis_request") or "")
         state, analysis_cancelled = self._normalize_pending_static_hdr_analysis(
             self._current_video_entry_id,
             state,
         )
         self._video_settings_by_entry_id[self._current_video_entry_id] = state
+        if str(state.get("static_hdr_metadata_analysis_request") or "") != request_before:
+            self._sync_hdr_metadata_provenance()  # analyse déprogrammée ou reprise : libellé à jour
         # V43 : une seule règle de propagation (Copy reste propre à chaque source).
         if self._should_propagate_global_state(state):
             self._propagate_state_to_active_tracks(state)
@@ -5253,17 +5563,29 @@ class EncodePanel(QWidget):
             self._apply_crop_settings(VideoCropSettings.from_value(state.get("crop")))
             self._apply_filter_settings(VideoFilterSettings.from_value(state.get("filters")))
             self._apply_interpolation_settings(FrameInterpolationSettings.from_value(state.get("interpolation")))
+            self._apply_denoise_settings(VideoFilterSettings.from_value(state.get("filters")),
+                                         RestoreSettings.from_value(state.get("restoration")))
+            # Profil Dolby Vision avant les cases : leurs signaux lisent l'état complet de la piste.
+            self._dovi_profile_choice = NORMALIZE_P81 if str(state.get("dovi_profile") or "0").strip() == NORMALIZE_P81 else "0"
             self._inject_hdr_cb.setChecked(bool(state.get("inject_hdr_meta")))
+            self._static_hdr_manual = bool(state.get("static_hdr_manual"))
             target_codec = str(state.get("codec") or "copy").strip().lower()
             md_state, cll_state = self._effective_static_hdr_fields(
                 state,
                 codec=target_codec,
             )
+            # Réaffichage : la saisie reste explicite ; valeur remplacée (source, champ vide) : non.
+            self._static_hdr_field_manual = {
+                name: bool(state.get(f"static_hdr_{name}_manual"))
+                and str(state.get(name) or "").strip() == shown
+                for name, shown in (("master_display", md_state), ("max_cll", cll_state))
+            }
             self._master_display.setText(md_state)
             self._max_cll.setText(cll_state)
             self._copy_dv_cb.setChecked(bool(state.get("copy_dv")))
             self._copy_hdr10plus_cb.setChecked(bool(state.get("copy_hdr10plus")))
-            self._dovi_profile_choice = NORMALIZE_P81 if str(state.get("dovi_profile") or "0").strip() == NORMALIZE_P81 else "0"
+            self._generate_hdr10plus_intent = bool(state.get("generate_hdr10plus"))
+            self._hdr10plus_copy_replaced = False  # reposé par la synchro si la génération remplace la copie
             self._tonemap_cb.setChecked(bool(state.get("tonemap_to_sdr")))
             self._set_combo_data(self._tonemap_algo, state.get("tonemap_algorithm"))
         finally:
@@ -5272,22 +5594,24 @@ class EncodePanel(QWidget):
         # Les choix désactivés temporairement par un codec suivent leur piste,
         # même si une autre piste est affichée avant le retour au codec HDR.
         self._hdr_disabled_by_codec = bool(state.get("hdr_disabled_by_codec"))
-        restore_flags = state.get("dynamic_hdr_disabled_by_codec")
-        if not isinstance(restore_flags, tuple) or len(restore_flags) != 2:
-            restore_flags = (False, False)
-        self._dynamic_hdr_disabled_by_codec = (bool(restore_flags[0]), bool(restore_flags[1]))
+        # Tuple ou liste (état relu d'un JSON : session, preset) : même lecture que le cœur.
+        self._dynamic_hdr_disabled_by_codec = restore_flags(state)
         self._tonemap_enabled_by_codec = bool(state.get("tonemap_enabled_by_codec"))
+        # Ancien état sans choix : déduit avec le codec de cet état (``tonemap_choice_of``).
+        self._tonemap_choice = tonemap_choice_of(state, source_hdr=self._selected_source_is_hdr())
         # État restauré tel quel : pas de nouveau défaut pour ce couple codec / piste.
         self._tonemap_policy_key = (str(self._codec_combo.currentData() or "libx265"), self._current_video_entry_id)
         self._video_encode_controls.setVisible((self._codec_combo.currentData() or "libx265") != "copy")
         self._hdr_meta_widget.setVisible(self._inject_hdr_cb.isChecked())
         self._dovi_profile_widget.setVisible(self._copy_dv_cb.isChecked())
+        self._sync_generate_hdr10plus()
         self._tonemap_algo_widget.setVisible(self._tonemap_cb.isChecked())
         self._update_bit_depth_control(self._codec_combo.currentData() or "libx265")
         self._sync_hdr_metadata_field_editability(self._codec_combo.currentData() or "libx265")
         self._sync_hdr_controls_for_codec()
         self._sync_transform_controls_enabled()
         self._sync_hdr_metadata_provenance()
+        self._apply_common_tonemap_choice()
 
     def _apply_resize_settings(self, resize: VideoResizeSettings) -> None:
         if not hasattr(self, "_resize_enabled_cb"):
@@ -5327,9 +5651,6 @@ class EncodePanel(QWidget):
         self._deblock_cb.setChecked(bool(filters.deblock_enabled))
         self._set_combo_data(self._deblock_strength_combo, filters.deblock_strength)
         self._set_combo_data(self._deblock_block_combo, str(filters.deblock_block))
-        self._nlmeans_cb.setChecked(bool(filters.nlmeans_enabled))
-        self._set_combo_data(self._nlmeans_strength_combo, filters.nlmeans_strength)
-        self._set_combo_data(self._nlmeans_profile_combo, filters.nlmeans_profile)
         self._chroma_cb.setChecked(bool(filters.chroma_smooth_enabled))
         self._set_combo_data(self._chroma_strength_combo, filters.chroma_smooth_strength)
 
@@ -5637,14 +5958,18 @@ class EncodePanel(QWidget):
             target_codec=str(codec),
         )
         # Tone-mapping : sortie SDR, les cases HDR restent mémorisées mais inactives.
-        copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap
-        inject_hdr_meta = (
-            self._inject_hdr_cb.isChecked() and supports_hdr_output(str(codec)) and not tonemap
-        )
+        generate_hdr10plus = self._generates_hdr10plus(str(codec))
+        copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap and not generate_hdr10plus
         source_transfer = (
             self._transfer_for_entry(selected_file_info, selected_track)
             if selected_file_info is not None and selected_track is not None
             else ""
+        )
+        # Même règle que le lancement (``video_settings_from_state``) : aperçu et commandes identiques.
+        inject_hdr_meta = effective_static_hdr_injection(
+            {**current_state, "inject_hdr_meta": self._inject_hdr_cb.isChecked()},
+            SourceVideoContext(hdr_type=source_hdr, transfer=source_transfer),
+            codec=str(codec), tonemap=tonemap,
         )
         master_display, max_cll = (
             self._effective_static_hdr_fields(current_state, codec=str(codec))
@@ -5668,12 +5993,14 @@ class EncodePanel(QWidget):
             source_bit_depth=self._video_source_bit_depth(selected_file_info, selected_track) if selected_file_info is not None and selected_track is not None else 0,
             source_codec=str(getattr(self._selected_video_track(), "codec", "") or ""),
             source_pix_fmt=self._video_source_pix_fmt(self._selected_video_track()),
-            dovi_source_profile=self._source_dovi_profile(self._selected_video_track()) if codec != "copy" else "",
+            dovi_source_profile=(self._source_dovi_profile(self._selected_video_track())
+                                 if codec != "copy" or generate_hdr10plus else ""),
             encoder_supports_10bit=self._codec_supports_10bit(str(codec)),
             resize=self._current_resize_settings(),
             crop=self._current_crop_settings(),
             filters=self._current_filter_settings(),
             interpolation=self._current_interpolation_settings(),
+            restoration=self._current_restore_settings(),
             inject_hdr_meta=inject_hdr_meta,
             master_display=master_display,
             max_cll=max_cll,
@@ -5681,13 +6008,16 @@ class EncodePanel(QWidget):
             fel_device=self._fel_device_choice,
             fel_precision=self._fel_precision_choice,
             fel_hdr10plus=self._fel_hdr10plus_choice,
-            static_hdr_light_level_source=("source" if str(current_state.get("max_cll") or "") == str(current_state.get("default_max_cll") or "") else "manual"),
+            static_hdr_light_level_source="manual" if static_hdr_field_manual(current_state, "max_cll") else "source",
+            static_hdr_master_display_source=(
+                "manual" if static_hdr_field_manual(current_state, "master_display") else "source"),
             static_hdr_metadata_source=str(current_state.get("static_hdr_metadata_source") or ""),
             static_hdr_metadata_confidence=str(current_state.get("static_hdr_metadata_confidence") or ""),
             static_hdr_metadata_analysis_mode=str(current_state.get("static_hdr_metadata_analysis_mode") or ""),
             static_hdr_metadata_analysis_request=str(current_state.get("static_hdr_metadata_analysis_request") or ""),
             copy_dv=copy_dv,
             copy_hdr10plus=copy_hdr10plus,
+            generate_hdr10plus=generate_hdr10plus,
             dovi_profile=self._dovi_profile_choice,
             source_color_transfer=source_transfer,
             tonemap_to_sdr=tonemap,
@@ -5701,68 +6031,13 @@ class EncodePanel(QWidget):
         track: TrackEntry,
         state: dict[str, object],
     ) -> VideoEncodeSettings:
-        mode = state.get("quality_mode") or QualityMode.CRF
-        if not isinstance(mode, QualityMode):
-            mode = QualityMode(str(mode))
-        rate_control = str(state.get("rate_control") or "")
-        bitrate = self._state_int(state, "bitrate_kbps", 0)
-        size = self._state_int(state, "target_size_mb", 0)
-        codec = str(state.get("codec") or "libx265")
-        source_hdr = self._hdr_type_for_entry(file_info, track)
-        tonemap = bool(state.get("tonemap_to_sdr"))
-        copy_dv, copy_hdr10plus = self._effective_dynamic_hdr_flags(
+        return video_settings_from_state(
             state,
-            source_hdr=source_hdr,
-            target_codec=codec,
-        )
-        copy_dv, copy_hdr10plus = copy_dv and not tonemap, copy_hdr10plus and not tonemap
-        inject_hdr_meta = bool(state.get("inject_hdr_meta")) and supports_hdr_output(codec) and not tonemap
-        master_display, max_cll = (
-            self._effective_static_hdr_fields(state, codec=codec)
-            if inject_hdr_meta
-            else ("", "")
-        )
-        return VideoEncodeSettings(
+            self._source_context(file_info, track),
             stream_index=int(track.mkv_tid),
             source_path=file_info.path,
             track_entry_id=self._video_entry_id(track),
-            codec=codec,
-            quality_mode=mode,
-            rate_control=rate_control,
-            crf=self._state_int(state, "crf", 18),
-            cq=self._state_int(state, "cq", 26),
-            bitrate_kbps=bitrate,
-            target_size_mb=size,
-            preset=self._default_preset(codec) if state.get("preset") is None else str(state.get("preset")),
-            extra_params=str(state.get("extra_params") or "").strip(),
-            bit_depth=str(state.get("bit_depth") or "auto"),
-            source_bit_depth=self._video_source_bit_depth(file_info, track),
-            source_codec=str(getattr(self._video_track_for_entry(file_info, track), "codec", "") or ""),
-            source_pix_fmt=self._video_source_pix_fmt(self._video_track_for_entry(file_info, track)),
-            dovi_source_profile=self._source_dovi_profile(self._video_track_for_entry(file_info, track)) if codec != "copy" else "",
-            encoder_supports_10bit=self._codec_supports_10bit(codec),
-            resize=VideoResizeSettings.from_value(state.get("resize")),
-            crop=VideoCropSettings.from_value(state.get("crop")),
-            filters=VideoFilterSettings.from_value(state.get("filters")),
-            interpolation=FrameInterpolationSettings.from_value(state.get("interpolation")),
-            inject_hdr_meta=inject_hdr_meta,
-            master_display=master_display,
-            max_cll=max_cll,
-            bake_dovi_fel=bool(state["bake_dovi_fel"]) if isinstance(state.get("bake_dovi_fel"), bool) else None,
-            fel_device=str(state.get("fel_device") or "auto"),
-            fel_precision=str(state.get("fel_precision") or "exact"),
-            fel_hdr10plus=str(state.get("fel_hdr10plus") or "recompute"),
-            static_hdr_light_level_source=("source" if str(state.get("max_cll") or "") == str(state.get("default_max_cll") or "") else "manual"),
-            static_hdr_metadata_source=str(state.get("static_hdr_metadata_source") or ""),
-            static_hdr_metadata_confidence=str(state.get("static_hdr_metadata_confidence") or ""),
-            static_hdr_metadata_analysis_mode=str(state.get("static_hdr_metadata_analysis_mode") or ""),
-            static_hdr_metadata_analysis_request=str(state.get("static_hdr_metadata_analysis_request") or ""),
-            copy_dv=copy_dv,
-            copy_hdr10plus=copy_hdr10plus,
-            dovi_profile=str(state.get("dovi_profile") or "0"),
-            source_color_transfer=self._transfer_for_entry(file_info, track),
-            tonemap_to_sdr=tonemap,
-            tonemap_algorithm=str(state.get("tonemap_algorithm") or "hable"),
+            env=self._encoder_environment(),
         )
 
     @staticmethod
@@ -5973,14 +6248,52 @@ class EncodePanel(QWidget):
         entry = track_tuple[3] if len(track_tuple) > 3 else None
         return not bool(getattr(entry, "is_new", False))
 
+    def _runtime_busy(self) -> bool:
+        """Opération globale ou aperçu en cours : le workflow garde ses outils et réglages."""
+        return bool(getattr(self, "_operation_running", False)) or self.is_preview_running()
+
+    def _apply_deferred_runtime_settings(self) -> None:
+        """Fin d'une opération ou d'un aperçu : réglages enregistrés et détection matérielle en attente."""
+        if getattr(self, "_closing", False) or self._runtime_busy():
+            return
+        if getattr(self, "_runtime_refresh_pending", False):
+            self.refresh_runtime_settings()
+        pending_tools = self.__dict__.pop("_pending_tool_refresh", {})
+        if "nvencc" in pending_tools:
+            self.refresh_nvencc_tool()
+        if "rife" in pending_tools:
+            self.refresh_rife_tool()
+        if "trt" in pending_tools:
+            self.set_trt_plugin(str(pending_tools["trt"] or ""))
+        pending_hw = self.__dict__.pop("_pending_hw_result", None)
+        if pending_hw is not None:
+            self._on_hw_detected(*pending_hw)
+
     def refresh_runtime_settings(self) -> None:
+        if getattr(self, "_closing", False):
+            return
+        if self._runtime_busy():
+            # Le traitement ou l'aperçu en cours garde ses outils : réglages appliqués à sa fin.
+            self._runtime_refresh_pending = True
+            return
+        self._runtime_refresh_pending = False
         self._audio_table.refresh_runtime_settings()
         self._workflow.set_ffprobe_bin(getattr(self._config, "tool_ffprobe", None) or None)
         self._workflow.set_ffmpeg_threads(self._config.ffmpeg_threads)
+        self._workflow.set_x265_frame_threads(getattr(self._config, "x265_frame_threads", 0))
         self._workflow.set_max_parallel_video_encodes(self._config.max_parallel_video_encodes)
+        self._workflow.set_ram_buffer_threshold_pct(self._config.ram_buffer_threshold_pct)
         self._workflow.set_mediainfo_bin(self._config.tool_mediainfo)
+        self._workflow.set_metadata_tools(self._config.tool_dovi_tool, self._config.tool_hdr10plus)
         self._workflow.set_rife_bin(getattr(self._config, "tool_muxiveo_rife", None) or None)
         self._sync_interpolation_availability()
+        # FFmpeg ou NVEncC changés : encodeurs disponibles (et FFmpeg matériel) détectés à nouveau.
+        detection_tools = (self._config.tool_ffmpeg, getattr(self._config, "tool_nvencc", None) or None)
+        if detection_tools != getattr(self, "_detection_tools", detection_tools):
+            self._workflow.set_ffmpeg(self._config.tool_ffmpeg)
+            self._workflow.set_nvencc_bin(detection_tools[1])
+            self._executor.submit(self._detect_hw_encoders)
+        self._detection_tools = detection_tools
         self._workflow.set_generate_nfo(self._config.generate_nfo)
         self._workflow.set_regenerate_statistics(getattr(self._config, "matroska_regenerate_statistics", True))
         self._workflow.set_sync_rewrite_enabled(self._config.sync_rewrite_enabled)

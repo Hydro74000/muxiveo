@@ -71,7 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.config import AppConfig
-from core.i18n import current_language, set_current_language
+from core.i18n import current_language, set_current_language, translate_text
 from core.inspector import AudioTrack, FileInfo, HDRType, VideoTrack
 from core.workflows.encode import EncodePreset, ProfileManager
 from core.workflows.remux_models import TrackEntry, clone_track_entry
@@ -1132,7 +1132,7 @@ class TestEncodePanelDynamicHdrDefaults:
         def fail_subprocess_run(*_args, **_kwargs):
             raise AssertionError("mediainfo should be reused from FileInfo, not relaunched")
 
-        monkeypatch.setattr("ui.panels.encode_panel.panel.subprocess.run", fail_subprocess_run)
+        monkeypatch.setattr("core.workflows.encode.planning.track_settings.subprocess.run", fail_subprocess_run)
 
         panel.set_video_tracks([(info, entry, _COLOR)])
 
@@ -1437,8 +1437,9 @@ class TestEncodePanelDynamicHdrDefaults:
         panel._preview_mode_combo.setCurrentIndex(0)
 
         assert panel._preview_duration_spin.isEnabled() is False
-        assert panel._preview_time_edit.isEnabled() is False
-        assert panel._preview_random_btn.isEnabled() is False
+        # Image encodée à l'instant choisi (audit C03) : instant et tirage aléatoire disponibles.
+        assert panel._preview_time_edit.isEnabled() is True
+        assert panel._preview_random_btn.isEnabled() is True
         assert panel._preview_video_result_row.isHidden() is True
         panel.close()
 
@@ -1556,7 +1557,7 @@ class TestEncodePanelDynamicHdrDefaults:
         panel._crop_left_spin.setValue(8)
         panel._yadif_cb.setChecked(True)
         panel._deblock_cb.setChecked(True)
-        panel._nlmeans_cb.setChecked(True)
+        panel._denoise_cb.setChecked(True)  # MVO-R2 absent des tests : NLMeans
         panel._chroma_cb.setChecked(True)
 
         row_item = panel._video_list.item(0)
@@ -1571,11 +1572,11 @@ class TestEncodePanelDynamicHdrDefaults:
 
         assert panel._yadif_cb.text() in {"Désentrelacement", "Deinterlacing"}
         assert panel._deblock_cb.text() == "Deblock"
-        assert panel._nlmeans_cb.text() in {"Débruitage", "Denoise"}
+        assert panel._denoise_cb.text() in {"Débruitage", "Denoise"}
         assert panel._chroma_cb.text() == "Color Smooth"
         assert panel._yadif_filter_combo.itemText(0) == "Yadif"
         assert panel._deblock_filter_combo.itemText(0) == "deblock"
-        assert panel._nlmeans_filter_combo.itemText(0) == "NLMeans"
+        assert [panel._denoise_filter_combo.itemText(i) for i in range(2)] == ["MVO-R2", "NLMeans"]
         assert panel._chroma_filter_combo.itemText(0) == "chromanr"
         panel.close()
 
@@ -2015,15 +2016,17 @@ class TestEncodePanelRunOperation:
         captured: dict[str, object] = {}
         expected_signals = object()
 
-        def fake_run(cfg, *, validate=True):
+        def fake_run(cfg, *, validate=True, retain_failed_work_dir=False):
             captured["config"] = cfg
             captured["validate"] = validate
+            captured["retain_failed_work_dir"] = retain_failed_work_dir
             return expected_signals
 
         monkeypatch.setattr(panel._workflow, "run", fake_run)
 
         assert panel.run_operation(cast(Any, config)) is expected_signals
-        assert captured == {"config": config, "validate": False}
+        # Échec : dossier de travail gardé pour la popup de l'interface.
+        assert captured == {"config": config, "validate": False, "retain_failed_work_dir": True}
         panel.close()
 
 
@@ -2682,5 +2685,1283 @@ def test_legacy_integer_target_fps_survives_profile_loading(qt_app, tmp_path, mo
         assert restored.enabled
         assert restored.target_fps == "60"
         assert restored.factor == 2
+    finally:
+        panel.close()
+
+
+def test_apply_all_codec_round_trip_through_sdr_restores_dynamic_hdr(qt_app, monkeypatch):
+    """« Appliquer à toutes » : HEVC → H.264 → HEVC rétablit HDR10, Dolby Vision et HDR10+ sur chaque piste."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    panel = EncodePanel(AppConfig())
+    first, second = _video_entry(0), _video_entry(1)
+    first.entry_id, second.entry_id = "first", "second"
+    info = _file_info(_PATH_A, [_video_track(0, hdr), _video_track(1, hdr)], hdr_type=hdr)
+    panel.set_video_tracks([(info, first, _COLOR), (info, second, _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx264")
+        _select_codec(panel, "libx265")
+        assert (panel._inject_hdr_cb.isChecked(), panel._copy_dv_cb.isChecked(),
+                panel._copy_hdr10plus_cb.isChecked()) == (True, True, True)
+        for entry_id in ("first", "second"):
+            state = panel._video_settings_by_entry_id[entry_id]
+            assert (state["inject_hdr_meta"], state["copy_dv"], state["copy_hdr10plus"]) == (True, True, True), entry_id
+    finally:
+        panel.close()
+
+
+def test_restored_state_with_list_flags_restores_dynamic_hdr(qt_app, monkeypatch):
+    """État relu d'un JSON (marqueurs en liste) : Dolby Vision et HDR10+ rétablis au retour sur HEVC."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    hdr = HDRType.DOLBY_VISION_HDR10PLUS
+    panel = EncodePanel(AppConfig())
+    entry = _video_entry(0)
+    entry.entry_id = "only"
+    panel.set_video_tracks([(_file_info(_PATH_A, [_video_track(0, hdr)], hdr_type=hdr), entry, _COLOR)])
+    try:
+        _select_codec(panel, "libx264")
+        state = dict(panel._video_settings_by_entry_id["only"])
+        state.update(hdr_disabled_by_codec=True, dynamic_hdr_disabled_by_codec=[True, True])
+        panel._apply_video_state(state)
+        _select_codec(panel, "libx265")
+        assert (panel._inject_hdr_cb.isChecked(), panel._copy_dv_cb.isChecked(),
+                panel._copy_hdr10plus_cb.isChecked()) == (True, True, True)
+    finally:
+        panel.close()
+
+
+def test_p5_scheduled_analysis_survives_a_round_trip_through_an_sdr_codec(qt_app, monkeypatch):
+    """P5 → P8.1 : l'analyse HDR10 programmée, déprogrammée par H.264, est reprise au retour sur HEVC."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    asked: list[str] = []
+    monkeypatch.setattr(panel, "_ask_static_hdr_estimate_mode", lambda: asked.append("ask") or "")
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    video = _video_track(0, HDRType.DOLBY_VISION)
+    video.dovi_profile = 5
+    entry = _video_entry(0)
+    entry.entry_id = "video-p5"
+    panel.set_video_tracks([(_file_info(_PATH_A, [video]), entry, _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._dovi_profile_choice = "2"
+        panel._save_current_video_state()
+        panel._schedule_static_hdr_estimate("video-p5", panel._video_settings_by_entry_id["video-p5"],
+                                            mode="precise")
+        _select_codec(panel, "libx264")
+        assert panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] == ""
+        asked.clear()
+        _select_codec(panel, "libx265")
+        state = panel._video_settings_by_entry_id["video-p5"]
+        assert state["static_hdr_metadata_analysis_request"] == "precise" and state["inject_hdr_meta"]
+        assert asked == []  # choix repris, pas redemandé
+        assert "programmée" in panel._hdr_meta_provenance.text() or "scheduled" in panel._hdr_meta_provenance.text()
+        # Valeurs connues entre-temps (état restauré d'une session) : l'analyse mémorisée est oubliée.
+        _select_codec(panel, "libx264")
+        state = dict(panel._video_settings_by_entry_id["video-p5"])
+        assert state["static_hdr_analysis_disabled_by_codec"] == "precise"
+        state["master_display"] = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+        normalized, _cancelled = panel._normalize_pending_static_hdr_analysis("video-p5", state)
+        assert not normalized["static_hdr_analysis_disabled_by_codec"]
+        assert not normalized["static_hdr_metadata_analysis_request"]
+    finally:
+        panel.close()
+
+
+def test_apply_all_with_different_sources_keeps_the_common_hdr_intent(qt_app, monkeypatch):
+    """« Appliquer à toutes », piste DV+HDR10+ et piste HDR10 : HEVC → H.264, piste HDR10 affichée, retour HEVC."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    first, second = _video_entry(0), _video_entry(1)
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    first.entry_id, second.entry_id = "dv", "hdr10"
+    dv = _file_info(_PATH_A, [_video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)], hdr_type=HDRType.DOLBY_VISION_HDR10PLUS)
+    hdr10 = _file_info(_PATH_B, [_video_track(0, HDRType.HDR10)], hdr_type=HDRType.HDR10)
+    panel.set_video_tracks([(dv, first, _COLOR), (hdr10, second, _COLOR)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)  # piste HDR10 affichée pendant l'intervalle SDR
+        _select_codec(panel, "libx265")
+        state = panel._video_settings_by_entry_id["dv"]
+        assert (state["codec"], state["inject_hdr_meta"], state["copy_dv"], state["copy_hdr10plus"]) == (
+            "libx265", True, True, True)
+        config = panel.collect_config()
+        assert config is not None
+        dv_track = next(video for video in config.video_tracks if video.source_path == _PATH_A)
+        assert dv_track.copy_dv and dv_track.copy_hdr10plus  # copie effective sur la piste DV+HDR10+
+    finally:
+        panel.close()
+
+
+def _apply_all_panel(monkeypatch, *sources):
+    """Panneau « Appliquer à toutes » : une piste par (chemin, type HDR, transfert)."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    tracks = []
+    for index, (path, hdr, transfer) in enumerate(sources):
+        video = _video_track(0, hdr)
+        video.color_transfer = transfer
+        entry = _video_entry(index)
+        entry.entry_id = f"t{index}"
+        tracks.append((_file_info(path, [video], hdr_type=hdr), entry, _COLOR))
+    panel.set_video_tracks(tracks)
+    _select_codec(panel, "libx265")
+    panel._on_apply_all_video_toggled(True)
+    return panel
+
+
+def _settings_by_path(panel) -> dict:
+    config = panel.collect_config()
+    assert config is not None
+    return {video.source_path: video for video in config.video_tracks}
+
+
+def test_apply_all_sdr_track_displayed_never_gets_hdr10(qt_app, monkeypatch):
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)  # piste SDR affichée pendant l'intervalle SDR
+        _select_codec(panel, "libx265")
+        for _round in range(2):  # navigation répétée, collectes répétées, autre réglage modifié sur la piste SDR
+            settings = _settings_by_path(panel)
+            sdr, hdr10 = settings[path_sdr], settings[_PATH_A]
+            assert not sdr.inject_hdr_meta and output_hdr_transfer(sdr) != "pq"
+            assert hdr10.inject_hdr_meta and not hdr10.tonemap_to_sdr
+            panel._video_list.setCurrentRow(0)
+            assert panel._inject_hdr_cb.isChecked()
+            panel._video_list.setCurrentRow(1)
+            assert not panel._inject_hdr_cb.isChecked()
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+    finally:
+        panel.close()
+
+
+def test_apply_all_explicitly_unchecked_hdr10_is_never_restored(qt_app, monkeypatch):
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        panel._inject_hdr_cb.click()  # choix commun (décoché) depuis la piste HDR10
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx264")
+        _select_codec(panel, "libx265")
+        panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+        assert not _settings_by_path(panel)[_PATH_A].inject_hdr_meta
+        panel._video_list.setCurrentRow(0)
+        assert not panel._inject_hdr_cb.isChecked()
+    finally:
+        panel.close()
+
+
+def test_apply_all_hlg_track_keeps_hlg_and_never_inherits_hdr10(qt_app, monkeypatch):
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    path_hlg = Path("/tmp/film_hlg.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_hlg, HDRType.HLG, "arib-std-b67"))
+    try:
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        settings = _settings_by_path(panel)
+        assert not settings[path_hlg].inject_hdr_meta and output_hdr_transfer(settings[path_hlg]) == "hlg"
+        assert settings[_PATH_A].inject_hdr_meta
+    finally:
+        panel.close()
+
+
+def test_apply_all_editing_from_a_track_without_dv_keeps_dv_on_the_others(qt_app, monkeypatch):
+    """Défaut antérieur : modifier un réglage depuis la piste HDR10 retirait DV / HDR10+ de la piste DV."""
+    path_hdr10 = Path("/tmp/film_hdr10.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.DOLBY_VISION_HDR10PLUS, "smpte2084"),
+                             (path_hdr10, HDRType.HDR10, "smpte2084"))
+    try:
+        for _round in range(2):
+            panel._video_list.setCurrentRow(1)
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+            settings = _settings_by_path(panel)
+            assert settings[_PATH_A].copy_dv and settings[_PATH_A].copy_hdr10plus
+            assert not settings[path_hdr10].copy_dv and not settings[path_hdr10].copy_hdr10plus
+            panel._video_list.setCurrentRow(0)
+            assert panel._copy_dv_cb.isChecked() and panel._copy_hdr10plus_cb.isChecked()
+        # Choix commun changé depuis la piste DV : suivi, même en revenant éditer depuis l'autre piste.
+        panel._copy_dv_cb.click()
+        panel._video_list.setCurrentRow(1)
+        panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+        settings = _settings_by_path(panel)
+        assert not settings[_PATH_A].copy_dv and settings[_PATH_A].copy_hdr10plus
+    finally:
+        panel.close()
+
+
+def test_apply_all_sdr_round_trip_with_an_sdr_track_displayed_keeps_dv(qt_app, monkeypatch):
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.DOLBY_VISION_HDR10PLUS, "smpte2084"),
+                             (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        _select_codec(panel, "libx264")
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        for _round in range(2):
+            settings = _settings_by_path(panel)
+            dv, sdr = settings[_PATH_A], settings[path_sdr]
+            assert dv.inject_hdr_meta and dv.copy_dv and dv.copy_hdr10plus and not dv.tonemap_to_sdr
+            assert not sdr.inject_hdr_meta and output_hdr_transfer(sdr) != "pq"
+            panel._video_list.setCurrentRow(0)
+            panel._video_list.setCurrentRow(1)
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+    finally:
+        panel.close()
+
+
+def test_manual_hdr10_values_on_an_sdr_source_are_kept(qt_app, monkeypatch):
+    """Valeurs HDR10 saisies sur une source SDR : gardées une fois la piste quittée (et non propagées)."""
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    md = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+    for apply_all in (False, True):
+        panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+        try:
+            if not apply_all:
+                panel._on_apply_all_video_toggled(False)
+            panel._video_list.setCurrentRow(1)
+            panel._inject_hdr_cb.setChecked(True)
+            panel._master_display.setText(md)
+            panel._max_cll.setText("1000,400")
+            panel._save_current_video_state()
+            panel._video_list.setCurrentRow(0)  # piste SDR quittée : normalisée comme les autres
+            settings = _settings_by_path(panel)
+            assert settings[path_sdr].inject_hdr_meta and settings[path_sdr].master_display == md, apply_all
+            assert settings[_PATH_A].master_display != md  # valeurs propres à leur source
+        finally:
+            panel.close()
+
+
+def _sdr_track_with_source_cll(index: int, path: Path):
+    video = _video_track(0, HDRType.NONE)
+    video.color_transfer = "bt709"
+    video.raw = {"side_data_list": [{"side_data_type": "Content light level metadata", "max_content": 1000,
+                                     "max_average": 400}]}
+    entry = _video_entry(index)
+    entry.entry_id = f"sdr{index}"
+    return _file_info(path, [video]), entry, _COLOR
+
+
+def test_hdr10_provenance_on_an_sdr_source_follows_user_actions(qt_app, monkeypatch):
+    """Source SDR à MaxCLL hérité : jamais injecté seul (case cochée par le programme compris) ; case cochée ou
+    valeur saisie par l'utilisateur : gardé."""
+    from PySide6.QtTest import QTest
+
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    path_a, path_b = Path("/tmp/sdr_a.mkv"), Path("/tmp/sdr_b.mkv")
+    for action in ("programmatic", "click", "type"):
+        panel = EncodePanel(AppConfig())
+        panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+        panel.set_video_tracks([_sdr_track_with_source_cll(0, path_a), _sdr_track_with_source_cll(1, path_b)])
+        try:
+            _select_codec(panel, "libx265")
+            if action == "programmatic":
+                panel._inject_hdr_cb.setChecked(True)  # changement programmatique : aucune saisie explicite
+                assert panel._inject_hdr_cb.isChecked() and panel._max_cll.text() == "1000,400"
+            elif action == "click":
+                panel._inject_hdr_cb.click()
+            else:
+                panel._inject_hdr_cb.click()
+                panel._max_cll.clear()
+                QTest.keyClicks(panel._max_cll, "2000,500")
+            panel._save_current_video_state()
+            panel._video_list.setCurrentRow(1)  # piste quittée : normalisée comme les autres
+            settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+            a = settings[path_a]
+            assert a.inject_hdr_meta == (action != "programmatic"), action
+            assert (output_hdr_transfer(a) == "pq") == (action != "programmatic"), action
+            if action == "type":
+                assert a.max_cll == "2000,500" and a.static_hdr_light_level_source == "manual"
+            assert not settings[path_b].inject_hdr_meta  # marqueurs propres à la piste
+        finally:
+            panel.close()
+
+
+def test_first_displayed_track_keeps_source_hdr10_values_classified_as_source(qt_app, monkeypatch):
+    """Défaut antérieur : la première piste affichée tenait ses valeurs HDR10 de la source pour des saisies."""
+    from core.fel.preparation import measures_light_levels
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    sdr_path = Path("/tmp/sdr_a.mkv")
+    hdr = _video_track(0, HDRType.HDR10)
+    hdr.color_transfer = "smpte2084"
+    hdr.raw = {"side_data_list": [{"side_data_type": "Content light level metadata", "max_content": 1000,
+                                   "max_average": 400}]}
+    entry = _video_entry(0)
+    entry.entry_id = "hdr"
+    panel.set_video_tracks([(_file_info(_PATH_A, [hdr], hdr_type=HDRType.HDR10), entry, _COLOR),
+                            _sdr_track_with_source_cll(1, sdr_path)])
+    try:
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert settings[_PATH_A].max_cll == "1000,400" and settings[_PATH_A].static_hdr_light_level_source == "source"
+        assert measures_light_levels(settings[_PATH_A])  # FEL : MaxCLL de la source remplacé par la mesure
+    finally:
+        panel.close()
+
+
+def test_programmatic_hdr10_on_an_sdr_track_is_never_injected_once_left(qt_app, monkeypatch):
+    """Case HDR10 cochée par le programme sur une piste SDR à MaxCLL hérité, piste quittée : pas d'injection."""
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    sdr_path = Path("/tmp/sdr_a.mkv")
+    hdr = _video_track(0, HDRType.HDR10)
+    hdr.color_transfer = "smpte2084"
+    entry = _video_entry(0)
+    entry.entry_id = "hdr"
+    panel.set_video_tracks([(_file_info(_PATH_A, [hdr], hdr_type=HDRType.HDR10), entry, _COLOR),
+                            _sdr_track_with_source_cll(1, sdr_path)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)
+        panel._inject_hdr_cb.setChecked(True)
+        panel._save_current_video_state()
+        for row in (1, 0):  # piste affichée, puis quittée
+            panel._video_list.setCurrentRow(row)
+            sdr = {v.source_path: v for v in panel.collect_config().video_tracks}[sdr_path]
+            assert not sdr.inject_hdr_meta and output_hdr_transfer(sdr) != "pq"
+    finally:
+        panel.close()
+
+
+def test_apply_all_with_only_sdr_sources_keeps_each_track_own_hdr10_choice(qt_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    path_a, path_b = Path("/tmp/sdr_a.mkv"), Path("/tmp/sdr_b.mkv")
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    a, b = _sdr_track_with_source_cll(0, path_a), _sdr_track_with_source_cll(1, path_b)
+    for track in (a, b):
+        track[0].video_tracks[0].raw = {}
+    panel.set_video_tracks([a, b])
+    try:
+        _select_codec(panel, "libx265")
+        panel._on_apply_all_video_toggled(True)
+        panel._inject_hdr_cb.click()
+        QTest.keyClicks(panel._max_cll, "1000,400")
+        panel._save_current_video_state()
+        panel._video_list.setCurrentRow(1)
+        for _round in range(2):
+            settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+            assert settings[path_a].inject_hdr_meta and settings[path_a].max_cll == "1000,400"
+            assert not settings[path_b].inject_hdr_meta
+            panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+    finally:
+        panel.close()
+
+
+def test_apply_all_first_hdr_track_added_to_an_sdr_list_keeps_its_hdr(qt_app, monkeypatch):
+    """Défaut antérieur : une première piste DV+HDR10+ ajoutée à une liste SDR en mode global perdait son HDR."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        dv = _video_track(0, HDRType.DOLBY_VISION_HDR10PLUS)
+        dv.color_transfer = "smpte2084"
+        entry = _video_entry(1)
+        entry.entry_id = "dv"
+        sdr_track = panel._video_tracks[0]
+        panel.set_video_tracks([sdr_track, (_file_info(_PATH_A, [dv], hdr_type=HDRType.DOLBY_VISION_HDR10PLUS),
+                                            entry, _COLOR)])
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert settings[_PATH_A].codec == "libx265"
+        assert settings[_PATH_A].inject_hdr_meta and settings[_PATH_A].copy_dv and settings[_PATH_A].copy_hdr10plus
+    finally:
+        panel.close()
+
+
+def test_apply_all_copy_imposed_boxes_never_become_the_common_intent(qt_app, monkeypatch):
+    """A DV+HDR10+ (options décochées), B SDR ; A en Copy, liste rafraîchie, B affichée : A garde ses options retirées."""
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.DOLBY_VISION_HDR10PLUS, "smpte2084"),
+                             (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        for box in (panel._inject_hdr_cb, panel._copy_dv_cb, panel._copy_hdr10plus_cb):
+            box.click()  # retirées par l'utilisateur
+        _select_codec(panel, "copy")
+        panel.set_video_tracks(list(panel._video_tracks))  # rafraîchissement de la liste
+        panel._video_list.setCurrentRow(1)
+        panel._crf_spin.setValue(panel._crf_spin.value() + 1)
+        dv = {v.source_path: v for v in panel.collect_config().video_tracks}[_PATH_A]
+        assert dv.codec == "libx265" and not (dv.inject_hdr_meta or dv.copy_dv or dv.copy_hdr10plus)
+        # Copy → HEVC sur la piste affichée : ses cases suivent l'intention, pas les cases imposées par Copy.
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "copy")
+        _select_codec(panel, "libx265")
+        assert not (panel._inject_hdr_cb.isChecked() or panel._copy_dv_cb.isChecked()
+                    or panel._copy_hdr10plus_cb.isChecked())
+    finally:
+        panel.close()
+
+
+def test_apply_all_activation_takes_the_displayed_track_memory(qt_app, monkeypatch):
+    """A HDR10 décochée ; B HDR10 cochée puis H.264 ; mode global activé depuis B : HDR10 voulu sur les deux pistes."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    path_b = Path("/tmp/film_b_hdr10.mkv")
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    tracks = []
+    for index, path in enumerate((_PATH_A, path_b)):
+        video = _video_track(0, HDRType.HDR10)
+        video.color_transfer = "smpte2084"
+        entry = _video_entry(index)
+        entry.entry_id = f"t{index}"
+        tracks.append((_file_info(path, [video], hdr_type=HDRType.HDR10), entry, _COLOR))
+    panel.set_video_tracks(tracks)
+    try:
+        _select_codec(panel, "libx265")
+        panel._inject_hdr_cb.click()  # A : HDR10 retiré (mode piste par piste)
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        assert panel._inject_hdr_cb.isChecked()
+        _select_codec(panel, "libx264")  # B : HDR10 mémorisé par le codec sans HDR
+        panel._on_apply_all_video_toggled(True)
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert settings[_PATH_A].inject_hdr_meta and settings[path_b].inject_hdr_meta
+        # Désactivation puis réactivation depuis une piste en H.264 : sa mémoire fait encore foi.
+        panel._on_apply_all_video_toggled(False)
+        panel._inject_hdr_cb.click()  # A : retiré, mode piste par piste
+        _select_codec(panel, "libx264")
+        panel._on_apply_all_video_toggled(True)
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert not settings[_PATH_A].inject_hdr_meta and not settings[path_b].inject_hdr_meta
+    finally:
+        panel.close()
+
+
+def test_apply_all_intent_survives_list_changes_and_is_cleared_by_reset(qt_app, monkeypatch):
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        hdr_track, sdr_track = panel._video_tracks
+        panel._inject_hdr_cb.click()  # intention commune : HDR10 retiré
+        panel.set_video_tracks([sdr_track])  # retrait de la dernière piste HDR10
+        panel.set_video_tracks([sdr_track, hdr_track])  # ajout ultérieur
+        assert not {v.source_path: v for v in panel.collect_config().video_tracks}[_PATH_A].inject_hdr_meta
+        other = _video_track(0, HDRType.HDR10)
+        other.color_transfer = "smpte2084"
+        entry = _video_entry(5)
+        entry.entry_id = "nouveau"
+        new_path = Path("/tmp/autre_film.mkv")
+        panel.set_video_tracks([(_file_info(new_path, [other], hdr_type=HDRType.HDR10), entry, _COLOR)])  # remplacées
+        assert not {v.source_path: v for v in panel.collect_config().video_tracks}[new_path].inject_hdr_meta
+        panel.reset()
+        assert panel._hdr_common_intent == {}
+    finally:
+        panel.close()
+
+
+def test_apply_all_explicit_tonemap_survives_an_sdr_round_trip_unlike_the_automatic_one(qt_app, monkeypatch):
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        _select_codec(panel, "libx264")  # tone mapping coché d'office (source HDR vers codec sans HDR)
+        assert panel._tonemap_cb.isChecked()
+        _select_codec(panel, "libx265")
+        assert not panel._tonemap_cb.isChecked()  # retiré au retour : il était automatique
+        panel._tonemap_cb.click()  # choix explicite
+        _select_codec(panel, "libx264")
+        _select_codec(panel, "libx265")
+        settings = {v.source_path: v for v in panel.collect_config().video_tracks}
+        assert panel._tonemap_cb.isChecked() and settings[_PATH_A].tonemap_to_sdr
+    finally:
+        panel.close()
+
+
+def test_restored_track_states_with_and_without_explicit_markers(qt_app, monkeypatch):
+    """État d'une session antérieure (sans marqueurs) : provenance par comparaison ; avec marqueurs : saisie gardée."""
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    path_a, path_b = Path("/tmp/sdr_a.mkv"), Path("/tmp/sdr_b.mkv")
+    panel.set_video_tracks([_sdr_track_with_source_cll(0, path_a), _sdr_track_with_source_cll(1, path_b)])
+    try:
+        _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)  # état de la piste 0 remplacé hors affichage
+        base = dict(panel._video_settings_by_entry_id["sdr0"])
+        for markers, expected in (({}, False), ({"static_hdr_manual": True}, True),
+                                  ({"static_hdr_max_cll_manual": True}, True)):
+            state = {**base, "inject_hdr_meta": True, "dynamic_hdr_disabled_by_codec": [False, False], **markers}
+            for key in ("static_hdr_manual", "static_hdr_max_cll_manual", "static_hdr_master_display_manual"):
+                state.setdefault(key, False) if markers else state.pop(key, None)
+            panel._video_settings_by_entry_id["sdr0"] = state
+            panel._video_list.setCurrentRow(1)
+            panel._video_list.setCurrentRow(0)  # état restauré relu par le panneau
+            panel._video_list.setCurrentRow(1)
+            a = {v.source_path: v for v in panel.collect_config().video_tracks}[path_a]
+            assert a.inject_hdr_meta is expected, markers
+    finally:
+        panel.close()
+
+
+# --- Huitième audit : aperçu = lancement, provenance liée à la valeur, tone mapping par source ---------------
+
+_CLL_RAW = {"side_data_list": [{"side_data_type": "Content light level metadata", "max_content": 1000,
+                                "max_average": 400}]}
+
+
+def _hdr_entry(index: int, path: Path, hdr: HDRType, transfer: str, raw: dict | None = None):
+    video = _video_track(0, hdr)
+    video.color_transfer = transfer
+    video.raw = dict(raw or {})
+    entry = _video_entry(index)
+    entry.entry_id = f"v{index}"
+    return _file_info(path, [video], hdr_type=hdr), entry, _COLOR
+
+
+_HDR_COMPARED = ("inject_hdr_meta", "master_display", "max_cll", "static_hdr_light_level_source",
+                 "static_hdr_master_display_source", "tonemap_to_sdr", "copy_dv", "copy_hdr10plus")
+
+
+@pytest.mark.parametrize("apply_all", [False, True])
+@pytest.mark.parametrize("hdr, transfer, raw, codec, action, injected", [
+    (HDRType.NONE, "bt709", None, "libx265", "click", False),        # case cochée, champs vides : rien
+    (HDRType.NONE, "bt709", _CLL_RAW, "libx265", "click", True),     # case cochée, valeur de la source
+    (HDRType.NONE, "bt709", None, "libx265", "type", True),          # valeur saisie
+    (HDRType.HLG, "arib-std-b67", None, "libx265", "click", False),  # HLG : transfert HLG gardé
+    (HDRType.HDR10, "smpte2084", None, "libx265", "", True),         # HDR10 aux champs vides : complété au lancement
+    (HDRType.HDR10, "smpte2084", _CLL_RAW, "libx264", "", False),    # tone mapping automatique
+    (HDRType.HDR10, "smpte2084", _CLL_RAW, "copy", "", True),
+])
+def test_preview_and_launch_give_the_displayed_track_the_same_hdr_settings(
+        qt_app, monkeypatch, apply_all, hdr, transfer, raw, codec, action, injected):
+    """Défaut de l'audit 8 : l'aperçu marquait PQ une source SDR à champs vides que le lancement n'injectait pas."""
+    from PySide6.QtTest import QTest
+
+    from core.workflows.encode.domain.codecs import output_hdr_transfer
+
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    path = Path("/tmp/displayed.mkv")
+    panel.set_video_tracks([_hdr_entry(0, path, hdr, transfer, raw),
+                            _hdr_entry(1, Path("/tmp/other.mkv"), HDRType.NONE, "bt709")])
+    try:
+        panel._apply_all_video_cb.setChecked(apply_all)
+        _select_codec(panel, codec)
+        if action in ("click", "type"):
+            panel._inject_hdr_cb.click()
+        if action == "type":
+            panel._max_cll.clear()
+            QTest.keyClicks(panel._max_cll, "2000,500")
+        preview_config = panel._current_preview_config()
+        assert preview_config is not None
+        preview = preview_config.video_tracks[0]
+        launch = {v.source_path: v for v in panel.collect_config().video_tracks}[path]
+        assert {k: getattr(preview, k) for k in _HDR_COMPARED} == {k: getattr(launch, k) for k in _HDR_COMPARED}
+        assert output_hdr_transfer(preview) == output_hdr_transfer(launch)
+        assert launch.inject_hdr_meta is injected
+        if hdr == HDRType.HLG:
+            assert output_hdr_transfer(launch) == "hlg"
+    finally:
+        panel.close()
+
+
+def _hdr_panel(monkeypatch, *entries):
+    monkeypatch.setattr(EncodePanel, "_detect_hw_encoders", lambda self: None)
+    panel = EncodePanel(AppConfig())
+    panel.set_output_provider(lambda: Path("/tmp/out.mkv"))
+    panel.set_video_tracks(list(entries))
+    return panel
+
+
+def _launched(panel, path: Path):
+    return {v.source_path: v for v in panel.collect_config().video_tracks}[path]
+
+
+def _type_cll(panel, text: str) -> None:
+    from PySide6.QtTest import QTest
+
+    panel._max_cll.clear()
+    QTest.keyClicks(panel._max_cll, text)
+
+
+_HDR10_PATH = Path("/tmp/hdr10.mkv")
+
+
+def test_replaced_sources_never_inherit_the_values_typed_on_the_previous_ones(qt_app, monkeypatch):
+    from core.fel.preparation import measures_light_levels
+
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        _type_cll(panel, "2000,500")
+        new_path = Path("/tmp/new.mkv")
+        panel.set_video_tracks([_hdr_entry(5, new_path, HDRType.HDR10, "smpte2084", _CLL_RAW)])
+        _select_codec(panel, "libx265")
+        settings = _launched(panel, new_path)
+        assert settings.max_cll == "1000,400" and settings.static_hdr_light_level_source == "source"
+        assert measures_light_levels(settings)  # FEL : la mesure peut remplacer la valeur de la source
+        assert panel._hdr_meta_provenance.text() == translate_text("Valeurs de la source.")
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("typed", ["2000,500", "1000,400"])  # différente ou identique à la source
+def test_copy_round_trip_returns_typed_values_to_the_source(qt_app, monkeypatch, typed):
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        _type_cll(panel, typed)
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "manual"
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")  # égale : saisie quand même
+        _select_codec(panel, "copy")
+        _select_codec(panel, "libx265")
+        settings = _launched(panel, _HDR10_PATH)
+        assert settings.max_cll == "1000,400" and settings.static_hdr_light_level_source == "source"
+        assert panel._hdr_meta_provenance.text() == translate_text("Valeurs de la source.")
+    finally:
+        panel.close()
+
+
+def test_source_values_button_and_redisplay_follow_the_value_shown(qt_app, monkeypatch):
+    other = Path("/tmp/other.mkv")
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW),
+                       _hdr_entry(1, other, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        _type_cll(panel, "1000,400")
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)  # réaffichage : saisie gardée
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "manual"
+        panel._restore_source_hdr_metadata()  # « Valeurs source »
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "source"
+        _type_cll(panel, "")  # champ vidé : complété par la source, plus une saisie
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)
+        assert panel._max_cll.text() == "1000,400"
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "source"
+        panel._video_list.setCurrentRow(1)  # état de la piste 0 remplacé hors affichage
+        panel._video_settings_by_entry_id["v0"].update(max_cll="", static_hdr_max_cll_manual=True)
+        panel._video_list.setCurrentRow(0)  # état relu : marqueur d'un champ vide, valeur complétée par la source
+        assert panel._max_cll.text() == "1000,400" and not panel._static_hdr_field_manual["max_cll"]
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "source"
+    finally:
+        panel.close()
+
+
+def test_hdr_studio_choice_is_an_explicit_value_even_when_equal_to_the_source(qt_app, monkeypatch):
+    from core.fel.preparation import measures_light_levels
+
+    sdr = Path("/tmp/sdr.mkv")
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW),
+                       _hdr_entry(1, sdr, HDRType.NONE, "bt709", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        assert panel.apply_static_light_levels(_HDR10_PATH, 0, 1000, 400)
+        settings = _launched(panel, _HDR10_PATH)
+        assert settings.static_hdr_light_level_source == "manual" and not measures_light_levels(settings)
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")
+        assert not _launched(panel, sdr).inject_hdr_meta  # MaxCLL hérité : jamais injecté seul
+        assert panel.apply_static_light_levels(sdr, 1, 1000, 400)  # SDR : demande explicite → injection
+        assert _launched(panel, sdr).inject_hdr_meta
+    finally:
+        panel.close()
+
+
+def test_typed_values_take_precedence_over_a_p5_estimate_in_the_label(qt_app, monkeypatch):
+    video = _video_track(0, HDRType.DOLBY_VISION)
+    video.dovi_profile = 5
+    entry = _video_entry(0)
+    entry.entry_id = "video-p5"
+    panel = _hdr_panel(monkeypatch, (_file_info(_PATH_A, [video]), entry, _COLOR))
+    try:
+        _select_codec(panel, "libx265")
+        panel._save_current_video_state()
+        panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] = "precise"
+        panel._on_static_hdr_estimate_ready("video-p5", StaticHdrEstimate(
+            master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+            max_cll="900,300", confidence="medium", sample_count=42, coverage=0.44, mode="precise"))
+        assert panel._hdr_meta_provenance.text().startswith(translate_text(
+            "Valeurs estimées (analyse P5→P8.1, confiance {confidence}).", confidence="medium")[:15])
+        assert _launched(panel, _PATH_A).static_hdr_light_level_source == "source"
+        _type_cll(panel, "900,300")  # même valeur, saisie par l'utilisateur
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+        assert _launched(panel, _PATH_A).static_hdr_light_level_source == "manual"
+    finally:
+        panel.close()
+
+
+def _tonemaps(panel) -> dict:
+    return {v.source_path: v.tonemap_to_sdr for v in panel.collect_config().video_tracks}
+
+
+def test_apply_all_automatic_tonemap_follows_each_source_whatever_track_is_displayed(qt_app, monkeypatch):
+    """Défaut antérieur (audit 8) : la piste HDR recevait le tone mapping de la piste SDR affichée."""
+    path_sdr = Path("/tmp/film_sdr.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (path_sdr, HDRType.NONE, "bt709"))
+    try:
+        panel._video_list.setCurrentRow(1)  # piste SDR affichée
+        _select_codec(panel, "libx264")
+        assert _tonemaps(panel) == {_PATH_A: True, path_sdr: False}
+        panel._video_list.setCurrentRow(0)
+        panel._video_list.setCurrentRow(1)
+        assert _tonemaps(panel) == {_PATH_A: True, path_sdr: False}
+        _select_codec(panel, "libx265")
+        assert _tonemaps(panel) == {_PATH_A: False, path_sdr: False}
+        _select_codec(panel, "libx264")
+        panel._tonemap_cb.click()  # choix explicite sur la piste affichée : commun à toutes
+        assert _tonemaps(panel) == {_PATH_A: True, path_sdr: True}
+        panel._tonemap_cb.click()
+        panel._video_list.setCurrentRow(0)
+        _select_codec(panel, "libx265")
+        _select_codec(panel, "libx264")
+        assert _tonemaps(panel) == {_PATH_A: False, path_sdr: False}  # refus commun gardé
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("apply_all", [False, True])
+def test_explicit_tonemap_choices_survive_codec_and_copy_cycles(qt_app, monkeypatch, apply_all):
+    other = Path("/tmp/other_hdr10.mkv")
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW),
+                       _hdr_entry(1, other, HDRType.HDR10, "smpte2084", _CLL_RAW))
+
+    def same_on_both(expected: bool) -> None:  # mode global : piste affichée et autre piste identiques
+        values = _tonemaps(panel)
+        assert values[_HDR10_PATH] is expected
+        if apply_all:
+            assert values[other] is expected
+
+    try:
+        panel._apply_all_video_cb.setChecked(apply_all)
+        _select_codec(panel, "libx264")
+        assert panel._tonemap_cb.isChecked()  # automatique
+        for codec in ("copy", "libx264"):  # Copy impose « sans » : jamais un refus de l'utilisateur
+            _select_codec(panel, codec)
+        assert panel._tonemap_cb.isChecked()
+        panel._tonemap_cb.click()  # refus explicite
+        for codec in ("libx265", "copy", "libx264"):
+            _select_codec(panel, codec)
+        assert not panel._tonemap_cb.isChecked()
+        same_on_both(False)
+        _select_codec(panel, "libx265")
+        panel._tonemap_cb.click()  # choix explicite sur un codec HDR
+        for codec in ("copy", "libx265"):
+            _select_codec(panel, codec)
+        assert panel._tonemap_cb.isChecked()
+        same_on_both(True)
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("legacy, codec_after, expected", [
+    ({"codec": "libx264", "tonemap_to_sdr": False, "tonemap_enabled_by_codec": False}, "libx264", False),  # refus
+    ({"codec": "libx264", "tonemap_to_sdr": True, "tonemap_enabled_by_codec": True}, "libx265", False),   # auto
+    ({"codec": "libx265", "tonemap_to_sdr": True, "tonemap_enabled_by_codec": False}, "libx264", True),   # choix
+    ({"codec": "libx265", "tonemap_to_sdr": False, "tonemap_enabled_by_codec": False}, "libx264", True),  # défaut
+])
+def test_restored_states_without_a_tonemap_choice_keep_their_meaning(qt_app, monkeypatch, legacy, codec_after,
+                                                                     expected):
+    other = Path("/tmp/other.mkv")
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW),
+                       _hdr_entry(1, other, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)  # état de la piste 0 remplacé hors affichage
+        state = dict(panel._video_settings_by_entry_id["v0"])
+        state.pop("tonemap_choice", None)
+        panel._video_settings_by_entry_id["v0"] = {**state, **legacy}  # session antérieure
+        panel._video_list.setCurrentRow(0)
+        assert panel._codec_combo.currentData() == legacy["codec"]  # état relu tel quel
+        if codec_after != legacy["codec"]:
+            _select_codec(panel, codec_after)
+        else:
+            _select_codec(panel, "libx265")
+            _select_codec(panel, codec_after)
+        assert _tonemaps(panel)[_HDR10_PATH] is expected
+    finally:
+        panel.close()
+
+
+# --- Neuvième audit : choix commun du tone mapping, sondes asynchrones, codec sans édition HDR10 -------------
+
+
+def test_apply_all_common_tonemap_choice_reaches_the_displayed_track_after_copy_and_new_sources(qt_app, monkeypatch):
+    other = Path("/tmp/other_hdr10.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (other, HDRType.HDR10, "smpte2084"))
+    try:
+        panel._tonemap_cb.click()  # choix commun : tone mapping sur codec HDR
+        _select_codec(panel, "copy")
+        new_a, new_b = Path("/tmp/new_a.mkv"), Path("/tmp/new_b.mkv")
+        panel.set_video_tracks([_hdr_entry(5, new_a, HDRType.HDR10, "smpte2084"),
+                                _hdr_entry(6, new_b, HDRType.HDR10, "smpte2084")])
+        _select_codec(panel, "libx265")
+        assert panel._tonemap_cb.isChecked() and _tonemaps(panel) == {new_a: True, new_b: True}
+        _select_codec(panel, "copy")
+        added = Path("/tmp/added.mkv")  # piste ajoutée pendant que la piste affichée est en Copy
+        panel.set_video_tracks([_hdr_entry(5, new_a, HDRType.HDR10, "smpte2084"),
+                                _hdr_entry(6, new_b, HDRType.HDR10, "smpte2084"),
+                                _hdr_entry(7, added, HDRType.HDR10, "smpte2084")])
+        panel._video_list.setCurrentRow(2)
+        _select_codec(panel, "libx265")
+        assert panel._tonemap_cb.isChecked() and _tonemaps(panel)[added]
+    finally:
+        panel.close()
+
+
+_SOURCE_MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50)"
+
+
+@pytest.mark.parametrize("retyped", [True, False])
+@pytest.mark.parametrize("path", ["track", "frames"])
+def test_late_source_probe_never_reclassifies_an_explicit_entry(qt_app, monkeypatch, retyped, path):
+    """Sonde des valeurs de la source en cours ; saisie identique pendant ce temps : elle reste une saisie."""
+    from core.fel.preparation import measures_light_levels
+
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW)  # Master Display manquant
+    panel = _hdr_panel(monkeypatch, entry)
+    try:
+        _select_codec(panel, "libx265")
+        assert panel._max_cll.text() == "1000,400" and panel._master_display.text() == ""
+        if path == "frames":
+            panel._hdr_meta_probe_expected = (panel._hdr_meta_probe_generation, "", "1000,400")
+        if retyped:
+            _type_cll(panel, "1000,400")
+        if path == "track":
+            panel._track_hdr_requests["v0"] = entry[0]
+            panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": "1000,400"}, _SOURCE_MD,
+                                   "1000,400")
+        else:
+            panel._on_hdr_meta_frame_probe_ready(panel._hdr_meta_probe_generation, _SOURCE_MD, "1000,400")
+        settings = _launched(panel, _HDR10_PATH)
+        assert settings.master_display == _SOURCE_MD and settings.static_hdr_master_display_source == "source"
+        assert settings.max_cll == "1000,400"
+        assert settings.static_hdr_light_level_source == ("manual" if retyped else "source")
+        assert measures_light_levels(settings) is not retyped  # mesure FEL : jamais à la place d'une saisie
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("apply_all", [False, True])
+@pytest.mark.parametrize("typed", ["1000,400", "2000,500"])
+def test_codec_without_hdr10_editing_returns_every_track_to_the_source_values(qt_app, monkeypatch, apply_all, typed):
+    """Même règle pour la piste affichée et les autres : un codec sans édition HDR10 rend les valeurs de la source."""
+    other = Path("/tmp/other_hdr10.mkv")
+    panel = _hdr_panel(monkeypatch, _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW),
+                       _hdr_entry(1, other, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        for row in (0, 1):
+            panel._video_list.setCurrentRow(row)
+            _select_codec(panel, "libx265")
+            _type_cll(panel, typed)
+        panel._video_list.setCurrentRow(0)
+        panel._apply_all_video_cb.setChecked(apply_all)
+        assert {_launched(panel, p).static_hdr_light_level_source for p in (_HDR10_PATH, other)} == {"manual"}
+        rows = (0,) if apply_all else (0, 1)
+        for row in rows:
+            panel._video_list.setCurrentRow(row)
+            for codec in ("libx264", "libx265"):
+                _select_codec(panel, codec)
+        for p in (_HDR10_PATH, other):
+            settings = _launched(panel, p)
+            assert (settings.max_cll, settings.static_hdr_light_level_source) == ("1000,400", "source"), p
+    finally:
+        panel.close()
+
+
+def test_apply_all_common_tonemap_choice_overrides_a_contradicting_restored_state(qt_app, monkeypatch):
+    other = Path("/tmp/other_hdr10.mkv")
+    panel = _apply_all_panel(monkeypatch, (_PATH_A, HDRType.HDR10, "smpte2084"), (other, HDRType.HDR10, "smpte2084"))
+    try:
+        panel._tonemap_cb.click()  # choix commun : vrai
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "copy")  # piste affichée en Copy : plus aucune propagation vers la piste 0
+        first = panel._video_entry_id(panel._video_tracks[0][1])
+        panel._video_settings_by_entry_id[first].update(tonemap_choice=False, tonemap_to_sdr=False)  # état relu
+        panel._video_list.setCurrentRow(0)
+        assert panel._codec_combo.currentData() == "libx265"  # état de la piste 0 relu tel quel
+        assert panel._tonemap_cb.isChecked() and panel._tonemap_choice is True
+        preview = panel._current_preview_config().video_tracks[0]
+        assert preview.tonemap_to_sdr and _tonemaps(panel)[_PATH_A]
+    finally:
+        panel.close()
+
+
+def test_late_probe_keeps_a_master_display_typed_identical_to_the_value_it_finds(qt_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW)
+    panel = _hdr_panel(monkeypatch, entry)
+    try:
+        _select_codec(panel, "libx265")
+        panel._master_display.clear()
+        QTest.keyClicks(panel._master_display, _SOURCE_MD)  # saisi avant que la sonde ne le trouve
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": "1000,400"}, _SOURCE_MD, "1000,400")
+        settings = _launched(panel, _HDR10_PATH)
+        assert settings.master_display == _SOURCE_MD and settings.static_hdr_master_display_source == "manual"
+        assert settings.static_hdr_light_level_source == "source"
+    finally:
+        panel.close()
+
+
+def test_late_probe_of_a_hidden_track_or_of_replaced_sources(qt_app, monkeypatch):
+    other = Path("/tmp/other_hdr10.mkv")
+    first, second = (_hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW),
+                     _hdr_entry(1, other, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    panel = _hdr_panel(monkeypatch, first, second)
+    try:
+        _select_codec(panel, "libx265")
+        _type_cll(panel, "1000,400")  # saisie identique sur la piste 0
+        panel._video_list.setCurrentRow(1)  # piste 0 cachée au retour de sa sonde
+        panel._track_hdr_requests["v0"] = first[0]
+        panel._apply_track_hdr("v0", first[0], {"master_display": "", "max_cll": "1000,400"}, _SOURCE_MD, "1000,400")
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "manual"
+        assert panel._video_settings_by_entry_id["v0"]["default_master_display"] == _SOURCE_MD
+        new = Path("/tmp/new.mkv")
+        stale_info = second[0]
+        panel.set_video_tracks([_hdr_entry(1, new, HDRType.HDR10, "smpte2084", _CLL_RAW)])  # sources remplacées
+        panel._apply_track_hdr("v1", stale_info, {"master_display": "", "max_cll": "1000,400"}, _SOURCE_MD, "9,9")
+        assert panel._video_settings_by_entry_id["v1"].get("max_cll") != "9,9"  # résultat périmé ignoré
+    finally:
+        panel.close()
+
+
+def _p5_panel(monkeypatch):
+    video = _video_track(0, HDRType.DOLBY_VISION)
+    video.dovi_profile = 5
+    entry = _video_entry(0)
+    entry.entry_id = "video-p5"
+    panel = _hdr_panel(monkeypatch, (_file_info(_PATH_A, [video]), entry, _COLOR))
+    _select_codec(panel, "libx265")
+    panel._save_current_video_state()
+    return panel
+
+
+_P5_ESTIMATE = dict(master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+                    max_cll="900,300", confidence="medium", sample_count=42, coverage=0.44, mode="precise")
+
+
+def test_late_p5_estimate_never_replaces_an_entry_but_completes_empty_fields(qt_app, monkeypatch):
+    panel = _p5_panel(monkeypatch)
+    try:
+        state = panel._video_settings_by_entry_id["video-p5"]
+        state.update(static_hdr_metadata_analysis_request="precise", static_hdr_metadata_source="estimated_p5_to_p8",
+                     max_cll="800,200", default_max_cll="900,300", static_hdr_max_cll_manual=True)
+        panel._on_static_hdr_estimate_ready("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        assert panel._video_settings_by_entry_id["video-p5"]["max_cll"] == "800,200"  # saisie gardée
+        state = panel._video_settings_by_entry_id["video-p5"]
+        state.update(static_hdr_metadata_analysis_request="precise", static_hdr_metadata_source="",
+                     master_display="", max_cll="", static_hdr_master_display_manual=True,
+                     static_hdr_max_cll_manual=True)  # champs vides, anciens marqueurs : jamais manuels
+        panel._on_static_hdr_estimate_ready("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        assert panel._video_settings_by_entry_id["video-p5"]["max_cll"] == "900,300"
+    finally:
+        panel.close()
+
+
+# --- Dixième audit : anciens états face aux sondes, libellé après sonde, estimation P5 par signal -------------
+
+_MANUAL_MD = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(40000000,50)"
+
+
+@pytest.mark.parametrize("probe", ["track", "frames"])
+@pytest.mark.parametrize("field", ["max_cll", "master_display"])
+def test_late_probe_keeps_a_manual_value_of_an_old_state_without_markers(qt_app, monkeypatch, field, probe):
+    """État d'une version antérieure : saisie reconnue par comparaison à la source, jamais par marqueur."""
+    from core.fel.preparation import measures_light_levels
+
+    raw = _CLL_RAW if field == "max_cll" else None  # l'autre champ manque : la sonde est lancée
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", raw)
+    other = _hdr_entry(1, Path("/tmp/other_hdr10.mkv"), HDRType.HDR10, "smpte2084", _CLL_RAW)
+    panel = _hdr_panel(monkeypatch, entry, other)
+    try:
+        _select_codec(panel, "libx265")
+        panel._video_list.setCurrentRow(1)  # état de la piste 0 remplacé hors affichage
+        manual = "2000,500" if field == "max_cll" else _MANUAL_MD
+        state = panel._video_settings_by_entry_id["v0"]
+        state[field] = manual
+        for marker in ("static_hdr_manual", "static_hdr_master_display_manual", "static_hdr_max_cll_manual"):
+            state.pop(marker, None)
+        panel._video_list.setCurrentRow(0)
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == (
+            "manual" if field == "max_cll" else "source")
+        expected = {"master_display": state.get("master_display", ""), "max_cll": state.get("max_cll", "")}
+        if probe == "track":
+            panel._track_hdr_requests["v0"] = entry[0]
+            panel._apply_track_hdr("v0", entry[0], expected, _SOURCE_MD, "1000,400")
+        else:
+            panel._hdr_meta_probe_expected = (panel._hdr_meta_probe_generation, expected["master_display"],
+                                              expected["max_cll"])
+            panel._on_hdr_meta_frame_probe_ready(panel._hdr_meta_probe_generation, _SOURCE_MD, "1000,400")
+        settings = _launched(panel, _HDR10_PATH)
+        assert getattr(settings, field) == manual
+        source_field = "static_hdr_light_level_source" if field == "max_cll" else "static_hdr_master_display_source"
+        assert getattr(settings, source_field) == "manual"
+        # FEL : décision sur MaxCLL seul — saisi : jamais mesuré ; Master Display seul saisi : MaxCLL mesurable.
+        assert measures_light_levels(settings) is (field == "master_display")
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+    finally:
+        panel.close()
+
+
+def test_label_and_source_button_follow_values_completed_by_the_track_probe(qt_app, monkeypatch):
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084")  # aucune valeur connue
+    panel = _hdr_panel(monkeypatch, entry)
+    try:
+        _select_codec(panel, "libx265")
+        assert not panel._hdr_meta_source_btn.isEnabled()
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": ""}, _SOURCE_MD, "1000,400")
+        assert panel._hdr_meta_provenance.text() == translate_text("Valeurs de la source.")
+        assert panel._hdr_meta_source_btn.isEnabled()
+        assert _launched(panel, _HDR10_PATH).static_hdr_light_level_source == "source"
+    finally:
+        panel.close()
+
+
+def test_p5_estimate_delivered_by_the_workflow_signal_respects_entries(qt_app, monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+
+    panel = _p5_panel(monkeypatch)
+    try:
+        state = panel._video_settings_by_entry_id["video-p5"]
+        state.update(static_hdr_metadata_analysis_request="precise", static_hdr_metadata_source="estimated_p5_to_p8",
+                     max_cll="800,200", default_max_cll="900,300", static_hdr_max_cll_manual=True)
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        QCoreApplication.processEvents()  # connexion en file : livrée par la boucle Qt
+        assert panel._video_settings_by_entry_id["video-p5"]["max_cll"] == "800,200"
+        state = panel._video_settings_by_entry_id["video-p5"]
+        state.update(static_hdr_metadata_analysis_request="precise", static_hdr_metadata_source="",
+                     master_display="", max_cll="")
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        QCoreApplication.processEvents()
+        assert panel._video_settings_by_entry_id["video-p5"]["max_cll"] == "900,300"
+        assert panel._max_cll.text() == "900,300"
+    finally:
+        panel.close()
+
+
+def _hide_first_and_set_old_state(panel, **values) -> None:
+    """État d'une version antérieure posé sur la piste 0 pendant que la piste 1 est affichée (sans marqueurs)."""
+    panel._video_list.setCurrentRow(1)
+    state = panel._video_settings_by_entry_id["v0"]
+    state.update(values)
+    for marker in ("static_hdr_manual", "static_hdr_master_display_manual", "static_hdr_max_cll_manual"):
+        state.pop(marker, None)
+
+
+def _hdr_sources(settings) -> tuple[str, str]:
+    return settings.static_hdr_master_display_source, settings.static_hdr_light_level_source
+
+
+@pytest.mark.parametrize("probe", ["track", "frames"])
+@pytest.mark.parametrize("field", ["max_cll", "master_display"])
+def test_old_value_identical_to_the_probe_result_keeps_its_provenance_through_redisplay(qt_app, monkeypatch, field,
+                                                                                       probe):
+    """Cas décisif : référence absente, ancienne valeur égale au résultat — la provenance survit au complément."""
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084")  # aucune valeur de la source connue
+    panel = _hdr_panel(monkeypatch, entry, _hdr_entry(1, Path("/tmp/other_hdr10.mkv"), HDRType.HDR10, "smpte2084"))
+    try:
+        _select_codec(panel, "libx265")
+        old = "1000,400" if field == "max_cll" else _SOURCE_MD  # égale à ce que la sonde va trouver
+        _hide_first_and_set_old_state(panel, **{field: old, f"default_{field}": ""})
+        panel._video_list.setCurrentRow(0)
+        expected = {"master_display": panel._master_display.text(), "max_cll": panel._max_cll.text()}
+        assert expected[field] == old
+        if probe == "track":
+            panel._track_hdr_requests["v0"] = entry[0]
+            panel._apply_track_hdr("v0", entry[0], expected, _SOURCE_MD, "1000,400")
+        else:
+            panel._hdr_meta_probe_expected = (panel._hdr_meta_probe_generation, expected["master_display"],
+                                              expected["max_cll"])
+            panel._on_hdr_meta_frame_probe_ready(panel._hdr_meta_probe_generation, _SOURCE_MD, "1000,400")
+        assert panel._video_settings_by_entry_id["v0"][f"default_{field}"] == old
+        panel._video_list.setCurrentRow(1)
+        panel._video_list.setCurrentRow(0)  # sauvegarde puis réaffichage
+        preview = panel._current_preview_config().video_tracks[0]
+        launch = _launched(panel, _HDR10_PATH)
+        wanted = ("source", "manual") if field == "max_cll" else ("manual", "source")
+        assert _hdr_sources(preview) == _hdr_sources(launch) == wanted
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+    finally:
+        panel.close()
+
+
+def test_apply_all_old_state_of_a_hidden_track_never_contaminates_the_other_track(qt_app, monkeypatch):
+    from core.fel.preparation import measures_light_levels
+
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW)
+    other_path = Path("/tmp/other_hdr10.mkv")
+    panel = _hdr_panel(monkeypatch, entry, _hdr_entry(1, other_path, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        _select_codec(panel, "libx265")
+        panel._apply_all_video_cb.setChecked(True)
+        _hide_first_and_set_old_state(panel, max_cll="2000,500")
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": "2000,500"}, _SOURCE_MD, "1000,400")
+        hidden, shown = _launched(panel, _HDR10_PATH), _launched(panel, other_path)
+        assert (hidden.max_cll, hidden.static_hdr_light_level_source) == ("2000,500", "manual")
+        assert not measures_light_levels(hidden)
+        assert (shown.max_cll, shown.static_hdr_light_level_source) == ("1000,400", "source")
+        assert measures_light_levels(shown)
+    finally:
+        panel.close()
+
+
+def test_partial_probe_keeps_the_manual_label_and_copy_keeps_the_read_only_one(qt_app, monkeypatch):
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW)  # Master Display manquant
+    panel = _hdr_panel(monkeypatch, entry)
+    try:
+        _select_codec(panel, "libx265")
+        _type_cll(panel, "2000,500")
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": "2000,500"}, _SOURCE_MD, "")
+        assert panel._master_display.text() == _SOURCE_MD
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+        assert _hdr_sources(_launched(panel, _HDR10_PATH)) == ("source", "manual")
+    finally:
+        panel.close()
+    entry = _hdr_entry(0, _HDR10_PATH, HDRType.HDR10, "smpte2084")
+    panel = _hdr_panel(monkeypatch, entry)  # Copy ordinaire : valeurs de la source, non modifiables
+    try:
+        assert panel._codec_combo.currentData() == "copy"
+        assert panel._max_cll.isReadOnly()  # défaut antérieur : piste sans état affichée en Copy modifiable
+        panel._track_hdr_requests["v0"] = entry[0]
+        panel._apply_track_hdr("v0", entry[0], {"master_display": "", "max_cll": ""}, _SOURCE_MD, "1000,400")
+        assert panel._hdr_meta_provenance.text() == translate_text(
+            "Valeurs de la source, non modifiables avec ce codec.")
+        assert not panel._hdr_meta_source_btn.isEnabled() and panel._max_cll.isReadOnly()
+    finally:
+        panel.close()
+
+
+def test_hdr10_fields_editability_follows_the_shared_rule_in_the_panel(qt_app, monkeypatch):
+    video = _video_track(0, HDRType.DOLBY_VISION)
+    video.dovi_profile, video.dovi_compat_id, video.color_transfer = 7, 6, "smpte2084"
+    video.raw = dict(_CLL_RAW)
+    entry = _video_entry(0)
+    entry.entry_id = "dv"
+    panel = _hdr_panel(monkeypatch, (_file_info(_PATH_A, [video], hdr_type=HDRType.DOLBY_VISION), entry, _COLOR))
+    try:
+        _select_codec(panel, "libx265")
+        assert not panel._max_cll.isReadOnly()  # codec éditable
+        _select_codec(panel, "copy")
+        assert panel._max_cll.isReadOnly()  # Copy ordinaire
+        assert panel._copy_dv_cb.isChecked() and panel._inject_hdr_cb.isChecked()
+        panel._dovi_p81_cb.click()  # Copy + DV normalisé P8.1 + HDR10 injecté : exception
+        assert panel._dovi_profile_choice == "2" and not panel._max_cll.isReadOnly()
+        _type_cll(panel, "1000,400")
+        assert _launched(panel, _PATH_A).static_hdr_light_level_source == "manual"
+    finally:
+        panel.close()
+
+
+def test_p5_estimate_delivered_after_a_user_entry_never_replaces_it(qt_app, monkeypatch):
+    from PySide6.QtCore import QCoreApplication
+
+    panel = _p5_panel(monkeypatch)
+    try:
+        panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] = "precise"
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))  # en file
+        _type_cll(panel, "800,200")  # saisie avant la livraison du résultat
+        QCoreApplication.processEvents()
+        assert panel._max_cll.text() == "800,200"
+        assert _launched(panel, _PATH_A).static_hdr_light_level_source == "manual"
+    finally:
+        panel.close()
+    panel = _p5_panel(monkeypatch)
+    try:  # succès : valeurs estimées, provenance automatique
+        panel._video_settings_by_entry_id["video-p5"]["static_hdr_metadata_analysis_request"] = "precise"
+        panel._workflow.static_hdr_estimate_ready.emit("video-p5", StaticHdrEstimate(**_P5_ESTIMATE))
+        QCoreApplication.processEvents()
+        settings = _launched(panel, _PATH_A)
+        assert settings.max_cll == "900,300" and _hdr_sources(settings) == ("source", "source")
+        assert settings.static_hdr_metadata_source == "estimated_p5_to_p8"
+    finally:
+        panel.close()
+
+
+# --- Onzième audit : restauration atomique d'un état Copy + Dolby Vision normalisé P8.1 -------------------------
+
+
+def _dv_p7_entry(index: int, path: Path):
+    video = _video_track(0, HDRType.DOLBY_VISION)
+    video.dovi_profile, video.dovi_compat_id, video.color_transfer = 7, 6, "smpte2084"
+    video.raw = dict(_CLL_RAW)
+    entry = _video_entry(index)
+    entry.entry_id = f"v{index}"
+    return _file_info(path, [video], hdr_type=HDRType.DOLBY_VISION), entry, _COLOR
+
+
+@pytest.mark.parametrize("apply_all", [False, True])
+def test_copy_p81_entries_survive_displaying_a_track_without_dovi(qt_app, monkeypatch, apply_all):
+    from PySide6.QtTest import QTest
+
+    dv_path = Path("/tmp/dv_p7.mkv")
+    panel = _hdr_panel(monkeypatch, _dv_p7_entry(0, dv_path),
+                       _hdr_entry(1, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        panel._apply_all_video_cb.setChecked(apply_all)
+        assert panel._codec_combo.currentData() == "copy"
+        panel._dovi_p81_cb.click()  # Copy + DV normalisé P8.1 + HDR10 injecté : HDR10 modifiable
+        assert not panel._max_cll.isReadOnly()
+        panel._master_display.clear()
+        QTest.keyClicks(panel._master_display, _MANUAL_MD)
+        _type_cll(panel, "2000,500")
+        panel._video_list.setCurrentRow(1)  # piste HDR10 sans DV, en Copy
+        panel._video_list.setCurrentRow(0)
+        assert (panel._master_display.text(), panel._max_cll.text()) == (_MANUAL_MD, "2000,500")
+        assert not panel._max_cll.isReadOnly() and panel._dovi_p81_cb.isChecked()
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
+        state = panel._video_settings_by_entry_id["v0"]
+        assert state["static_hdr_master_display_manual"] and state["static_hdr_max_cll_manual"]
+        preview = panel._current_preview_config().video_tracks[0]
+        launch = _launched(panel, dv_path)
+        for settings in (preview, launch):
+            assert (settings.master_display, settings.max_cll) == (_MANUAL_MD, "2000,500")
+            assert _hdr_sources(settings) == ("manual", "manual")
+    finally:
+        panel.close()
+
+
+def test_apply_all_reencoding_propagates_without_losing_copy_p81_entries(qt_app, monkeypatch):
+    from PySide6.QtTest import QTest
+
+    dv_path = Path("/tmp/dv_p7.mkv")
+    panel = _hdr_panel(monkeypatch, _dv_p7_entry(0, dv_path),
+                       _hdr_entry(1, _HDR10_PATH, HDRType.HDR10, "smpte2084", _CLL_RAW))
+    try:
+        panel._dovi_p81_cb.click()  # Copy + P8.1 : HDR10 modifiable
+        panel._master_display.clear()
+        QTest.keyClicks(panel._master_display, _MANUAL_MD)
+        _type_cll(panel, "2000,500")
+        panel._apply_all_video_cb.setChecked(True)
+        panel._video_list.setCurrentRow(1)
+        _select_codec(panel, "libx265")  # réencodage : propagé à la piste P7
+        launch = _launched(panel, dv_path)
+        assert launch.codec == "libx265"  # propagation effective
+        assert (launch.master_display, launch.max_cll) == (_MANUAL_MD, "2000,500")
+        assert _hdr_sources(launch) == ("manual", "manual")
+        panel._video_list.setCurrentRow(0)
+        preview = panel._current_preview_config().video_tracks[0]
+        assert (preview.master_display, preview.max_cll) == (_MANUAL_MD, "2000,500")
+        assert _hdr_sources(preview) == ("manual", "manual")
+        assert panel._hdr_meta_provenance.text() == translate_text("Saisie manuelle.")
     finally:
         panel.close()

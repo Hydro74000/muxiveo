@@ -13,7 +13,10 @@ repli.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +32,7 @@ from core.workflows.common.metadata import matroska_video_tag_args
 from core.workflows.common.sync_rewrite import (
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
+    requested_audio_reencode,
 )
 from core.matroska.contract import (
     ExpectedMatroskaAttachment,
@@ -43,9 +47,7 @@ from core.workflows.remux_mapping import (
     normalized_language_value,
     resolve_mapped_tracks,
     track_order_parts,
-    track_sync_payload,
 )
-from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import (
     RemuxConfig,
     RemuxError,
@@ -53,7 +55,15 @@ from core.workflows.remux_models import (
     TrackEntry,
     normalize_mux_backend,
 )
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.native_stream_inputs import (
+    StreamTrackSpec, group_stream_specs, is_streamable_source, producer_command,
+)
 
+
+
+if TYPE_CHECKING:
+    from core.workflows.remux_sync_rewrite import SyncRewriteSettings
 
 MATROSKA_EXTENSIONS = frozenset({".mkv", ".webm", ".mka", ".mks", ".mk3d"})
 
@@ -251,21 +261,8 @@ def native_capability_reasons(
                     plan_subtitle_codec(track.codec)
                 except ValueError as exc:
                     reasons.append(f"{source.path.name}: {exc}")
-            if track.sync_rewrite_label and track.time_shift_ms and config.sync_mode != "physical":
-                reasons.append(
-                    f"{source.path.name}: réécriture de synchronisation avancée à matérialiser par FFmpeg"
-                )
-            if (
-                config.sync_mode != "physical"
-                and track.track_type in {"audio", "subtitle"}
-                and effective_calibration(
-                    track_sync_payload(config, track, source.file_index),
-                    track.track_type,
-                ) is not None
-            ):
-                reasons.append(
-                    f"{source.path.name}: synchronisation multi-segments à matérialiser par FFmpeg"
-                )
+            # Réécriture de synchro et calibrations multi-segments : matérialisées
+            # avant l'assemblage natif (remux_sync_rewrite), plus un blocage.
         if source.file_index not in participating:
             continue
         participation = participations[source.file_index]
@@ -400,6 +397,7 @@ def build_canonicalization_command(
         if codec_arg != "copy":
             command.extend([f"-c:s:{subtitle_index}", codec_arg])
         subtitle_index += 1
+    command.extend(matroska_output_args(ffmpeg_bin, target))
     command.append(str(target))
     return command
 
@@ -486,6 +484,9 @@ def plan_native_audio_variants(config: RemuxConfig) -> tuple[NativeAudioVariantP
         )
         if not needs_audio_encode:
             continue
+        # Variante demandée en copie (même codec, même description) : matérialisée par copie du flux,
+        # jamais réencodée (l'E-AC-3 Atmos perdrait ses objets) ; même règle que la commande FFmpeg.
+        copy = not requested_audio_reencode(track)
         bitrate = audio_bitrate_kbps_from_display_info(track.display_info)
         channel_match = re.search(r"\b(\d)\.(\d)\b", str(track.display_info or ""))
         channel_count = sum(map(int, channel_match.groups())) if channel_match else 0
@@ -495,9 +496,9 @@ def plan_native_audio_variants(config: RemuxConfig) -> tuple[NativeAudioVariantP
             stream_index=mkv_tid,
             entry_id=track.entry_id,
             target_codec=target,
-            encoder=NATIVE_AUDIO_VARIANT_ENCODERS[target],
-            bitrate_kbps=int(bitrate) if (target != "flac" and bitrate) else None,
-            downmix_51=(target == "ac3" and channel_count > 6),
+            encoder="copy" if copy else NATIVE_AUDIO_VARIANT_ENCODERS[target],
+            bitrate_kbps=int(bitrate) if (not copy and target != "flac" and bitrate) else None,
+            downmix_51=(not copy and target == "ac3" and channel_count > 6),
             target_name=f"audio_variant_{order_index}.mkv",
         ))
     return tuple(variants)
@@ -509,10 +510,18 @@ def build_audio_variant_command(
     stream_index: int,
     target: Path,
     ffmpeg_bin: str,
+    *,
+    copyts: bool = True,
 ) -> list[str]:
-    """Commande ffmpeg de matérialisation d'une variante audio isolée."""
+    """Commande ffmpeg de matérialisation d'une variante audio isolée.
+
+    `copyts` : horodatages de la source conservés (la variante démarre comme sa piste d'origine,
+    même quand l'audio ne démarre pas avec la vidéo) ; faux pour une piste réécrite par la synchro,
+    replacée ensuite d'après les origines.
+    """
     command = [
         ffmpeg_bin, "-y", "-nostdin", "-hide_banner", "-loglevel", "error",
+        *(["-copyts"] if copyts else []),
         "-i", str(source_path), "-map", f"0:{stream_index}",
         "-c:a", variant.encoder,
     ]
@@ -520,6 +529,7 @@ def build_audio_variant_command(
         command.extend(["-b:a", f"{variant.bitrate_kbps}k"])
     if variant.downmix_51:
         command.extend(["-ac:a", "6", "-channel_layout:a", "5.1"])
+    command.extend(matroska_output_args(ffmpeg_bin, target))
     command.append(str(target))
     return command
 
@@ -596,6 +606,47 @@ def _canonicalization_actions(
                 continue
             streams = [carrier]
             index_map = {carrier: 0}
+        if is_streamable_source(source.path):
+            # MP4/MOV : pistes lues en flux par l'assemblage natif, sans fichier
+            # intermédiaire. Aperçu = producteurs lancés (vidéo et audio sur un
+            # seul, chaque sous-titre sur le sien, dans l'ordre de sortie), et un
+            # producteur d'en-tête seul pour chapitres / tags globaux.
+            entries = {track.mkv_tid: track for track in source.tracks}
+
+            def _spec(stream: int, *, context: bool = False) -> StreamTrackSpec:
+                entry = entries.get(stream)
+                return StreamTrackSpec(
+                    source.path, stream, entry.track_type if entry is not None else "",
+                    (entry.codec if entry is not None else "") or "", carry_context=context,
+                )
+
+            routed = [stream for stream in streams if stream in index_map and selected.get(source.file_index)]
+            output_order = [
+                int(item[1]) for item in config.track_order
+                if int(item[0]) == source.file_index and int(item[1]) in routed
+            ]
+            ordered_streams = list(dict.fromkeys([*output_order, *routed]))
+            for group in group_stream_specs(_spec(stream) for stream in ordered_streams):
+                indexes = [str(spec.stream_index) for spec in group]
+                actions.append(RemuxPreparationAction(
+                    kind="stream_source",
+                    description=(
+                        f"Lecture en flux de {source.path.name} (flux {', '.join(indexes)}, sans fichier "
+                        "intermédiaire ; origine temporelle sondée au lancement)"
+                    ),
+                    source_file_index=source.file_index,
+                    target_name=f"stream_{source.file_index}_{'-'.join(indexes)}",
+                    command=tuple(producer_command(ffmpeg_bin, group)),
+                ))
+            carrier = min(streams)
+            actions.append(RemuxPreparationAction(
+                kind="stream_context",
+                description=f"En-tête de contexte de {source.path.name} (chapitres, tags globaux ; arrêt après l'en-tête)",
+                source_file_index=source.file_index,
+                target_name=f"stream_context_{source.file_index}",
+                command=tuple(producer_command(ffmpeg_bin, _spec(carrier, context=True))),
+            ))
+            continue
         index_maps[source.file_index] = index_map
         target_name = f"source_{source.file_index}.mkv"
         command = build_canonicalization_command(
@@ -659,21 +710,65 @@ def _attached_picture_actions(
     return actions
 
 
+def _planned_rewrite_codecs(intents, settings) -> dict[tuple[int, str], str | None]:
+    """Codec prévu de l'artefact de chaque piste audio réécrite (aperçu des variantes)."""
+    from core.workflows.common.sync_rewrite import planned_rewrite_codec
+    from core.workflows.remux_sync_rewrite import audio_rewrite_preserve_source
+
+    planned: dict[tuple[int, str], str | None] = {}
+    for intent in intents:
+        track = intent.mapped_track.track
+        if track.track_type != "audio":
+            continue
+        planned[(intent.mapped_track.source_file_index, track.entry_id)] = planned_rewrite_codec(
+            track.orig_codec or track.codec, track.codec,
+            preserve_source=audio_rewrite_preserve_source(track),
+            advanced_audio=bool(settings is not None and settings.advanced_audio),
+            offset_ms=intent.offset_ms,
+        )
+    return planned
+
+
 def _audio_variant_actions(
     config: RemuxConfig,
     ffmpeg_bin: str,
     variants: tuple[NativeAudioVariantPlan, ...],
+    rewritten: Mapping[tuple[int, str], str | None] | None = None,
 ) -> list[RemuxPreparationAction]:
+    """Actions des variantes ; ``rewritten`` : (source, entrée) réécrites → codec prévu de l'artefact."""
     actions: list[RemuxPreparationAction] = []
+    rewritten = rewritten or {}
     source_by_index = {source.file_index: source for source in config.sources}
     for variant in variants:
         source = source_by_index[variant.source_file_index]
+        key = (variant.source_file_index, variant.entry_id)
+        if key in rewritten:
+            # Même règle qu'à l'exécution (planned_rewrite_codec, commune au service).
+            planned = rewritten[key]
+            label = f"Variante audio {variant.target_codec.upper()} de {source.path.name} (piste #{variant.stream_index}) : "
+            if planned is None:
+                branch = "variante depuis la source (piste non réécrite, décalage conteneur)"
+            elif planned == variant.target_codec:
+                branch = ("produite par la réécriture de synchro si la piste est éligible après sonde, "
+                          "sinon variante depuis la source (décalage conteneur)")
+            else:
+                branch = (f"appliquée à la piste réécrite ({planned.upper()}), ou depuis la source "
+                          "si la piste n'est pas éligible après sonde")
+            actions.append(RemuxPreparationAction(
+                kind="audio_variant",
+                description=label + branch,
+                source_file_index=variant.source_file_index,
+                target_name=variant.target_name,
+            ))
+            continue
         command = build_audio_variant_command(
             variant,
             source.path,
             variant.stream_index,
             Path(f"{PREVIEW_TEMPORARY_DIR}/{variant.target_name}"),
             ffmpeg_bin,
+            # Même règle qu'à l'exécution : source lue en flux rebasée sur son départ.
+            copyts=not is_streamable_source(source.path),
         )
         actions.append(RemuxPreparationAction(
             kind="audio_variant",
@@ -906,8 +1001,14 @@ def plan_remux(
     *,
     ffmpeg_bin: str = "ffmpeg",
     ffprobe_bin: str = "ffprobe",
+    sync_rewrite: "SyncRewriteSettings | None" = None,
 ) -> MuxExecutionPlan:
-    """Compile le plan d'exécution unique (backend, préparations, contrat)."""
+    """Compile le plan d'exécution unique (backend, préparations, contrat).
+
+    ``sync_rewrite`` : réglages de la réécriture de synchro ; ses intentions sont
+    décrites en actions ``sync_rewrite`` (mêmes pour les deux backends), une
+    calibration sans réécriture possible devient une erreur de validation.
+    """
     _ = ffprobe_bin  # symétrie d'API : le second validateur est toujours ffprobe
     # Instances Matroska mémoïsées partagées sur toute la compilation : évite de
     # reparcourir une même source dans le préflight natif puis le contrat.
@@ -952,6 +1053,32 @@ def plan_remux(
             target_name=tmdb_filename,
         ))
 
+    rewrite_intents: list = []
+    if sync_rewrite is not None:
+        from core.workflows.remux_sync_rewrite import plan_sync_rewrites
+
+        try:
+            _resolved, rewrite_intents = plan_sync_rewrites(config, compiled_mapped_tracks, sync_rewrite)
+        except RemuxError as exc:
+            mapping_errors.append(str(exc))
+            rewrite_intents = []
+        for intent in rewrite_intents:
+            mapped = intent.mapped_track
+            branch = (
+                "réécriture requise (calibration)" if intent.required
+                else "réécriture si la piste est éligible après sonde, sinon décalage conteneur"
+            )
+            preparation_actions.append(RemuxPreparationAction(
+                kind="sync_rewrite",
+                description=(
+                    f"Synchro de {Path(mapped.source_path).name} #{mapped.stream_index} "
+                    f"({mapped.track.track_type}, {intent.offset_ms:+d} ms) : {branch} ; "
+                    "commande FFmpeg déterminée après sonde de la piste"
+                ),
+                source_file_index=mapped.source_file_index,
+                target_name=f"sync_rewrite_{mapped.source_file_index}_{mapped.stream_index}_{mapped.out_type_index}",
+            ))
+
     canonical_index_maps: dict[int, dict[int, int]] = {}
     audio_variants: tuple[NativeAudioVariantPlan, ...] = ()
     if decision.selected == "native":
@@ -959,7 +1086,10 @@ def plan_remux(
         canonical_actions, canonical_index_maps = _canonicalization_actions(config, ffmpeg_bin)
         preparation_actions.extend(canonical_actions)
         audio_variants = plan_native_audio_variants(config)
-        preparation_actions.extend(_audio_variant_actions(config, ffmpeg_bin, audio_variants))
+        preparation_actions.extend(_audio_variant_actions(
+            config, ffmpeg_bin, audio_variants,
+            _planned_rewrite_codecs(rewrite_intents, sync_rewrite),
+        ))
     else:
         if config.chapter_overrides:
             preparation_actions.append(RemuxPreparationAction(
@@ -970,9 +1100,12 @@ def plan_remux(
 
     if decision.selected == "native":
         needs_ffmpeg_preparation = any(
-            action.command
+            action.command or action.kind == "sync_rewrite"
             for action in preparation_actions
-            if action.kind in {"canonicalize_source", "extract_attachment", "audio_variant", "physical_sync"}
+            if action.kind in {
+                "canonicalize_source", "stream_source", "stream_context", "extract_attachment",
+                "audio_variant", "physical_sync", "sync_rewrite",
+            }
         )
         required_tools = ("ffprobe", "ffmpeg") if needs_ffmpeg_preparation else ("ffprobe",)
     else:

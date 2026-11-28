@@ -131,10 +131,10 @@ class TestAppConfigSyncRewrite:
 
 
 class TestAppConfigRamBuffer:
-    """Tests des clés INI ram_buffer_enabled / ram_buffer_threshold_pct."""
+    """Réserve de RAM des encodages parallèles (ram_buffer_threshold_pct)."""
 
-    def test_defaults_enabled_true_threshold_15(self, tmp_path):
-        """Valeurs par défaut : enabled=True, threshold=15."""
+    def test_default_threshold_15(self, tmp_path):
+        """Valeur par défaut : 15 %."""
         from core.config import AppConfig
 
         with patch("core.config.QSettings") as mock_qs:
@@ -145,26 +145,7 @@ class TestAppConfigRamBuffer:
                  patch.dict(os.environ, {}, clear=False):
                 cfg = AppConfig()
 
-        assert cfg.ram_buffer_enabled is True
         assert cfg.ram_buffer_threshold_pct == 15
-
-    def test_ini_disables_ram_buffer(self, tmp_path):
-        """config.ini ram_buffer_enabled=false désactive le buffer."""
-        import core.config as cfg_mod
-        from core.config import AppConfig
-
-        ini_path = tmp_path / "config.ini"
-        ini_path.write_text("[encoding]\nram_buffer_enabled = false\n")
-
-        with patch("core.config.QSettings") as mock_qs:
-            inst = MagicMock()
-            inst.value.side_effect = lambda key, default=None: default
-            mock_qs.return_value = inst
-            with patch("core.config._app_data_dir", return_value=tmp_path), \
-                 patch.object(cfg_mod, "_INI_PATH", ini_path):
-                cfg = AppConfig()
-
-        assert cfg.ram_buffer_enabled is False
 
     def test_ini_sets_threshold(self, tmp_path):
         """config.ini ram_buffer_threshold_pct=25 fixe le seuil à 25."""
@@ -567,6 +548,34 @@ class TestAppConfigRamBuffer:
         assert cfg.enable_file_logging is True
         assert cfg.file_logging_level == "verbose"
 
+    def test_legacy_verbose_file_logging_kept_by_partial_ui_save(self, tmp_path):
+        """Écriture partielle de [ui] (journal au démarrage, popup) : clé historique gardée tant
+        que ses remplaçantes ne sont pas écrites, retirée quand elles le sont."""
+        import core.config as cfg_mod
+        from core.config import AppConfig, write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui]\nverbose_file_logging = true\n", encoding="utf-8")
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                write_ini_settings({"ui": {"startup_logs_expanded": "true"}})
+                cfg = AppConfig()
+                assert "verbose_file_logging = true" in ini_path.read_text(encoding="utf-8")
+                assert cfg.enable_file_logging is True
+                assert cfg.file_logging_level == "verbose"
+
+                write_ini_settings({"ui": {"enable_file_logging": "true", "file_logging_level": "verbose"}})
+                assert "verbose_file_logging" not in ini_path.read_text(encoding="utf-8")
+                cfg = AppConfig()
+
+        assert cfg.enable_file_logging is True
+        assert cfg.file_logging_level == "verbose"
+
     def test_default_file_logging_level_is_standard(self, tmp_path):
         """Sans clé explicite, le niveau de logging fichier est standard."""
         from core.config import AppConfig
@@ -788,6 +797,41 @@ class TestAppConfigWindowsToolAutodetect:
         assert cfg.tool_dovi_tool == str(tool_path)
         assert f"dovi_tool = {tool_path}" in ini_path.read_text(encoding="utf-8")
 
+    @pytest.mark.skipif(os.name == "nt", reason="droits POSIX")
+    def test_windows_tool_persistence_writes_ini_atomically_on_load_and_reload(self, tmp_path):
+        """Persistance des outils détectés (chargement puis ``reload``) : remplacement atomique, droits conservés."""
+        import core.config as cfg_mod
+        from core.atomic_io import atomic_rewrite_text as real_atomic
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\n", encoding="utf-8")
+        ini_path.chmod(0o640)
+        tool_path = tmp_path / "tools" / "dovi_tool.exe"
+        tool_path.parent.mkdir(parents=True, exist_ok=True)
+        tool_path.write_text("", encoding="utf-8")
+        writes: list[Path] = []
+
+        def recording_atomic(path, content):
+            writes.append(Path(path))
+            real_atomic(path, content)
+
+        with patch("core.config.QSettings") as mock_qs, \
+             patch("core.config.sys.platform", "win32"), \
+             patch("core.config.shutil.which", return_value=None), \
+             patch("core.config._app_data_dir", return_value=tmp_path), \
+             patch("core.config.atomic_rewrite_text", side_effect=recording_atomic), \
+             patch.object(cfg_mod, "_INI_PATH", ini_path):
+            mock_qs.return_value = self._mock_qsettings()
+            cfg = AppConfig()
+            ini_path.write_text("[tools]\n", encoding="utf-8")  # valeur retirée entre-temps
+            cfg.reload()
+
+        assert writes == [ini_path, ini_path]  # chargement puis rechargement
+        assert f"dovi_tool = {tool_path}" in ini_path.read_text(encoding="utf-8")
+        assert ini_path.stat().st_mode & 0o777 == 0o640
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".config.ini.")] == []
+
     def test_windows_autodetects_winget_tool_and_updates_ini(self, tmp_path):
         """Un binaire installé via winget est détecté et écrit dans config.ini."""
         import core.config as cfg_mod
@@ -898,7 +942,6 @@ def test_app_config_all_tools_available_accepts_configured_absolute_path(tmp_pat
     cfg.tool_mediainfo = str(mediainfo)
     cfg.tool_dovi_tool = "missing-dovi"
     cfg.tool_hdr10plus = "missing-hdr10plus"
-    cfg.tool_eac3to = "missing-eac3to"
 
     with patch("core.config.shutil.which", return_value=None):
         availability = cfg.all_tools_available()
@@ -1104,6 +1147,25 @@ def test_setup_initializes_ui_language_in_config_ini(tmp_path):
         setup_mod.initialize_config_ini_language(dry_run=False, force=False)
 
     assert "language = fra" in ini_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="droits POSIX")
+def test_setup_rewrites_config_ini_atomically_keeping_its_mode(tmp_path):
+    """Langue (setup) et outils détectés : config.ini remplacé atomiquement, droits conservés."""
+    import setup as setup_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[ui]\n[tools]\n", encoding="utf-8")
+    ini_path.chmod(0o640)
+    with patch.object(setup_mod, "atomic_rewrite_text", wraps=setup_mod.atomic_rewrite_text) as rewrite, \
+         patch.object(setup_mod, "_config_ini_path", return_value=ini_path), \
+         patch.object(setup_mod, "_system_language_code", return_value="fra"):
+        setup_mod.initialize_config_ini_language(dry_run=False, force=False)
+        setup_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg"}, dry_run=False)
+    assert [call.args[0] for call in rewrite.call_args_list] == [ini_path, ini_path]
+    text = ini_path.read_text(encoding="utf-8")
+    assert "language = fra" in text and "ffmpeg = /opt/ffmpeg" in text
+    assert ini_path.stat().st_mode & 0o777 == 0o640
 
 
 def test_setup_windows_first_launch_uses_system_language_without_dialog(tmp_path):
@@ -1624,3 +1686,393 @@ def test_setup_tools_keys_inserted_before_next_section_comment_header(tmp_path):
     lines = ini.read_text(encoding="utf-8").splitlines()
     assert lines[:5] == ["[tools]", "", "# ffmpeg = ffmpeg", "ffmpeg = /opt/ffmpeg", "mediainfo = /opt/mediainfo"]
     assert lines.index("# [hdr] — Doc") > lines.index("mediainfo = /opt/mediainfo")
+
+
+class TestRemovedOptions:
+    """Options lues par aucun workflow (eac3to, profil / compatibility ID DoVi) : retirées et purgées."""
+
+    def test_not_exposed_anymore(self, tmp_path):
+        from core.config import INI_FIELD_GROUPS, AppConfig
+
+        keys = {(group["section"], field["key"]) for group in INI_FIELD_GROUPS for field in group["fields"]}
+        assert not keys & {("tools", "eac3to"), ("hdr", "dovi_profile"), ("hdr", "dovi_compat_id"),
+                           ("encoding", "ram_buffer_enabled")}
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path):
+                cfg = AppConfig()
+        assert "eac3to" not in cfg.tool_commands()
+        assert "eac3to" not in cfg.all_tools_available()
+        for attr in ("tool_eac3to", "dovi_profile", "dovi_compat_id", "remux_mux_backend", "ram_buffer_enabled"):
+            assert not hasattr(cfg, attr)
+
+    def test_saving_a_section_purges_its_removed_keys(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[tools]\neac3to = C:\\\\eac3to\\\\eac3to.exe\nffmpeg = ffmpeg\n\n"
+            "[hdr]\ndovi_profile = 8\n",
+            encoding="utf-8",
+        )
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "ffmpeg"}})
+        text = ini_path.read_text(encoding="utf-8")
+        assert "eac3to" not in text and "dovi_profile = 8" in text and "ffmpeg = ffmpeg" in text
+
+    def test_config_save_purges_removed_keys_once(self, tmp_path):
+        """Enregistrement de la configuration : lignes des options retirées effacées de config.ini,
+        clés historiques à remplaçantes (verbose_file_logging) gardées, fichier intact sinon."""
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "# commentaire\n[tools]\neac3to = eac3to\nffmpeg = ffmpeg\n\n"
+            "[hdr]\ndovi_profile = 8\ndovi_compat_id = 1\ndisplay_peak_nits = 600\n\n"
+            "[encoding]\nram_buffer_enabled = false\nram_buffer_threshold_pct = 20\n\n"
+            "[ui]\nverbose_file_logging = true\n",
+            encoding="utf-8",
+        )
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                cfg = AppConfig()
+                assert cfg.display_peak_nits == 1000          # clé [hdr] de config.ini ignorée
+                cfg.save()
+                text = ini_path.read_text(encoding="utf-8")
+                for gone in ("eac3to", "dovi_profile", "dovi_compat_id", "display_peak_nits", "ram_buffer_enabled"):
+                    assert gone not in text
+                assert "# commentaire" in text and "ffmpeg = ffmpeg" in text
+                assert "ram_buffer_threshold_pct = 20" in text and "verbose_file_logging = true" in text
+                mtime = ini_path.stat().st_mtime_ns
+                cfg.save()
+                assert ini_path.stat().st_mtime_ns == mtime     # rien à retirer : non réécrit
+
+    def test_display_peak_comes_from_hdr_studio_memory(self, tmp_path):
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: 600 if key == "hdr/display_peak_nits" else default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path):
+                cfg = AppConfig()
+        assert cfg.display_peak_nits == 600
+
+    def test_save_forgets_removed_interface_settings(self, tmp_path):
+        from core.config import AppConfig
+
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path):
+                cfg = AppConfig()
+                cfg.save()
+        removed = {call.args[0] for call in inst.remove.call_args_list}
+        assert {"tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id", "encoding/ram_buffer_enabled"} <= removed
+        written = {call.args[0] for call in inst.setValue.call_args_list}
+        assert not written & {"tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id"}
+
+
+def test_tools_writers_prune_removed_tools(tmp_path):
+    """Setup (toute écriture de [tools]) et autodétection d'AppConfig élaguent eac3to."""
+    import core.config as cfg_mod
+    import setup as setup_mod
+
+    ini_path = tmp_path / "config.ini"
+    ini_path.write_text("[tools]\neac3to = C:\\\\eac3to\\\\eac3to.exe\nffmpeg = ffmpeg\n", encoding="utf-8")
+    setup_mod._update_ini_tools_section(ini_path, {"dovi_tool": "/opt/dovi_tool"}, dry_run=False)
+    text = ini_path.read_text(encoding="utf-8")
+    assert "eac3to" not in text and "dovi_tool = /opt/dovi_tool" in text and "ffmpeg = ffmpeg" in text
+
+    ini_path.write_text("[tools]\neac3to = eac3to\n", encoding="utf-8")
+    cfg_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg"})
+    text = ini_path.read_text(encoding="utf-8")
+    assert "eac3to" not in text and "ffmpeg = /opt/ffmpeg" in text
+
+
+class TestIniSyntaxAndPeakMemory:
+    """Règles du chargeur respectées par les réécritures de config.ini ; pic de l'écran retenu."""
+
+    @staticmethod
+    def _cfg(tmp_path, ini_path, settings=None):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        store = dict(settings or {})
+        inst = MagicMock()
+        inst.value.side_effect = lambda key, default=None: store.get(key, default)
+        inst.setValue.side_effect = lambda key, value: store.__setitem__(key, value)
+        patches = (patch("core.config.QSettings", return_value=inst),
+                   patch("core.config._app_data_dir", return_value=tmp_path),
+                   patch.object(cfg_mod, "_INI_PATH", ini_path))
+        for item in patches:
+            item.start()
+        return AppConfig(), store, patches
+
+    def test_purge_follows_loader_syntax_and_section_limits(self, tmp_path):
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text(
+            "[tools] # outils\neac3to: ancien\nffmpeg = ffmpeg\n\n"
+            "[paths] # chemins\neac3to = garde\n",
+            encoding="utf-8",
+        )
+        cfg, _store, patches = self._cfg(tmp_path, ini_path)
+        try:
+            cfg.save()
+        finally:
+            for item in patches:
+                item.stop()
+        text = ini_path.read_text(encoding="utf-8")
+        assert "eac3to: ancien" not in text
+        assert "eac3to = garde" in text and "ffmpeg = ffmpeg" in text and "[paths] # chemins" in text
+
+    def test_purge_never_rewrites_a_file_the_loader_refuses(self, tmp_path):
+        import core.config as cfg_mod
+
+        ini_path = tmp_path / "config.ini"
+        original = "[tools]\neac3to = a\neac3to = b\n"
+        ini_path.write_text(original, encoding="utf-8")
+        cfg_mod._purge_obsolete_ini_keys(ini_path)
+        assert ini_path.read_text(encoding="utf-8") == original
+
+    def test_purge_write_failure_does_not_break_save(self, tmp_path):
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\neac3to = eac3to\n", encoding="utf-8")
+        cfg, _store, patches = self._cfg(tmp_path, ini_path)
+        try:
+            with patch("core.config._write_ini_text", side_effect=PermissionError("lecture seule")):
+                cfg.save()
+        finally:
+            for item in patches:
+                item.stop()
+
+    def test_upsert_updates_colon_delimited_key_in_place(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui] # interface\nlog_max_lines: 100\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"ui": {"log_max_lines": "300"}})
+        text = ini_path.read_text(encoding="utf-8")
+        assert text.count("log_max_lines") == 1 and "log_max_lines = 300" in text
+
+    def test_display_peak_chosen_in_hdr_studio_survives_reload(self, tmp_path):
+        ini_path = tmp_path / "config.ini"
+        cfg, store, patches = self._cfg(tmp_path, ini_path, {"hdr/display_peak_nits": 1000})
+        try:
+            cfg.remember_display_peak(600)
+            assert store["hdr/display_peak_nits"] == 600
+            cfg.reload()
+            assert cfg.display_peak_nits == 600
+        finally:
+            for item in patches:
+                item.stop()
+
+
+class TestIniRewritesKeepLoaderSyntax:
+    """Continuations, noms de section exacts, setup : aucune réécriture ne rend config.ini illisible."""
+
+    def test_purge_removes_continuation_lines(self, tmp_path):
+        import core.config as cfg_mod
+        from core import ini_syntax
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\neac3to =\n    /opt/eac3to\nffmpeg = ffmpeg\n", encoding="utf-8")
+        cfg_mod._purge_obsolete_ini_keys(ini_path)
+        text = ini_path.read_text(encoding="utf-8")
+        assert "eac3to" not in text and "ffmpeg = ffmpeg" in text and ini_syntax.is_loadable(text)
+
+    def test_upsert_replaces_continuation_lines(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\nffmpeg = /old\n    suite\nffprobe = ffprobe\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "/new"}})
+        assert ini_path.read_text(encoding="utf-8") == "[tools]\nffmpeg = /new\nffprobe = ffprobe\n"
+
+    def test_section_names_compared_like_the_loader(self, tmp_path):
+        import configparser
+        import core.config as cfg_mod
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[ui ]\nlog_max_lines = 100\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"ui": {"log_max_lines": "300"}})
+        parser = configparser.ConfigParser(inline_comment_prefixes=("#",))
+        parser.read(ini_path, encoding="utf-8")
+        assert parser.get("ui", "log_max_lines") == "300"
+        assert parser.get("ui ", "log_max_lines") == "100"
+
+    def test_write_refused_when_it_would_break_a_readable_file(self, tmp_path):
+        import core.config as cfg_mod
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\nffmpeg = ffmpeg\n", encoding="utf-8")
+        with pytest.raises(cfg_mod.ConfigIniWriteRefused):
+            cfg_mod._write_ini_text(ini_path, ["[tools]", "ffmpeg = a", "ffmpeg = b"])
+        assert ini_path.read_text(encoding="utf-8") == "[tools]\nffmpeg = ffmpeg\n"
+
+    def test_setup_follows_loader_syntax(self, tmp_path):
+        import setup as setup_mod
+        from core import ini_syntax
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools] # outils\nffmpeg: ffmpeg\neac3to: ancien\n", encoding="utf-8")
+        setup_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg", "dovi_tool": "/opt/dovi_tool"},
+                                            dry_run=False, replace_keys={"ffmpeg"})
+        text = ini_path.read_text(encoding="utf-8")
+        assert ini_syntax.is_loadable(text)
+        lines = text.splitlines()
+        assert sum(line.startswith("[tools]") for line in lines) == 1
+        assert sum(line.startswith("ffmpeg") for line in lines) == 1 and "eac3to" not in text
+        assert "ffmpeg = /opt/ffmpeg" in text and "dovi_tool = /opt/dovi_tool" in text
+
+
+class TestIniIndentBomAndPercent:
+    """Options indentées (indentation relative comme le chargeur), BOM, « % » littéral."""
+
+    def test_indented_options_are_options_not_continuations(self, tmp_path):
+        import configparser
+        import core.config as cfg_mod
+        import setup as setup_mod
+        from core import ini_syntax
+        from core.config import write_ini_settings
+
+        lines = ["[tools]", "    ffmpeg = /old", "    eac3to = x", "        suite", "    ffprobe = p"]
+        assert [(o.key, o.start, o.end) for o in ini_syntax.options(lines, "tools")] == [
+            ("ffmpeg", 1, 2), ("eac3to", 2, 4), ("ffprobe", 4, 5)]
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "/new"}})
+        parser = configparser.ConfigParser(inline_comment_prefixes=("#",))
+        parser.read(ini_path, encoding="utf-8")
+        assert parser.get("tools", "ffmpeg") == "/new" and not parser.has_option("tools", "eac3to")
+
+        ini_path.write_text("[tools]\n    ffmpeg = /old\n", encoding="utf-8")
+        setup_mod._update_ini_tools_section(ini_path, {"ffmpeg": "/opt/ffmpeg"}, dry_run=False, replace_keys={"ffmpeg"})
+        text = ini_path.read_text(encoding="utf-8")
+        assert ini_syntax.is_loadable(text) and "ffmpeg = /opt/ffmpeg" in text and "/old" not in text
+
+    def test_setup_reads_bom_files(self, tmp_path):
+        import setup as setup_mod
+        from core import ini_syntax
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_bytes("﻿[tools]\nffmpeg = ffmpeg\n".encode("utf-8"))
+        setup_mod._update_ini_tools_section(ini_path, {"dovi_tool": "/opt/dovi_tool"}, dry_run=False)
+        text = ini_path.read_text(encoding="utf-8-sig")
+        assert ini_syntax.is_loadable(text) and text.count("[tools]") == 1
+        assert "dovi_tool = /opt/dovi_tool" in text
+
+    def test_percent_written_escaped_and_read_back(self, tmp_path):
+        import core.config as cfg_mod
+        from core import ini_syntax
+        from core.config import AppConfig, write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[paths]\n", encoding="utf-8")
+        with patch("core.config.QSettings") as mock_qs:
+            inst = MagicMock()
+            inst.value.side_effect = lambda key, default=None: default
+            mock_qs.return_value = inst
+            with patch("core.config._app_data_dir", return_value=tmp_path), \
+                 patch.object(cfg_mod, "_INI_PATH", ini_path):
+                write_ini_settings({"paths": {"output_dir": "/media/Films 100%"}})
+                assert "output_dir = /media/Films 100%%" in ini_path.read_text(encoding="utf-8")
+                assert str(AppConfig().output_dir) == "/media/Films 100%"
+        assert not ini_syntax.is_loadable("[paths]\noutput_dir = /media/Films 100%\n")
+
+
+class TestIniUnwritableValuesAndIndentedSections:
+    def test_value_read_back_as_comment_is_refused(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import ConfigIniWriteRefused, write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[paths]\noutput_dir = /media\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path), pytest.raises(ConfigIniWriteRefused, match="commentaire"):
+            write_ini_settings({"paths": {"output_dir": "/media/Films #1"}})
+        assert ini_path.read_text(encoding="utf-8") == "[paths]\noutput_dir = /media\n"
+
+    def test_cli_config_set_refuses_it_before_writing(self):
+        from core.jobs.constants import EXIT_VALIDATION
+        from core.jobs.errors import JobError
+        from core.service.ops.admin import coerce, config_fields
+
+        with pytest.raises(JobError) as caught:
+            coerce(config_fields()["paths.output_dir"], "/media/Films #1")
+        assert caught.value.exit_code == EXIT_VALIDATION
+
+    def test_option_added_to_empty_indented_section_keeps_next_section(self, tmp_path):
+        import core.config as cfg_mod
+        from core import ini_syntax
+        from core.config import write_ini_settings
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("    [tools]\n    [ui]\n    log_max_lines = 100\n", encoding="utf-8")
+        with patch.object(cfg_mod, "_INI_PATH", ini_path):
+            write_ini_settings({"tools": {"ffmpeg": "/opt/ffmpeg"}})
+        assert ini_syntax.loaded_sections(ini_path.read_text(encoding="utf-8")) == {"tools", "ui"}
+
+    def test_rewrite_losing_a_section_is_refused(self, tmp_path):
+        import core.config as cfg_mod
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_text("[tools]\nffmpeg = ffmpeg\n[ui]\nlog_max_lines = 1\n", encoding="utf-8")
+        with pytest.raises(cfg_mod.ConfigIniWriteRefused, match="sections perdues"):
+            cfg_mod._write_ini_text(ini_path, ["[tools]", "ffmpeg = ffmpeg"])
+
+    def test_setup_reads_existing_tools_with_bom(self, tmp_path):
+        import setup as setup_mod
+
+        ini_path = tmp_path / "config.ini"
+        ini_path.write_bytes("\ufeff[tools]\nffmpeg = C:/ffmpeg.exe\n".encode("utf-8"))
+        assert setup_mod._existing_ini_tool_values(ini_path) == {"ffmpeg": "C:/ffmpeg.exe"}
+
+
+class TestValuesReadBackAsComments:
+    def test_unwritable_reason_rereads_the_written_line(self):
+        from core.ini_syntax import unwritable_reason
+
+        assert unwritable_reason("#Team") and unwritable_reason("/media/Films #1")
+        assert unwritable_reason("/media/Films#1") is None
+        assert unwritable_reason("/media/Films 100%") is None
+        assert unwritable_reason("Team") is None
+
+    def test_cli_refuses_tag_starting_with_hash(self):
+        from core.jobs.errors import JobError
+        from core.service.ops.admin import coerce, config_fields
+
+        with pytest.raises(JobError):
+            coerce(config_fields()["paths.release_group_tag"], "#Team")
+
+    def test_autodetected_path_never_blocks_startup(self, tmp_path):
+        import core.config as cfg_mod
+        from core.config import AppConfig
+
+        ini_path = tmp_path / "config.ini"
+        cfg_mod._update_ini_tools_section(ini_path, {"ffmpeg": "C:/Tools #1/ffmpeg.exe",
+                                                     "ffprobe": "C:/Tools/ffprobe.exe"})
+        text = ini_path.read_text(encoding="utf-8")
+        assert "ffprobe = C:/Tools/ffprobe.exe" in text and "ffmpeg" not in text.replace("ffprobe", "")
+
+        cfg = object.__new__(AppConfig)
+        cfg._detected_ini_tools = {"ffmpeg": "C:/Tools/ffmpeg.exe"}
+        with patch("core.config._is_windows", return_value=True), \
+             patch("core.config._update_ini_tools_section", side_effect=cfg_mod.ConfigIniWriteRefused("refus")):
+            cfg._persist_detected_windows_tools()

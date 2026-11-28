@@ -1,0 +1,9 @@
+{
+  "calibration": {"file": "/media/calib/film.json"},
+  "edits": [
+    {"cut": [600000, 602500]},
+    {"silence": [3600000, 3604000]},
+    {"shift_from_segment": {"index": 2, "shift_ms": -120}}
+  ],
+  "output": "/media/calib/film.edite.json"
+}

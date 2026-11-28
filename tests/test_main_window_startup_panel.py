@@ -31,8 +31,24 @@ def test_extensions_startup_panel_alias() -> None:
     assert _normalize_startup_panel("plugins") == "extensions" == _normalize_startup_panel("Extensions")
 
 
+class _Stack:
+    """Pile de pages minimale ; ``refuse`` : la page courante retient l'utilisateur."""
+
+    def __init__(self, index: int = 0, refuse: bool = False) -> None:
+        self.index = index
+        self.refuse = refuse
+        self.setCurrentIndex = MagicMock(side_effect=self._set)
+
+    def _set(self, index: int) -> None:
+        if not self.refuse:
+            self.index = index
+
+    def currentIndex(self) -> int:
+        return self.index
+
+
 def test_show_extensions_page_switches_stack_and_sidebar() -> None:
-    win = SimpleNamespace(_stack=MagicMock(), _sidebar=MagicMock(), _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY)
+    win = SimpleNamespace(_stack=_Stack(), _sidebar=MagicMock(), _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY)
     MainWindow.show_extensions_page(cast(Any, win))
     win._stack.setCurrentIndex.assert_called_once_with(6)
     win._sidebar.select_page.assert_called_once_with(6)
@@ -91,7 +107,7 @@ def test_open_startup_paths_routes_files_to_container_page(tmp_path, qt_app) -> 
     media_path.write_text("", encoding="utf-8")
     fake_window = SimpleNamespace(
         _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY,
-        _stack=SimpleNamespace(setCurrentIndex=MagicMock()),
+        _stack=_Stack(),
         _sidebar=SimpleNamespace(select_page=MagicMock()),
         _remux_panel=SimpleNamespace(add_sources=MagicMock()),
     )
@@ -118,7 +134,7 @@ def test_source_drop_routes_media_to_container_page(tmp_path, qt_app) -> None:
 
     fake_window = SimpleNamespace(
         _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY,
-        _stack=SimpleNamespace(setCurrentIndex=MagicMock()),
+        _stack=_Stack(),
         _sidebar=SimpleNamespace(select_page=MagicMock()),
         _remux_panel=SimpleNamespace(add_sources=MagicMock()),
     )
@@ -306,3 +322,77 @@ def test_window_geometry_fits_small_screen(qt_app) -> None:
         MainWindow._setup_window(window)
     assert window.minimumHeight() <= 672 - 40 and window.height() <= 672 - 40
     assert window.minimumWidth() == 1024 and window.width() == 1280
+
+
+def test_refused_navigation_keeps_sidebar_and_drops_nothing(tmp_path, qt_app) -> None:
+    """Réglages non enregistrés + « Annuler » : rien n'est ajouté, le menu reste sur Paramètres."""
+    media_path = tmp_path / "movie.mkv"
+    media_path.write_text("", encoding="utf-8")
+    fake_window = SimpleNamespace(
+        _PAGE_INDEX_BY_PANEL_KEY=MainWindow._PAGE_INDEX_BY_PANEL_KEY,
+        _stack=_Stack(index=5, refuse=True),
+        _sidebar=SimpleNamespace(select_page=MagicMock()),
+        _remux_panel=SimpleNamespace(add_sources=MagicMock()),
+    )
+    window = cast(Any, fake_window)
+
+    assert MainWindow._handle_source_drop_paths(window, [media_path]) is True
+    MainWindow.open_startup_paths(window, [media_path])
+    MainWindow.show_extensions_page(window)
+
+    fake_window._remux_panel.add_sources.assert_not_called()
+    assert {call.args[0] for call in fake_window._sidebar.select_page.call_args_list} == {5}
+
+
+def test_scale_change_prompt_skipped_while_another_action_waits(qt_app) -> None:
+    """Enregistré depuis la question posée avant une navigation, une fermeture ou une mise à jour."""
+    fake_window = SimpleNamespace(
+        _settings_panel=SimpleNamespace(is_leaving=lambda: True, confirm_leave=MagicMock()),
+        _config=SimpleNamespace(restart_application=MagicMock()),
+    )
+    with patch("ui.main_window.QMessageBox.question") as question:
+        MainWindow._prompt_restart_for_scale_change(cast(Any, fake_window), 125)
+    question.assert_not_called()
+    fake_window._config.restart_application.assert_not_called()
+
+
+def test_scale_change_restart_waits_for_pending_settings(qt_app) -> None:
+    fake_window = SimpleNamespace(
+        _config=SimpleNamespace(restart_application=MagicMock()),
+        _settings_panel=SimpleNamespace(is_leaving=lambda: False, confirm_leave=MagicMock(return_value=False)),
+    )
+    with patch("ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+        MainWindow._prompt_restart_for_scale_change(cast(Any, fake_window), 125)
+    fake_window._settings_panel.confirm_leave.assert_called_once_with()
+    fake_window._config.restart_application.assert_not_called()
+
+
+def test_settings_leave_refused_once_shutdown_started(qt_app) -> None:
+    fake_window = SimpleNamespace(
+        _settings_panel=SimpleNamespace(confirm_leave=MagicMock(return_value=True)),
+        _shutdown=object(),
+    )
+    assert MainWindow._settings_allow_leave(cast(Any, fake_window)) is False
+    assert MainWindow._settings_allow_leave(cast(Any, SimpleNamespace())) is True
+
+
+def test_restart_launches_new_instance_only_after_close_is_accepted(qt_app) -> None:
+    """Opération en cours : refus → aucune instance lancée ; accord → lancement, fermeture sans seconde question."""
+    fake_window = SimpleNamespace(
+        _running=True,
+        _config=SimpleNamespace(restart_application=MagicMock(return_value=True)),
+    )
+    window = cast(Any, fake_window)
+    fake_app = SimpleNamespace(quit=MagicMock())
+    with patch("ui.main_window.confirm_close_while_running", return_value=False), \
+         patch("ui.main_window.QApplication.instance", return_value=fake_app):
+        MainWindow._request_restart(window)
+    fake_window._config.restart_application.assert_not_called()
+    fake_app.quit.assert_not_called()
+
+    with patch("ui.main_window.confirm_close_while_running", return_value=True), \
+         patch("ui.main_window.QApplication.instance", return_value=fake_app):
+        MainWindow._request_restart(window)
+    fake_window._config.restart_application.assert_called_once_with()
+    fake_app.quit.assert_called_once_with()
+    assert fake_window._restart_confirmed is True

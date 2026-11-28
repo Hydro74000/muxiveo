@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+from PySide6.QtWidgets import QDialog
 
 from core.workflows.sync_calibration import SyncCalibration, SyncSegment
 from core.workflows.subtitle_sync import shift_text, subtitle_hints
@@ -716,7 +717,7 @@ def test_panel_on_sync_studio_requested_multiple_choices_dialog(qt_app, monkeypa
 
     # Mock user rejecting the reference dialog
     class MockRefDialogReject:
-        def __init__(self, choices, parent=None):
+        def __init__(self, choices, **_kwargs):
             pass
         def exec(self):
             from PySide6.QtWidgets import QDialog
@@ -728,7 +729,7 @@ def test_panel_on_sync_studio_requested_multiple_choices_dialog(qt_app, monkeypa
 
     # Mock user selecting ref2
     class MockRefDialogAccept:
-        def __init__(self, choices, parent=None):
+        def __init__(self, choices, **_kwargs):
             pass
         def exec(self):
             from PySide6.QtWidgets import QDialog
@@ -974,6 +975,9 @@ def test_panel_sync_studio_propagates_to_all_source_tracks(qt_app, monkeypatch, 
             return cal, -100
 
     monkeypatch.setattr("ui.panels.remux_panel.widgets.sync_studio_dialog.SyncStudioDialog", MockSyncStudioDialog)
+    # Référence de l'autre fichier choisie (les pistes du fichier cible sont aussi proposées).
+    monkeypatch.setattr("ui.panels.remux_panel.panel._AudioSyncReferenceDialog", lambda choices, **_k: SimpleNamespace(
+        exec=lambda: QDialog.DialogCode.Accepted, selected_entry=lambda: ref_audio))
 
     # Trigger Sync Studio on tgt_audio1
     panel._on_sync_studio_requested(tgt_audio1)
@@ -1222,11 +1226,9 @@ def test_remux_panel_subtitle_sync_integration(qt_app, monkeypatch, tmp_path):
     panel._track_table.append_tracks("#111", [ref_audio, ref_sub])
     panel._track_table.append_tracks("#222", [tgt_sub])
 
-    # Test reference choices prioritizing subtitles
+    # Un sous-titre se compare seulement à un sous-titre.
     choices = panel._subtitle_sync_reference_choices(tgt_sub)
-    assert len(choices) == 2
-    assert choices[0][1] is ref_sub  # Subtitle first
-    assert choices[1][1] is ref_audio # Audio second
+    assert [choice for _label, choice in choices] == [ref_sub]
 
     # Test subtitle sync done callback propagates shift
     cal = SyncCalibration.linear(-420)

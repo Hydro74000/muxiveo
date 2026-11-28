@@ -14,7 +14,6 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -37,21 +36,31 @@ from core.hdr_inspection import (
     InspectionCancelled,
     InspectionReport,
     Severity,
+    TrackNotFoundError,
     audit,
     build_snapshot,
+    video_track,
 )
 from core.hdr_inspection import summary
 from core.hdr_inspection.compare import Side
 from core.hdr_inspection.realign import Realignment, realign
 from core.hdr_inspection.fel_analyzer import CaptureLayer
-from core.hdr_inspection.measure import ImageMeasurement, read_measurement
-from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan
+from core.hdr_inspection.measure import (
+    FrameCountCheck,
+    FrameStatus,
+    ImageMeasurement,
+    frame_count_check,
+    measure_track,
+    packet_counter,
+)
+from core.hdr_inspection.patch import MetadataPatcher, PatchCancelled, PatchPlan, analyze_rpu_gaps
 from core.hdr_inspection.report import write_report
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import translate_text
 from core.inspector import FileInfo, FileInspector
 from core.runner import TaskSignals, ToolRunner
 from core.workdir import create_process_work_dir
+from ui.confirm import confirm_output
 from ui.design_system import colors as C, font_px, scale
 from ui.operation_bar import OperationState
 from ui.panels.hdr_studio.chart import format_time
@@ -59,8 +68,9 @@ from ui.panels.hdr_studio.compare_tab import CompareTab, DropLineEdit
 from ui.panels.hdr_studio.editor import EditionTab
 from ui.panels.hdr_studio.fel_tab import FelTab
 from ui.panels.hdr_studio.luminance import LuminanceTab
+from ui.panels.hdr_studio.track_selector import VideoTrackSelector
 from ui.shutdown import Shutdown, defer_close
-from ui.styles import _card, _combo_style, _input_style, _primary_button, _secondary_button, _section_label
+from ui.styles import _card, _input_style, _primary_button, _secondary_button, _section_label
 
 _SEVERITY_COLORS = {Severity.OK: "OK", Severity.INFO: "INFO", Severity.WARN: "WARN", Severity.ERROR: "ERROR"}
 _SEVERITY_ICONS = {Severity.OK: "✓", Severity.INFO: "i", Severity.WARN: "!", Severity.ERROR: "✕"}
@@ -150,11 +160,34 @@ def _finding_row(finding: Finding) -> QWidget:
     return row
 
 
+
+def _requested_track(info: FileInfo, stream_index: int | None) -> int:
+    """Piste vidéo à afficher : celle demandée (absente → :class:`TrackNotFoundError`), sinon la première."""
+    if not info.video_tracks:
+        return 0
+    return video_track(info, stream_index).index
+
+
+def _missing_track_message(exc: TrackNotFoundError) -> str:
+    return translate_text("Piste vidéo #{index} absente de {name} (pistes vidéo : {tracks}).", index=exc.index,
+                          name=getattr(exc.path, "name", str(exc.path)),
+                          tracks=", ".join(f"#{value}" for value in exc.available))
+
+
+def _inspected_frames(info: FileInfo, stream_index: int) -> int | None:
+    """Images de la piste selon l'inspection (compte plausible, confirmé au besoin par un comptage exact)."""
+    snapshot = build_snapshot(info, stream_index)
+    return snapshot.frames if snapshot.frames_exact else None
+
 class HdrStudio(QWidget):
     """Page « HDR Studio » : chargement d'une source, analyse à la demande, onglets de résultats."""
 
     log_message = Signal(str, str)
     busy_changed = Signal(bool)
+    #: Tâches de fond en vol (outils, extension mvo-fel) : vrai jusqu'à la fin réelle de la dernière, annulée
+    #: comprise — protège les extensions contre une suppression ou une mise à jour (page Extensions).
+    tools_in_use_changed = Signal(bool)
+    _worker_finished = Signal()
     # Barre d'exécution globale (écriture du fichier corrigé) : mêmes signaux que les autres studios.
     op_state_changed = Signal(str, str)
     op_progress_pct = Signal(int)
@@ -165,10 +198,13 @@ class HdrStudio(QWidget):
     apply_to_encode_requested = Signal(object, int, int, int)
     _inspected = Signal(int, object, int, object, str)
     _cache_ready = Signal(int, object)
+    # Comptage exact pendant un chargement du cache (début / fin) : affiché comme opération annulable.
+    _cache_count = Signal(bool)
     _progress = Signal(int, str, int)
     _analyzed = Signal(int, object, str)
     _measured = Signal(int, object, str)
     _patched = Signal(int, object, str)
+    _patch_warning = Signal(str)
     _fel_done = Signal(int, object, str)
     _fel_partial = Signal(int, object)
     _moment_ready = Signal(int, object, str)
@@ -188,6 +224,13 @@ class HdrStudio(QWidget):
         self._signals: TaskSignals | None = None
         self._moment_dialog: QWidget | None = None
         self._pending_analyze = False
+        # Comptes exacts des pistes (clé du cache : chemin, taille, date, piste), gardés pour toute mesure suivante.
+        self._exact_counts: dict[str, int] = {}
+        self._exact_counts_lock = threading.Lock()
+        #: Inspection en cours (rôle « main » ou « compare », jeton, annulation) : « Annuler » lève l'occupation
+        #: aussitôt, son retour annulé est ignoré.
+        self._inspection: tuple[str, int, threading.Event] | None = None
+        self._count_busy = False  # occupation due au seul comptage d'un chargement du cache
         self._measurement: ImageMeasurement | None = None
         self._last_output: Path | None = None
         # Piste B de l'onglet Comparer.
@@ -203,8 +246,11 @@ class HdrStudio(QWidget):
         self._engine_factory = FelEngine.installed
         self.setAcceptDrops(True)
         self._build_ui()
+        self._worker_finished.connect(self._on_worker_finished, Qt.ConnectionType.QueuedConnection)
+        self._patch_warning.connect(lambda text: self._notify("WARN", text), Qt.ConnectionType.QueuedConnection)
         self._inspected.connect(self._on_inspected, Qt.ConnectionType.QueuedConnection)
         self._cache_ready.connect(self._on_cache_ready, Qt.ConnectionType.QueuedConnection)
+        self._cache_count.connect(self._on_cache_count, Qt.ConnectionType.QueuedConnection)
         self._progress.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self._analyzed.connect(self._on_analyzed, Qt.ConnectionType.QueuedConnection)
         self._measured.connect(self._on_measured, Qt.ConnectionType.QueuedConnection)
@@ -247,9 +293,8 @@ class HdrStudio(QWidget):
         browse.setToolTip(translate_text("Choisir un fichier"))
         browse.clicked.connect(self._browse)
         row.addWidget(browse)
-        self._track_combo = QComboBox()
-        self._track_combo.setStyleSheet(_combo_style())
-        self._track_combo.setMinimumWidth(scale(220))
+        # Piste vidéo de A : bouton à menu, affiché seulement pour un fichier à plusieurs pistes vidéo.
+        self._track_combo = VideoTrackSelector()
         self._track_combo.currentIndexChanged.connect(self._on_track_changed)
         row.addWidget(self._track_combo)
         source_layout.addLayout(row)
@@ -400,26 +445,44 @@ class HdrStudio(QWidget):
         self._track_combo.clear()
         self._track_combo.blockSignals(False)
         self._render(None)
-        self._set_busy(True, translate_text("Inspection de {name}…", name=path.name))
-        self._progress_bar.setRange(0, 0)
         ffprobe, mediainfo = str(self._config.tool_ffprobe), str(self._config.tool_mediainfo)
+        cancel = self._cache_cancel("main")
+        self._cancel = cancel
+        self._begin_inspection("main", token, cancel, translate_text("Inspection de {name}…", name=path.name))
 
         def task() -> None:
             try:
-                info = FileInspector(ffprobe, mediainfo).inspect(path)
+                info = FileInspector(ffprobe, mediainfo, cancel_event=cancel).inspect(path)  # sondes tuées
                 video = info.video_tracks
-                index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
-                cached = self._cached(path, index) if video else None
+                index = _requested_track(info, stream_index)
+                cached = self._cached(path, index, _inspected_frames(info, index), cancel) if video else None
                 self._inspected.emit(token, info, index, cached, "")
+            except TrackNotFoundError as exc:  # piste demandée absente : jamais une autre piste affichée à sa place
+                self._inspected.emit(token, None, 0, None, _missing_track_message(exc))
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._inspected.emit(token, None, 0, None, str(exc))
 
-        self._executor.submit(task)
+        self._submit(task)
+
+    def _begin_inspection(self, role: str, token: int, cancel: threading.Event, status: str) -> None:
+        """Inspection rapide de A (``main``) ou de B (``compare``) : occupation signalée, « Annuler » visible."""
+        self._inspection = (role, token, cancel)
+        self._set_busy(True, status)
+        self._progress_bar.setRange(0, 0)
+
+    def _end_inspection(self, role: str, token: int) -> bool:
+        """Retour de l'inspection (``role``, ``token``) : vrai si c'est celle en cours, non annulée (occupation
+        levée ici) ; faux pour un retour annulé ou périmé (ignoré, l'occupation a déjà été levée)."""
+        current = self._inspection
+        if current is None or current[0] != role or current[1] != token or current[2].is_set():
+            return False
+        self._inspection = None
+        self._set_busy(False)
+        return True
 
     def _on_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
-        if token != self._token:
+        if token != self._token or not self._end_inspection("main", token):
             return
-        self._set_busy(False)
         if info is None or not info.video_tracks:
             self._notify("ERROR", error or translate_text("Aucune piste vidéo."))
             return
@@ -451,20 +514,81 @@ class HdrStudio(QWidget):
         self._render(InspectionReport(snapshot, findings=audit(snapshot)))
 
         self._measurement = None
+        cancel = self._cache_cancel("main")
 
         def task() -> None:
-            self._cache_ready.emit(token, self._cached(Path(info.path), snapshot.stream_index))
+            self._cache_ready.emit(token, self._cached(Path(info.path), snapshot.stream_index,
+                                                       snapshot.frames if snapshot.frames_exact else None, cancel))
 
-        self._executor.submit(task)
+        self._submit(task)
+
+    def _on_cache_count(self, active: bool) -> None:
+        """Comptage exact d'un chargement du cache : « Annuler » accessible pendant sa durée."""
+        if active and not self._busy:
+            self._count_busy = True
+            self._set_busy(True, translate_text("Vérification du nombre d'images de la mesure en cache…"))
+            self._progress_bar.setRange(0, 0)
+        elif not active and self._count_busy:
+            self._count_busy = False
+            self._set_busy(False)
 
     def _on_cache_ready(self, token: int, cached: object) -> None:
         if token == self._token and self._info is not None:
             self._show_snapshot(cached)
 
-    def _cached(self, path: Path, stream_index: int) -> dict:
-        """Résultats en cache (thread de travail) : métadonnées dynamiques et mesure de l'image."""
-        return {"dynamic": self._cache.load(path, stream_index),
-                "measure": self._cache.load_measurement(path, stream_index)}
+    def _frame_check(self, path: Path, stream_index: int, frames: int | None,
+                     cancel: threading.Event | None = None, *, announce: bool = False) -> FrameCountCheck:
+        """Contrôle du nombre d'images d'une mesure : compte de l'inspection, écart confirmé par ffprobe.
+
+        Le compte exact d'une piste, une fois obtenu, remplace celui de l'inspection pour tout contrôle suivant
+        (chargement du cache puis nouvelle mesure). ``announce`` : comptage signalé (opération annulable)."""
+        key = self._cache.key(Path(path), stream_index)
+        with self._exact_counts_lock:
+            exact_known = self._exact_counts.get(key) if key is not None else None
+        if exact_known is not None:
+            return frame_count_check(exact_known, lambda: exact_known)
+        counter = packet_counter(str(self._config.tool_ffprobe), path, stream_index, cancel)
+
+        def exact() -> int | None:
+            if announce:
+                self._cache_count.emit(True)
+            try:
+                value = counter()
+            finally:
+                if announce:
+                    self._cache_count.emit(False)
+            if key is not None and value:  # compte illisible : jamais mémorisé, recompté au contrôle suivant
+                with self._exact_counts_lock:
+                    self._exact_counts[key] = value
+            return value
+
+        return frame_count_check(frames, exact)
+
+    def _cache_cancel(self, role: str) -> threading.Event:
+        """Annulation d'un chargement du cache (``main`` : piste inspectée, ``compare`` : piste B) : le comptage
+        exact éventuel du chargement précédent du même rôle est arrêté ; tous le sont à la fermeture."""
+        events = self.__dict__.setdefault("_cache_cancels", {})
+        previous = events.get(role)
+        if previous is not None:
+            previous.set()
+        events[role] = threading.Event()
+        return events[role]
+
+    def _cached(self, path: Path, stream_index: int, frames: int | None = None,
+                cancel: threading.Event | None = None) -> dict:
+        """Résultats en cache (thread de travail) : métadonnées dynamiques et mesure de l'image.
+
+        ``frames`` : images selon l'inspection ; mesure complète d'un autre nombre d'images (écart confirmé par
+        un comptage exact, arrêté par ``cancel``) écartée ; comptage annulé : mesure non reprise."""
+        from core.fel.engine import FelCancelled
+
+        dynamic = self._cache.load(path, stream_index)
+        try:
+            measure = self._cache.load_measurement(
+                path, stream_index, check=self._frame_check(path, stream_index, frames, cancel, announce=True))
+        except FelCancelled:
+            measure = None
+        return {"dynamic": dynamic, "measure": measure}
 
     def _show_snapshot(self, cached: object) -> None:
         assert self._info is not None
@@ -542,7 +666,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Lecture des métadonnées dynamiques : {name}", name=info.path.name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_progress(self, token: int, label: str, pct: int) -> None:
         if token != self._token:
@@ -599,7 +723,7 @@ class HdrStudio(QWidget):
 
         ``fast`` : images clés seulement (plugin ≥ 0.5.0), estimation en moins d'une minute pour un film.
         """
-        if self._info is None or self._busy:
+        if self._info is None or self._busy or not self._extensions_admitted():
             return
         info, stream = self._info, self._current_stream()
         snapshot = build_snapshot(info, stream)
@@ -641,15 +765,15 @@ class HdrStudio(QWidget):
             owned = None
             try:
                 owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-mesure")
-                statistics = owned.path / "mesure.jsonl"
+                check = self._frame_check(Path(info.path), snapshot.stream_index,
+                                          snapshot.frames if snapshot.frames_exact else None, cancel)
                 # Mesure rapide : la progression reçoit la position dans le flux (images).
-                backend = engine.measure(
-                    Path(info.path), snapshot.stream_index, statistics, layer="base",
-                    threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)),
-                    progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
-                    cancelled=cancel, sampling="keyframes" if fast else "all")
-                measurement = read_measurement(statistics, "base", total_frames=frames, fps=fps,
-                                               cancelled=cancel.is_set)
+                measurement, backend = measure_track(
+                    engine, Path(info.path), snapshot.stream_index, owned.path,
+                    threads=max(2, int(getattr(config, "ffmpeg_threads", 8) or 8)), total_frames=frames, fps=fps,
+                    fast=fast, progress=lambda frames: self._progress.emit(token, "", min(99, int(100 * frames / total))),
+                    cancel=cancel, frame_check=check)
+                measurement = check.verified(measurement)  # compte exact obtenu pendant la mesure : mémorisé
                 self._cache.store_measurement(Path(info.path), snapshot.stream_index, measurement)
                 self.log_message.emit("INFO", translate_text("Mesure de l'image : {backend}", backend=backend))
                 self._measured.emit(token, measurement, "")
@@ -667,7 +791,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Mesure de l'image : {name}", name=info.path.name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_measured(self, token: int, measurement: ImageMeasurement | None, error: str) -> None:
         if token != self._token:
@@ -737,7 +861,7 @@ class HdrStudio(QWidget):
 
     def analyse_fel(self, interval_s: int) -> None:
         """Relevé des couches puis comparaison image reconstruite / couche mapped aux instants échantillonnés."""
-        if self._info is None or self._busy or self._report is None:
+        if self._info is None or self._busy or self._report is None or not self._extensions_admitted():
             return
         snapshot, report = self._report.snapshot, self._report
         dovi = report.dovi
@@ -792,7 +916,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("FEL Analyzer : {name}", name=Path(snapshot.path).name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _fel_area(self) -> Callable[[float], tuple[int, int, int, int] | None]:
         """Zone active L5 (gauche, droite, haut, bas) en vigueur à un instant, None sans L5."""
@@ -805,7 +929,7 @@ class HdrStudio(QWidget):
     def test_fel_survival(self, encoder: str, bitrate_kbps: int) -> None:
         """Encode une seconde du moment le plus détaillé et mesure la part de l'apport conservée."""
         fel = self._fel_tab.fel_report()
-        if fel is None or not fel.samples or self._busy or self._report is None:
+        if fel is None or not fel.samples or self._busy or self._report is None or not self._extensions_admitted():
             return
         snapshot = self._report.snapshot
         engine = self._fel_engine()
@@ -827,7 +951,8 @@ class HdrStudio(QWidget):
                 result = run_survival(capture, fel, ffmpeg_bin=str(self._config.tool_ffmpeg), encoder=encoder,
                                       bitrate_kbps=bitrate_kbps, fps=snapshot.fps or 24000 / 1001, area=area,
                                       duration_s=snapshot.duration_s,
-                                      progress=lambda text, value: self._progress.emit(token, text, value))
+                                      progress=lambda text, value: self._progress.emit(token, text, value),
+                                      cancel=cancel)
                 self._fel_done.emit(token, dataclasses.replace(fel, survival=result), "")
             except subprocess.CalledProcessError as exc:
                 detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()[-300:]
@@ -841,7 +966,7 @@ class HdrStudio(QWidget):
         self._set_busy(True, translate_text("Test de survie à l'encodage…"))
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_fel_partial(self, token: int, fel: object) -> None:
         """Verdict provisoire après une passe grossière (60 s, 30 s) : affiché, l'analyse continue."""
@@ -866,7 +991,7 @@ class HdrStudio(QWidget):
 
     def open_fel_moment(self, time_s: float) -> None:
         """Capture pleine définition des couches sans / avec FEL à un instant, puis comparateur avant / après."""
-        if self._busy or self._report is None:
+        if self._busy or self._report is None or not self._extensions_admitted():
             return
         snapshot = self._report.snapshot
         engine = self._fel_engine()
@@ -903,7 +1028,7 @@ class HdrStudio(QWidget):
                                             time=format_time(time_s)))
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_moment_ready(self, token: int, images: object, error: str) -> None:
         if token != self._token:
@@ -946,35 +1071,46 @@ class HdrStudio(QWidget):
             return
         self._compare_token += 1
         token = self._compare_token
-        self._compare_tab.set_status(translate_text("Inspection de {name}…", name=path.name))
+        status = translate_text("Inspection de {name}…", name=path.name)
+        self._compare_tab.set_status(status)
         ffprobe, mediainfo = str(self._config.tool_ffprobe), str(self._config.tool_mediainfo)
+        cancel = self._cache_cancel("compare")
+        self._begin_inspection("compare", token, cancel, status)
 
         def task() -> None:
             try:
-                info = FileInspector(ffprobe, mediainfo).inspect(path)
+                info = FileInspector(ffprobe, mediainfo, cancel_event=cancel).inspect(path)  # sondes tuées
                 video = info.video_tracks
-                index = next((t.index for t in video if t.index == stream_index), video[0].index if video else 0)
-                self._compare_inspected.emit(token, info, index, self._cached(path, index) if video else None, "")
+                index = _requested_track(info, stream_index)
+                self._compare_inspected.emit(token, info, index, self._cached(
+                    path, index, _inspected_frames(info, index), cancel) if video else None, "")
+            except TrackNotFoundError as exc:  # piste demandée absente : jamais une autre piste affichée à sa place
+                self._compare_inspected.emit(token, None, 0, None, _missing_track_message(exc))
             except Exception as exc:  # inspection impossible : message à l'utilisateur
                 self._compare_inspected.emit(token, None, 0, None, str(exc))
 
-        self._executor.submit(task)
+        self._submit(task)
 
     def compare_track_changed(self, stream_index: int) -> None:
         info = self._compare_info
-        if info is None:
-            return
+        if info is None or self._inspection is not None:
+            return  # inspection d'une source en cours : son retour décide de la piste affichée
         self._compare_token += 1
         token = self._compare_token
+        cancel = self._cache_cancel("compare")
 
         def task() -> None:
-            self._compare_inspected.emit(token, info, stream_index, self._cached(Path(info.path), stream_index), "")
+            self._compare_inspected.emit(token, info, stream_index, self._cached(
+                Path(info.path), stream_index, _inspected_frames(info, stream_index), cancel), "")
 
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_compare_inspected(self, token: int, info: FileInfo | None, index: int, cached: object, error: str) -> None:
         if token != self._compare_token:
             return
+        if self._inspection is not None and self._inspection[0] == "compare":
+            if not self._end_inspection("compare", token):
+                return
         if info is None or not info.video_tracks:
             self._compare_notify("ERROR", error or translate_text("Aucune piste vidéo."))
             return
@@ -1022,7 +1158,7 @@ class HdrStudio(QWidget):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
         self.log_message.emit("INFO", translate_text("Lecture des métadonnées dynamiques : {name}", name=info.path.name))
-        self._executor.submit(task)
+        self._submit(task)
 
     def _on_compare_analyzed(self, token: int, report: InspectionReport | None, error: str) -> None:
         if token != self._token:
@@ -1082,8 +1218,8 @@ class HdrStudio(QWidget):
         self._tabs.setCurrentIndex(self._tabs.count() - 1)
 
     def _display_peak_changed(self, value: int) -> None:
-        # Enregistré avec la configuration (fermeture de l'application ou page Paramètres).
-        self._config.display_peak_nits = int(value)
+        # Retenu aussitôt dans les réglages de l'interface (aucun rechargement ne le perd).
+        self._config.remember_display_peak(int(value))
         self._editor.set_realignment(self._realignment(self._report))
 
     def _apply_to_encode(self, max_cll: int, max_fall: int) -> None:
@@ -1112,9 +1248,14 @@ class HdrStudio(QWidget):
         self.write_patch(plan)
 
     def write_patch(self, plan: PatchPlan) -> None:
-        """Écrit le fichier corrigé (thread de travail, annulable)."""
-        if self._busy:
+        """Écrit le fichier corrigé (thread de travail, annulable) ; remplacement d'un fichier existant confirmé,
+        état exigé jusqu'à la publication."""
+        if self._busy or not self._extensions_admitted():  # aucune écriture pendant une modification d'extension
             return
+        existing = confirm_output(self, plan.output)
+        if existing is None:
+            return
+        plan = dataclasses.replace(plan, existing=existing)
         self._token += 1
         token = self._token
         cancel = threading.Event()
@@ -1143,16 +1284,26 @@ class HdrStudio(QWidget):
             return runner._run_cmd(cmd, label="hdr-patch", progress_cb=self._tool_line(cmd), progress_pct_cb=on_pct,
                                    signals=signals)
 
+        report = self._report
+
         def task() -> None:
             owned = None
             try:
+                checked_plan = self._verified_plan(plan, report, token, cancel)
+                if checked_plan is None:  # comptage annulé : ni candidat ni sortie
+                    self._patched.emit(token, None, "")
+                    return
                 owned = create_process_work_dir(config.ensure_work_dir(), process_name="hdr-correction")
+                # Images de la source sans RPU : complétées à leur rang, annoncées (WARN), jamais en silence.
+                checked = dataclasses.replace(checked_plan, rpu_gaps=analyze_rpu_gaps(
+                    checked_plan, report, cancelled=cancel.is_set), rpu_gaps_checked=True)
                 patcher = MetadataPatcher(
                     ffmpeg_bin=str(config.tool_ffmpeg), dovi_tool_bin=str(config.tool_dovi_tool),
                     hdr10plus_bin=str(config.tool_hdr10plus), run_cmd=run, work_dir=owned.path,
                     on_step=on_step, cancelled=cancel.is_set,
-                    progress=lambda fraction: self._progress.emit(token, "", int(fraction * 100)))
-                self._patched.emit(token, patcher.run(plan), "")
+                    progress=lambda fraction: self._progress.emit(token, "", int(fraction * 100)),
+                    warn=lambda _code, message, _fields: self._patch_warning.emit(message))
+                self._patched.emit(token, patcher.run(checked), "")
             except PatchCancelled:
                 self._patched.emit(token, None, "")
             except Exception as exc:
@@ -1171,7 +1322,34 @@ class HdrStudio(QWidget):
         self.log_message.emit("INFO", translate_text("Correction des métadonnées : {source} → {output}",
                                                      source=plan.source.name, output=plan.output.name))
         self.op_state_changed.emit("started", translate_text("Correction de {name}…", name=plan.source.name))
-        self._executor.submit(task)
+        self._submit(task)
+
+    def _verified_plan(self, plan: PatchPlan, report: InspectionReport | None, token: int,
+                       cancel: threading.Event) -> PatchPlan | None:
+        """Thread de travail : HDR10+ recalculé (écriture image par image) → compte exact de la piste exigé, obtenu
+        ici au besoin (jamais pendant la saisie du formulaire) puis mémorisé ; ``None`` si annulé. Écart ou compte
+        illisible : ``MeasurementError`` (correction refusée, rien n'est écrit)."""
+        from core.fel.engine import FelCancelled
+
+        if not plan.writes_per_frame or plan.hdr10plus is None or plan.hdr10plus.recompute is None:
+            return plan
+        measurement = plan.hdr10plus.recompute[0]
+        assert isinstance(measurement, ImageMeasurement)
+        snapshot = report.snapshot if report is not None else None
+        quick = snapshot.frames if snapshot is not None and snapshot.frames_exact else None
+        check = self._frame_check(Path(plan.source), plan.stream_index, quick, cancel)
+        if check.status(measurement) is not FrameStatus.VERIFIED:
+            self._progress.emit(token, translate_text("Vérification du nombre d'images…"), 0)
+        try:
+            expected = check.require_verified(measurement)
+        except FelCancelled:
+            return None
+        if cancel.is_set():
+            return None
+        verified = check.verified(measurement)
+        if verified is not measurement:
+            self._cache.store_measurement(Path(plan.source), plan.stream_index, verified)
+        return dataclasses.replace(plan, expected_frames=expected)
 
     def _on_patched(self, token: int, output: Path | None, error: str) -> None:
         if token != self._token:
@@ -1198,6 +1376,21 @@ class HdrStudio(QWidget):
 
     def cancel(self) -> None:
         self._cancel.set()
+        self._pending_analyze = False  # inspection annulée : pas d'analyse automatique ensuite
+        if self._inspection is not None:  # inspection rapide (A ou B) : occupation levée aussitôt, retour ignoré
+            role, _token, event = self._inspection
+            event.set()
+            self._inspection = None
+            if role == "compare":
+                self._compare_token += 1  # chargement de B périmé (piste B : jeton propre)
+                self._compare_tab.set_status(translate_text("Inspection annulée."))
+            self._set_busy(False)
+            self._set_status(translate_text("Inspection annulée."))
+        for cache_cancel in self.__dict__.get("_cache_cancels", {}).values():
+            cache_cancel.set()  # comptage exact d'un chargement du cache (piste changée, piste B)
+        if self._count_busy:  # occupation du seul comptage : levée ici (aucune tâche ne la lèvera)
+            self._count_busy = False
+            self._set_busy(False)
         if self._signals is not None:
             self._signals.cancel()
 
@@ -1208,6 +1401,41 @@ class HdrStudio(QWidget):
 
     def is_busy(self) -> bool:
         return self._busy
+
+    def set_extensions_guard(self, guard) -> None:
+        """Garde des analyses qui utilisent l'extension mvo-fel (fenêtre : aucune modification d'extension)."""
+        self._extensions_guard = guard
+
+    def _extensions_admitted(self) -> bool:
+        guard = getattr(self, "_extensions_guard", None)
+        if guard is None or guard():
+            return True
+        self._notify("WARN", translate_text("Analyse impossible : une extension est en cours d'installation, de mise "
+                                            "à jour ou de suppression."))
+        return False
+
+    def tools_in_use(self) -> bool:
+        """Vrai tant qu'une tâche de fond tourne encore (y compris annulée et pas encore terminée)."""
+        return getattr(self, "_inflight", 0) > 0
+
+    def _submit(self, task) -> None:
+        """Soumet ``task`` au fil de travail en comptant les tâches en vol jusqu'à leur fin réelle."""
+        self._inflight = getattr(self, "_inflight", 0) + 1
+        if self._inflight == 1:
+            self.tools_in_use_changed.emit(True)
+
+        def tracked() -> None:
+            try:
+                task()
+            finally:
+                self._worker_finished.emit()
+
+        self._executor.submit(tracked)
+
+    def _on_worker_finished(self) -> None:
+        self._inflight = max(0, getattr(self, "_inflight", 0) - 1)
+        if self._inflight == 0:
+            self.tools_in_use_changed.emit(False)
 
     # ── État ────────────────────────────────────────────────────────────
     def _set_busy(self, busy: bool, status: str = "") -> None:
@@ -1350,6 +1578,8 @@ class HdrStudio(QWidget):
         if not hasattr(self, "_shutdown"):
             self.setEnabled(False)
             self.cancel()
+            for cache_cancel in self.__dict__.get("_cache_cancels", {}).values():
+                cache_cancel.set()  # comptages exacts des chargements du cache
             self._shutdown = Shutdown(executors=(self._executor,))
         if defer_close(self, event, ready=self._shutdown.done.is_set()):
             return

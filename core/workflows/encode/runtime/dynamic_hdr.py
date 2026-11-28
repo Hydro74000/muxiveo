@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from core.workflows.encode.hdr10plus_output import generates_hdr10plus, outputs_dynamic_hdr
 from core.workflows.encode.models import EncodeConfig, VideoEncodeSettings
 from core.workflows.encode.runtime.hdr_metadata import HdrMetadataProbeService
 
@@ -80,7 +81,7 @@ class DynamicHdrConfigNormalizer:
     def normalize_multi(self, config: EncodeConfig) -> EncodeConfig:
         videos: list[VideoEncodeSettings] = []
         for index, video in enumerate(self._cb.video_tracks(config), start=1):
-            if not (video.copy_dv or video.copy_hdr10plus):
+            if not outputs_dynamic_hdr(video):
                 videos.append(video)
                 continue
 
@@ -152,8 +153,9 @@ class DynamicHdrConfigNormalizer:
         analysis_pending = bool(
             str(getattr(video, "static_hdr_metadata_analysis_request", "") or "").strip()
         ) or bool(self._cb.defer_static_hdr is not None and self._cb.defer_static_hdr(video))
+        # HDR10+ généré : aucun HDR10+ de la source requis (DV présent, contrôlé par la règle effective).
         if (
-            (copy_dv or copy_hdr10plus)
+            (copy_dv or copy_hdr10plus or generates_hdr10plus(video))
             and video.inject_hdr_meta
             and (not auto_md or (not auto_cll and not deferred))
             and not analysis_pending

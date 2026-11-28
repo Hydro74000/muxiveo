@@ -14,9 +14,11 @@ from core.subtitle_codec import plan_subtitle_codec
 from core.workflows.common.sync_rewrite import (
     audio_bitrate_kbps_from_display_info,
     normalized_rewrite_codec,
+    requested_audio_reencode,
 )
 from core.workflows.common.attachments import canonical_attachment_output_name, mime_for_path
 from core.workflows.common.track_types import TimelineMappedTrack
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 from core.workflows.common.timeline_sync import append_strict_interleave_mux_flags
 from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE as STREAM_SPEC_BY_TYPE
 from core.workflows.common.metadata import matroska_video_tag_args
@@ -57,8 +59,9 @@ def _audio_variant_codec_args(mapped_track: MappedTrack) -> list[str]:
     if track.track_type != "audio":
         return []
     target = normalized_rewrite_codec(track.codec)
-    source = normalized_rewrite_codec(track.orig_codec or track.codec)
-    if not target or target == source or target not in _AUDIO_REENCODE_ENCODERS:
+    # Réencodage demandé (autre codec, ou même codec à un autre débit) ; une copie, ou une piste déjà
+    # réécrite par la synchro physique (`is_new` faux, codec d'origine = sortie), reste copiée.
+    if not target or not requested_audio_reencode(track) or target not in _AUDIO_REENCODE_ENCODERS:
         return []
     out_idx = mapped_track.out_type_index
     args = [f"-c:a:{out_idx}", _AUDIO_REENCODE_ENCODERS[target]]
@@ -203,6 +206,7 @@ def build_remux_command(
         cmd.extend([f"-metadata:s:t:{att_t_idx}", f"filename={canonical_attachment_output_name(attachment_path)}"])
         att_t_idx += 1
 
+    cmd.extend(matroska_output_args(cmd[0], config.output))
     cmd.append(cli_path(config.output))
     return cmd
 

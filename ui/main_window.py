@@ -46,6 +46,7 @@ import time
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from functools import partial
 from typing import Callable, TYPE_CHECKING, cast
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, Signal, QTimer, QUrl
@@ -54,7 +55,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QCheckBox,
-    QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox,
     QProgressDialog, QPushButton, QScrollArea, QSizePolicy,
     QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -67,6 +68,7 @@ from core.i18n import apply_translations, install_qt_translations, set_current_l
 from core.logging import LogLevel, VerboseFileLogger, parse_log_level
 from core.runner import TaskSignals, _PCT_SENTINEL
 from core.subprocess_utils import subprocess_text_kwargs
+from core.tool_versions import ToolVersionReport
 from core.update_check import (
     UPDATE_CHECK_TIMEOUT_S,
     UpdateInfo,
@@ -79,6 +81,7 @@ from core.update_install import (
     apply_update,
     can_self_update,
     collect_update_results,
+    mark_update_results_reported,
     start_update_cleanup,
     detect_install_kind,
     download_update,
@@ -89,21 +92,28 @@ from core.version import (
     APP_BUILD_VERSION, APP_DONATION_URL, APP_IS_UNSTABLE_BUILD,
     APP_VERSION_LABEL, WRITING_APPLICATION_TAG,
 )
+from core.workdir import RetainedProcessWorkDir
 from core.workflows.encode.backends import backend_id_for_codec
 from core.workflows.encode.interpolation import parse_rife_progress
+from core.output_commit import OutputRefusedError
 from core.workflows.encode import EncodeError, HardwareEncoderDetector
+from core.workflows.encode.runtime.storage_guard import format_bytes
 from core.workflows.encode.vulkan import detect_vulkan
 from core.workflows.common.sync_rewrite import SYNC_REWRITE_STAGE_PREFIX
 from core.workflows.remux_models import RemuxError
-from ui.confirm import confirm_close_while_running, confirm_overwrite
+from ui.confirm import confirm_close_while_running, confirm_output, destination_changed_message
 from ui.shutdown import Shutdown, defer_close
 from ui.panels.encode_panel import EncodePanel
 from ui.panels.encode_panel.theme import (
-    _FPS_RE,
     _FRAME_RE,
     EtaTracker,
     _fmt_eta,
     ffmpeg_progress_seconds,
+)
+from core.workflows.encode.progress_tracking import (
+    EncodeProgressTracker,
+    ProgressSnapshot,
+    parse_encode_internal_progress as _parse_encode_internal_progress,
 )
 from ui.panels.merge_dovi_panel import MergeDoviPanel
 from ui.panels.remux_panel import RemuxPanel
@@ -112,8 +122,16 @@ from ui.panels.hybrid_studio import HybridStudio
 from ui.panels.settings_panel import SettingsPanel
 from ui.dialogs.update_dialog import UpdateDialog, install_unavailable_reason
 from ui.panels.extensions_panel import ExtensionsPanel
-from ui.plugin_controller import FelPluginController, PluginController, RifePluginController, TrtPluginController
+from ui.plugin_controller import (
+    FelPluginController,
+    NvenccController,
+    PluginController,
+    RifePluginController,
+    TrtPluginController,
+)
 from ui.operation_bar import OperationBar, OperationState
+from ui.operation_summary import media_operation_summary
+from ui.tool_admission import ToolAdmission
 from ui.styles import workflow_icon
 from ui.widgets.log_panel import LogPanel, split_log_source
 from ui.desktop import open_external
@@ -252,11 +270,33 @@ def _is_ffmpeg_info_noise(line: str) -> bool:
     sont laissées passer au LogPanel pour visibilité utilisateur).
     """
     return any(line.startswith(prefix) for prefix in _FFMPEG_INFO_PREFIXES)
+
+
+# libx265 compilé avec libvmaf sans ses modèles (hôte sans libvmaf) : deux messages par image, sans
+# effet sur l'encodage, écrits par plusieurs fils à la fois (lignes déchirées : « son »,
+# « ing model file: … », « problem loadlibvmaf ERROR … »).
+_LIBVMAF_NOISE_RE = re.compile(r"libvmaf|vmaf_v\d|model file:|read model from path|problem load", re.IGNORECASE)
+_LIBVMAF_NOISE_TEMPLATE = (
+    'problem loading model file: libvmaf ERROR could not read model from path: '
+    '"/usr/local/share/model/vmaf_v0.6.1.json"'
+)
+
+
+def _is_libvmaf_noise(line: str) -> bool:
+    """Bruit libvmaf de libx265, fragments de lignes déchirées compris (morceau court du message)."""
+    text = line.strip()
+    if not text:
+        return False
+    return bool(_LIBVMAF_NOISE_RE.search(text)) or (len(text) <= 16 and text in _LIBVMAF_NOISE_TEMPLATE)
+
+
+def _encode_uses_nvencc(encode_config: object) -> bool:
+    """Encodage vidéo par NVEncC : ni libx265 ni son bruit libvmaf (ses lignes VMAF sont les siennes)."""
+    codec = str(getattr(getattr(encode_config, "video", None), "codec", "") or "").strip().lower()
+    return bool(codec) and backend_id_for_codec(codec) == "nvencc"
 # Hauteur réservée au cadre/titre de fenêtre dans la zone utile de l'écran.
 _WINDOW_FRAME_MARGIN_PX = 40
 _STEP_PROGRESS_RE = re.compile(r"^STEP\s+\d+\s*-\s*(.+)$")
-_ENCODE_INTERNAL_PROGRESS_PREFIX = "__MRE_PROGRESS__ "
-_MULTI_ENCODE_LABEL_RE = re.compile(r"^ffmpeg-video-(\d+)(?:-pass(\d+))?$")
 
 
 def _is_encode_stage_message(line: str) -> bool:
@@ -265,26 +305,6 @@ def _is_encode_stage_message(line: str) -> bool:
 
 def _is_encode_progress_noise(line: str) -> bool:
     return any(line.startswith(prefix) for prefix in _ENCODE_PROGRESS_NOISE_PREFIXES)
-
-
-def _fmt_progress_percent(percent: float | int) -> str:
-    value = float(percent)
-    if abs(value - round(value)) < 0.05:
-        return f"{int(round(value))}%"
-    return f"{value:.1f}%"
-
-
-def _parse_encode_internal_progress(line: str) -> dict[str, object] | None:
-    if not line.startswith(_ENCODE_INTERNAL_PROGRESS_PREFIX):
-        return None
-    payload = line[len(_ENCODE_INTERNAL_PROGRESS_PREFIX):].strip()
-    if not payload:
-        return None
-    try:
-        obj = json.loads(payload)
-    except json.JSONDecodeError:
-        return None
-    return obj if isinstance(obj, dict) else None
 
 
 def _parse_sync_rewrite_stage_progress(line: str) -> tuple[str, str] | None:
@@ -310,30 +330,6 @@ def _sync_rewrite_stage_label(track_type: str, name: str) -> str:
     if track_type == "audio":
         return translate_text("Synchro piste audio {name}", name=name)
     return translate_text("Synchro sous-titre {name}", name=name)
-
-
-def _parse_multi_encode_label(label: str) -> tuple[int, int | None, int] | None:
-    match = _MULTI_ENCODE_LABEL_RE.match(str(label).strip())
-    if match is None:
-        return None
-    order = int(match.group(1))
-    pass_index_raw = match.group(2)
-    if pass_index_raw is None:
-        return order, None, 1
-    pass_index = int(pass_index_raw)
-    return order, pass_index, 2
-
-
-def _state_float(state: dict[str, object], key: str, default: float = 0.0) -> float:
-    value = state.get(key, default)
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value.strip())
-        except ValueError:
-            return default
-    return default
 
 
 def _config_file_logging_enabled(config: object) -> bool:
@@ -382,75 +378,6 @@ def _ensure_verbose_file_logger(window: object) -> VerboseFileLogger:
     setattr(window, "_verbose_file_logger", logger)
     return logger
 
-
-def _multi_encode_remaining_seconds(state: dict[str, object], now: float) -> float | None:
-    """
-    ETA d'un encode multi-stream basé sur la vitesse lissée (EWMA), pas sur
-    la moyenne depuis le début. Évite l'ETA gonflé pendant l'init de ffmpeg.
-    """
-    tracker = state.get("eta_tracker")
-    if not isinstance(tracker, EtaTracker):
-        tracker = EtaTracker(warmup_progress=1.0)
-        state["eta_tracker"] = tracker
-
-    duration_s = state.get("duration_s")
-    elapsed_video = state.get("elapsed_video")
-    if (
-        isinstance(duration_s, (int, float))
-        and duration_s > 0
-        and isinstance(elapsed_video, (int, float))
-        and elapsed_video >= 0
-    ):
-        tracker.update(float(elapsed_video), now)
-        return tracker.eta(float(duration_s), float(elapsed_video))
-
-    total_frames = state.get("total_frames")
-    frame = state.get("frame")
-    fps_value = state.get("fps")
-    if (
-        isinstance(total_frames, int)
-        and total_frames > 0
-        and isinstance(frame, int)
-        and frame > 0
-        and total_frames > frame
-    ):
-        # Si ffmpeg a déjà fourni un fps, on l'utilise tel quel — c'est le
-        # même chiffre que l'utilisateur voit dans le label, donc cohérent.
-        if isinstance(fps_value, (int, float)) and fps_value > 0:
-            return tracker.eta_from_speed(float(total_frames), float(frame), float(fps_value))
-        tracker.update(float(frame), now)
-        return tracker.eta(float(total_frames), float(frame))
-    return None
-
-
-def _select_multi_encode_label(
-    states: dict[str, dict[str, object]],
-    active_label: str | None,
-    now: float,
-) -> str | None:
-    candidates = [
-        (label, state)
-        for label, state in states.items()
-        if not bool(state.get("done", False))
-    ]
-    if not candidates:
-        return None
-
-    scored: list[tuple[int, float, float, int, str]] = []
-    for label, state in candidates:
-        remaining_s = _multi_encode_remaining_seconds(state, now)
-        known_remaining = 1 if remaining_s is not None else 0
-        scored.append(
-            (
-                known_remaining,
-                float(remaining_s if remaining_s is not None else -1.0),
-                _state_float(state, "last_update", 0.0),
-                1 if label == active_label else 0,
-                label,
-            )
-        )
-    scored.sort(reverse=True)
-    return scored[0][4]
 
 # ---------------------------------------------------------------------------
 # LogPanel
@@ -526,6 +453,8 @@ class DashboardPage(QWidget):
     trt_badge_clicked = Signal()
     rife_badge_clicked = Signal()       # badge muxiveo-rife → page Extensions
     _sw_detected = Signal(object)   # dict[str, bool] — encodeurs logiciels/audio
+    # dict[str, ToolVersionReport] — versions des outils (sondes du thread de détection).
+    _tool_versions_detected = Signal(object)
 
     # codec_id → (label affiché, badge QLabel) pour mise à jour async
     _HW_VIDEO: list[tuple[str, str]] = [
@@ -558,6 +487,11 @@ class DashboardPage(QWidget):
         self._sw_detected.connect(self._on_sw_detected, Qt.ConnectionType.QueuedConnection)
         self._vulkan_detected.connect(self._on_vulkan_detected, Qt.ConnectionType.QueuedConnection)
         self._accel_detected.connect(self._on_accel_detected, Qt.ConnectionType.QueuedConnection)
+        self._tool_versions_detected.connect(self._on_tool_versions_detected, Qt.ConnectionType.QueuedConnection)
+        # Badges « Outils disponibles » : info-bulle = version et provenance (diagnostic).
+        self._tool_badges: dict[str, QLabel] = {}
+        self._tool_base_tooltips: dict[str, str] = {}
+        self._tool_reports: dict[str, ToolVersionReport] = {}
         self._vulkan_badge: QLabel | None = None
         self._nvof_badge: QLabel | None = None
         self._trt_badge: _ClickableBadge | None = None
@@ -612,16 +546,29 @@ class DashboardPage(QWidget):
         grid_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         availability = self._config.all_tools_available()
+        self._tool_badges = {}
+        self._tool_base_tooltips = {}
         for tool_name, available in availability.items():
             if tool_name == "muxiveo-rife":
-                # Moteur de l'extension Interpolation : badge cliquable vers la page Extensions.
+                # Moteur vidéo MVO (extension mvo-rife) : badge cliquable vers la page Extensions.
                 self._rife_badge = _ClickableBadge()
                 self._rife_badge.clicked.connect(self.rife_badge_clicked.emit)
                 badge = self._make_tool_badge(tool_name, available, self._rife_badge)
-                badge.setToolTip(translate_text("Interpolation d'images (extension MVO-RIFE) : page Extensions."))
+                self._tool_base_tooltips[tool_name] = translate_text(
+                    "Moteur vidéo MVO (débruitage, interpolation) : page Extensions."
+                )
             else:
                 badge = self._make_tool_badge(tool_name, available)
+            self._tool_badges[tool_name] = badge
             grid_layout.addWidget(badge)
+        # Outils embarqués : version lue dans le manifeste, sans lancer de processus ;
+        # outils système : version complétée par la détection asynchrone.
+        self._tool_reports = self._config.tool_version_reports(probe=False)
+        self._apply_tool_tooltips()
+        tools_grid.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tools_grid.customContextMenuRequested.connect(
+            lambda pos, grid=tools_grid: self._show_tools_menu(grid.mapToGlobal(pos))
+        )
 
         root.addWidget(tools_grid)
 
@@ -695,6 +642,59 @@ class DashboardPage(QWidget):
             rl.addWidget(val_lbl)
             rl.addStretch()
             root.addWidget(row)
+
+    @staticmethod
+    def _tool_tooltip(report: ToolVersionReport) -> str:
+        """Info-bulle d'un outil : version, emplacement et provenance."""
+        if report.path is None:
+            return translate_text("{name} : introuvable", name=report.name)
+        lines = [translate_text("Version : {version}", version=report.version or translate_text("inconnue"))]
+        if report.libraries:
+            lines.append(", ".join(f"{name} {version}" for name, version in sorted(report.libraries.items())))
+        lines.append(translate_text("Emplacement : {path}", path=report.path))
+        if report.bundled:
+            origin = ", ".join(part for part in (report.release, report.published) if part)
+            lines.append(translate_text("Provenance : outil embarqué ({origin})", origin=origin or "?"))
+        else:
+            lines.append(translate_text("Provenance : outil du système"))
+        return "\n".join(lines)
+
+    def _apply_tool_tooltips(self) -> None:
+        for name, badge in self._tool_badges.items():
+            report = self._tool_reports.get(name)
+            parts = [self._tool_base_tooltips.get(name, "")]
+            if report is not None:
+                parts.append(self._tool_tooltip(report))
+            badge.setToolTip("\n".join(part for part in parts if part))
+
+    @staticmethod
+    def _probe_tool_versions(config: AppConfig) -> dict[str, ToolVersionReport]:
+        """Thread worker : versions des outils (``-version`` / ``--version`` des outils système)."""
+        return config.tool_version_reports(probe=True)
+
+    def _run_tool_versions(self) -> None:
+        self._tool_versions_detected.emit(self._probe_tool_versions(self._config))
+
+    def _on_tool_versions_detected(self, reports: dict[str, ToolVersionReport]) -> None:
+        """Slot Qt (thread principal) : info-bulles complétées par les versions sondées."""
+        self._tool_reports.update(reports)
+        self._apply_tool_tooltips()
+
+    def tool_versions_text(self) -> str:
+        """Versions des outils, une ligne chacun (rapport de bug)."""
+        return "\n".join(
+            f"{name} : {report.label(translate_text)}" for name, report in self._tool_reports.items()
+        )
+
+    def _show_tools_menu(self, global_pos) -> None:
+        menu = QMenu(self)
+        copy = menu.addAction(translate_text("Copier les versions des outils"))
+        copy.triggered.connect(self._copy_tool_versions)
+        menu.exec(global_pos)
+
+    def _copy_tool_versions(self) -> None:
+        QGuiApplication.clipboard().setText(self.tool_versions_text())
+        self._log(translate_text("Versions des outils copiées dans le presse-papiers."), LogLevel.INFO)
 
     def _make_tool_badge(self, name: str, available: bool, lbl: QLabel | None = None) -> QLabel:
         color  = _Colors.LOG_OK  if available else _Colors.LOG_ERROR
@@ -877,6 +877,7 @@ class DashboardPage(QWidget):
         self._executor.submit(self._run_hw_detection)
         self._executor.submit(self._run_vulkan_detection)
         self._executor.submit(self._run_accel_detection)
+        self._executor.submit(self._run_tool_versions)
 
     def _run_sw_detection(self) -> None:
         """Thread worker : encodeurs logiciels/audio listés par ``ffmpeg -encoders``."""
@@ -947,7 +948,7 @@ class DashboardPage(QWidget):
             self.trt_capability.emit(trt)
 
     def set_rife_state(self, state: object) -> None:
-        """Badge muxiveo-rife selon l'extension Interpolation (RifeState) : disponible, téléchargement."""
+        """Badge muxiveo-rife selon le moteur vidéo MVO (RifeState) : disponible, téléchargement."""
         badge = self._rife_badge
         if badge is None:
             return
@@ -1018,6 +1019,10 @@ class DashboardPage(QWidget):
                 reason=reason or "?",
             )
         )
+
+    def start_hw_detection(self) -> None:
+        """Relance la détection des encodeurs (outil NVEncC installé ou supprimé depuis la page Extensions)."""
+        self._start_hw_detection()
 
     def _on_hw_detected(self, available: set[str]) -> None:
         """Slot Qt (thread principal) : met à jour les badges HW."""
@@ -1507,6 +1512,27 @@ class _Sidebar(QWidget):
 # MainWindow
 # ---------------------------------------------------------------------------
 
+class _PageStack(QStackedWidget):
+    """Pile des pages : une page peut retenir l'utilisateur (réglages non enregistrés)."""
+
+    leave_refused = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._leave_guards: dict[QWidget, Callable[[], bool]] = {}
+
+    def set_leave_guard(self, page: QWidget, guard: Callable[[], bool]) -> None:
+        self._leave_guards[page] = guard
+
+    def setCurrentIndex(self, index: int) -> None:
+        current = self.currentWidget()
+        guard = self._leave_guards.get(current) if current is not None else None
+        if index != self.currentIndex() and guard is not None and not guard():
+            self.leave_refused.emit()
+            return
+        super().setCurrentIndex(index)
+
+
 class MainWindow(QMainWindow):
     """
     Fenêtre principale de l'application.
@@ -1546,9 +1572,16 @@ class MainWindow(QMainWindow):
         set_operation_running = getattr(getattr(self, "_encode_panel", None), "set_operation_running", None)
         if callable(set_operation_running):
             set_operation_running(self._running_flag)
+        if (not self._running_flag and getattr(self, "_runtime_refresh_pending", False)
+                and not hasattr(self, "_shutdown")):
+            # Réglages enregistrés pendant l'opération : appliqués maintenant qu'elle est finie.
+            QTimer.singleShot(0, self, self._refresh_panels_runtime_settings)
         timer = getattr(self, "_operation_refresh_timer", None)
         if timer is not None:
             timer.start()
+        admission = getattr(self, "_tool_admission", None)
+        if admission is not None:
+            admission.usage_changed()  # fin d'usage : mises à jour d'extensions en attente relancées
 
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
@@ -1566,20 +1599,17 @@ class MainWindow(QMainWindow):
         # silencieuses côté UI (mais visibles dans le verbose file).
         self._ffmpeg_version_logged: bool = False
         self._op_encode_config: EncodeConfig | None = None
+        # Encodage en échec : dossier de travail gardé jusqu'au choix de l'utilisateur (popup).
+        self._failed_work_dir: RetainedProcessWorkDir | None = None
         self._op_extract_duration_s: float | None = None
-        self._op_encode_fps: float | None = None
-        self._op_encode_frame: int | None = None
-        # Trackers ETA lissés (EWMA) pour les barres single-stream (remux et
-        # encode). Le multi-encode utilise un tracker par label dans le state.
+        # Tracker ETA lissé (EWMA) des barres remux / extraction. L'encodage utilise le suivi du cœur
+        # (``EncodeProgressTracker`` : une commande, ou une progression par piste / passe), partagé avec l'API.
         self._eta_tracker_video = EtaTracker(warmup_progress=1.0)
-        self._eta_tracker_frame = EtaTracker(warmup_progress=24.0)
+        self._op_encode_progress = EncodeProgressTracker()
         # Légende de l'étape en cours (« Encodage vidéo… », « Injection RPU
         # Dolby Vision… »…). Mise à jour quand un message d'étape arrive et
         # préfixée aux métriques ffmpeg sur la barre de progression.
         self._op_stage_label: str = ""
-        self._op_encode_multi_targets: dict[int, dict[str, object]] = {}
-        self._op_encode_multi_state: dict[str, dict[str, object]] = {}
-        self._op_encode_multi_active_label: str | None = None
         self._op_encode_multi_reselect_timer = QTimer(self)
         self._op_encode_multi_reselect_timer.setInterval(60_000)
         self._op_encode_multi_reselect_timer.timeout.connect(self._reevaluate_multi_encode_progress)
@@ -1708,7 +1738,7 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self._sidebar)
 
         # Stack de pages
-        self._stack = QStackedWidget()
+        self._stack = _PageStack()
         self._stack.setStyleSheet(f"background: {_Colors.BG_DEEP};")
         self._stack.setMinimumSize(0, 0)
         self._stack.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -1717,6 +1747,15 @@ class MainWindow(QMainWindow):
         self._rife_controller = RifePluginController(self._config, self)
         self._fel_controller = FelPluginController(self._config, self)
         self._trt_controller = TrtPluginController(self._config, self)
+        self._nvencc_controller = NvenccController(self._config, self)
+        # Modifications d'extensions et usages des outils : exclusion réciproque, dans le fil Qt.
+        self._tool_admission = ToolAdmission(self._tools_in_use, self)
+        for plugin_id, ctrl in (
+            (self._rife_controller.spec.id, self._rife_controller), (self._fel_controller.spec.id, self._fel_controller),
+            (self._trt_controller.spec.id, self._trt_controller), (NvenccController.plugin_id, self._nvencc_controller),
+        ):
+            ctrl.mutation_finished.connect(partial(self._tool_admission.release_mutation, plugin_id),
+                                           Qt.ConnectionType.QueuedConnection)
 
         # Page 0 — Dashboard (fonctionnelle)
         self._dashboard = DashboardPage(self._config, self._log_from_page)
@@ -1748,10 +1787,13 @@ class MainWindow(QMainWindow):
         # Page 4 — Studio Hybridation (fonctionnelle)
         self._hybrid_panel = HybridStudio(self._config)
         self._stack.addWidget(self._hybrid_panel)
+        # Épisodes refusés pour synchro impossible : récapitulatif après l'opération (fenêtre différée).
+        self._hybrid_panel.sync_refusals_ready.connect(self._show_sync_refusals, Qt.ConnectionType.QueuedConnection)
 
         # Page 5 — Paramètres (fonctionnelle)
         self._settings_panel = SettingsPanel(self._config)
         self._stack.addWidget(self._settings_panel)
+        self._stack.set_leave_guard(self._settings_panel, self._settings_allow_leave)
 
         # Page 6 — Extensions (installation, mise à jour, suppression)
         self._extensions_panel = ExtensionsPanel(self._config)
@@ -1880,9 +1922,7 @@ class MainWindow(QMainWindow):
 
     def _apply_startup_panel(self) -> None:
         startup_panel = getattr(self._config, "startup_panel", "dashboard")
-        page_index = self.startup_page_index(startup_panel)
-        self._stack.setCurrentIndex(page_index)
-        self._sidebar.select_page(page_index)
+        self._show_page(self.startup_page_index(startup_panel))
 
     def _apply_startup_log_panel_state(self) -> None:
         logs_expanded = bool(getattr(self._config, "startup_logs_expanded", False))
@@ -1893,38 +1933,53 @@ class MainWindow(QMainWindow):
             return
         self._vsplit.setSizes([768, 32])
 
-    def _open_container_panel(self) -> None:
-        container_index = self._PAGE_INDEX_BY_PANEL_KEY["container"]
-        self._stack.setCurrentIndex(container_index)
-        self._sidebar.select_page(container_index)
+    def _show_page(self, index: int) -> bool:
+        """Affiche la page ``index`` ; faux si la page courante retient l'utilisateur.
 
-    def _open_hdr_studio(self, path: Path, stream_index: int) -> None:
-        """Ouvre HDR Studio sur la piste vidéo ``stream_index`` de ``path``."""
-        index = self._PAGE_INDEX_BY_PANEL_KEY["hdr"]
-        self._sidebar.select_page(index)
+        Refus = réglages non enregistrés et « Annuler » : l'appelant abandonne son action.
+        Le menu latéral suit toujours la page réellement affichée.
+        """
         self._stack.setCurrentIndex(index)
+        current = self._stack.currentIndex()
+        self._sidebar.select_page(current)
+        return current == index
+
+    def _settings_allow_leave(self) -> bool:
+        """Vrai si aucun réglage n'attend (ou s'il vient d'être enregistré ou ignoré) et que
+        l'application ne se ferme pas : sinon l'appelant abandonne son action."""
+        settings_panel = getattr(self, "_settings_panel", None)
+        allowed = settings_panel is None or settings_panel.confirm_leave()
+        return allowed and not hasattr(self, "_shutdown")
+
+    def _open_container_panel(self) -> bool:
+        return MainWindow._show_page(self, self._PAGE_INDEX_BY_PANEL_KEY["container"])
+
+    def _open_hdr_studio(self, path: Path, stream_index: int) -> bool:
+        """Ouvre HDR Studio sur la piste vidéo ``stream_index`` de ``path``."""
+        if not self._show_page(self._PAGE_INDEX_BY_PANEL_KEY["hdr"]):
+            return False
         self._hdr_panel.load_source(Path(path), int(stream_index))
+        return True
 
     def _open_fel_analyzer(self, path: Path, stream_index: int) -> None:
         """HDR Studio sur l'onglet FEL de la piste (bouton du panneau Encodage)."""
-        self._open_hdr_studio(path, stream_index)
-        self._hdr_panel.show_fel_tab()
+        if self._open_hdr_studio(path, stream_index):
+            self._hdr_panel.show_fel_tab()
 
     def _apply_hdr_levels_to_encode(self, path: Path, stream_index: int, max_cll: int, max_fall: int) -> None:
         """MaxCLL/MaxFALL choisis dans HDR Studio, appliqués à la piste du panneau Encodage."""
         if self._encode_panel.apply_static_light_levels(Path(path), int(stream_index), max_cll, max_fall):
             self.log_requested.emit("OK", "[HDR] " + translate_text(
                 "MaxCLL/MaxFALL {cll}/{fall} appliqués au panneau Encodage.", cll=max_cll, fall=max_fall))
-            index = self._PAGE_INDEX_BY_PANEL_KEY["encoding"]
-            self._sidebar.select_page(index)
-            self._stack.setCurrentIndex(index)
+            self._show_page(self._PAGE_INDEX_BY_PANEL_KEY["encoding"])
             return
         self.log_requested.emit("WARN", "[HDR] " + translate_text(
             "Piste absente du panneau Encodage (ajouter la source dans Conteneur) "
             "ou codec sans métadonnées HDR10 modifiables."))
 
     def _on_hybrid_open_in_remux(self, config_or_sources) -> None:
-        self._open_container_panel()
+        if not self._open_container_panel():
+            return
         if hasattr(config_or_sources, "sources"):
             paths = [s.path for s in config_or_sources.sources]
             self._remux_panel.add_sources(paths)
@@ -1945,7 +2000,8 @@ class MainWindow(QMainWindow):
         if not normalized:
             return
 
-        MainWindow._open_container_panel(self)
+        if not MainWindow._open_container_panel(self):
+            return
         self._remux_panel.add_sources(normalized)
 
     def _install_source_drop_targets(self, root: QWidget) -> None:
@@ -1999,8 +2055,10 @@ class MainWindow(QMainWindow):
         sources = MainWindow._collect_drop_source_paths(paths)
         if not sources:
             return False
-        self._remux_panel.add_sources(sources)
-        MainWindow._open_container_panel(self)
+        # Page quittée d'abord : refusée (réglages non enregistrés, « Annuler »), le dépôt
+        # est consommé sans rien ajouter.
+        if MainWindow._open_container_panel(self):
+            self._remux_panel.add_sources(sources)
         return True
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
@@ -2032,13 +2090,20 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _connect_signals(self) -> None:
+        self._encode_panel.set_preview_guard(self._extensions_idle)
+        self._hdr_panel.set_extensions_guard(self._extensions_idle)
+        self._encode_panel.preview_running_changed.connect(self._on_tools_usage_changed)
+        self._hdr_panel.tools_in_use_changed.connect(self._on_tools_usage_changed)
+        self._tool_admission.changed.connect(self._sync_extension_actions)
         self._dovi_panel.set_operation_start_guard(self._can_start_operation)
         self._remux_panel.set_operation_start_guard(self._can_start_operation)
         self._sidebar.page_changed.connect(self._stack.setCurrentIndex)
+        self._stack.leave_refused.connect(lambda: self._sidebar.select_page(self._stack.currentIndex()))
         self._stack.currentChanged.connect(self._on_active_page_changed)
         self._hybrid_panel.set_operation_start_guard(self._can_start_operation)
         self._hybrid_panel.use_global_controls()
         self._dovi_panel.use_global_controls()
+        self._dovi_panel.forced_rerun_requested.connect(lambda: self._launch_operation("merge_dovi"))
         self._hybrid_panel.ready_changed.connect(self._on_ready_changed)
         self._dovi_panel.ready_changed.connect(self._on_ready_changed)
         self._hybrid_panel.op_state_changed.connect(self._on_hybrid_op_state)
@@ -2047,6 +2112,10 @@ class MainWindow(QMainWindow):
         self._encode_panel.operation_changed.connect(self._request_operation_refresh)
         self._remux_panel.operation_changed.connect(self._request_operation_refresh)
         self.log_requested.connect(self._on_log_requested)
+        # Migrations de la configuration : écrites et journalisées une fois, au démarrage.
+        persist_migrations = getattr(self._config, "persist_load_migrations", None)
+        for notice in list(persist_migrations() or []) if callable(persist_migrations) else []:
+            self.log_requested.emit("INFO", translate_text(str(notice)))
         self._log_panel.collapse_toggled.connect(self._on_log_collapsed)
         self._log_panel.startup_expanded_changed.connect(self._on_log_startup_changed)
         # MergeDoviPanel → LogPanel global (QueuedConnection : signal émis depuis threads)
@@ -2069,6 +2138,7 @@ class MainWindow(QMainWindow):
             lambda level, message: self.log_requested.emit(level, "[ENCODE] " + message),
             Qt.ConnectionType.QueuedConnection,
         )
+        self._encode_panel.failed_work_dir_retained.connect(self._on_failed_work_dir_retained)
         # RemuxPanel → LogPanel global
         self._remux_panel.log_message.connect(
             lambda level, message: self.log_requested.emit(level, "[REMUX] " + message),
@@ -2127,6 +2197,7 @@ class MainWindow(QMainWindow):
         self._remux_panel.ready_changed.connect(self._on_ready_changed)
         self._encode_panel.ready_changed.connect(self._on_ready_changed)
         self._settings_panel.settings_saved.connect(self._on_settings_saved)
+        self._settings_panel.restart_requested.connect(self._request_restart)
 
     def _wire_extensions(self) -> None:
         """Extensions : sonde → contrôleurs → badges, page Extensions, encodages ; flux des versions lu en tâche de fond."""
@@ -2149,7 +2220,8 @@ class MainWindow(QMainWindow):
         trt.state_changed.connect(self._on_trt_state_changed)
         trt.workflow_changed.connect(self._apply_trt_plugin_to_encode)
         panel.install_requested.connect(self._on_extension_install_requested)
-        panel.update_requested.connect(lambda plugin_id: self._extension_controller(plugin_id).update())
+        panel.update_requested.connect(
+            lambda plugin_id: self._mutate_extension(plugin_id, self._extension_controller(plugin_id).update))
         panel.remove_requested.connect(self._on_extension_remove_requested)
         panel.trt_enabled_toggled.connect(trt.set_enabled)
         panel.auto_update_toggled.connect(trt.set_auto_update)
@@ -2161,47 +2233,147 @@ class MainWindow(QMainWindow):
         panel.set_trt_state(trt.state())
         self._dashboard.set_rife_state(rife.state())
         self._refresh_extensions_update_dot()
-        self._encode_panel.rife_install_requested.connect(rife.install)
+        self._encode_panel.rife_install_requested.connect(lambda: self._mutate_extension(rife.spec.id, rife.install))
         self._encode_panel.trt_install_requested.connect(self._open_trt_install_dialog)
         self._encode_panel.extensions_page_requested.connect(self.show_extensions_page)
         self._apply_trt_plugin_to_encode()
         for ctrl in (rife, trt, fel):
+            # Mise à jour automatique admise par la fenêtre : jamais pendant un traitement ou une autre modification.
+            ctrl.set_update_gate(True)
+            ctrl.auto_update_ready.connect(partial(self._defer_auto_update, ctrl), Qt.ConnectionType.QueuedConnection)
             ctrl.cleanup()
             ctrl.refresh_feed()
+        self._sync_extension_actions()
+        self._wire_nvencc_extension()
+
+    def _wire_nvencc_extension(self) -> None:
+        """NVEncC (extension externe) : carte de la page Extensions ; outil changé → configuration, encodeurs."""
+        nvencc = self._nvencc_controller
+        panel = self._extensions_panel
+        nvencc.state_changed.connect(panel.set_nvencc_state)
+        nvencc.state_changed.connect(self._refresh_extensions_update_dot, Qt.ConnectionType.QueuedConnection)
+        nvencc.log_message.connect(lambda level, message: self.log_requested.emit(level, message))
+        nvencc.tool_changed.connect(self._on_nvencc_tool_changed, Qt.ConnectionType.QueuedConnection)
+        panel.set_nvencc_state(nvencc.state())
+        nvencc.refresh(fetch_target=True)
+
+    def _on_nvencc_tool_changed(self) -> None:
+        """NVEncC installé ou supprimé : nouvelle résolution, détection des encodeurs, nouvel état de la carte."""
+        self._config.refresh_nvencc_tool()
+        self._encode_panel.refresh_nvencc_tool()
+        self._dashboard.start_hw_detection()
+        self._nvencc_controller.refresh()
 
     def _refresh_extensions_update_dot(self, *_args: object) -> None:
         """Point vert sur « Extensions » : une mise à jour attend une action de l'utilisateur."""
         pending = any(
-            ctrl.manual_update_pending for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)
+            ctrl.manual_update_pending for ctrl in (
+                self._rife_controller, self._trt_controller, self._fel_controller, self._nvencc_controller,
+            )
         )
         self._sidebar.set_page_update_available(self._PAGE_INDEX_BY_PANEL_KEY["extensions"], pending)
 
-    def _extension_controller(self, plugin_id: str) -> PluginController:
+    def _extension_controller(self, plugin_id: str) -> PluginController | NvenccController:
+        if plugin_id == NvenccController.plugin_id:
+            return self._nvencc_controller
         return {ctrl.spec.id: ctrl for ctrl in (self._rife_controller, self._trt_controller, self._fel_controller)}[plugin_id]
+
+    # ------------------------------------------------------------------
+    # Extensions : modifications admises seulement quand aucun outil n'est utilisé
+    # ------------------------------------------------------------------
+
+    def _tools_in_use(self) -> bool:
+        """Traitement, aperçu d'encodage ou analyse HDR Studio en cours (outils et extensions utilisés)."""
+        encode = getattr(self, "_encode_panel", None)
+        hdr = getattr(self, "_hdr_panel", None)
+        return bool(self._running or (encode is not None and encode.is_preview_running())
+                    or (hdr is not None and hdr.tools_in_use()))
+
+    def _extensions_idle(self) -> bool:
+        """Vrai si aucune extension n'est en cours de modification (garde des traitements et analyses)."""
+        admission = getattr(self, "_tool_admission", None)
+        return admission is None or not admission.mutation_active()
+
+    def _on_tools_usage_changed(self, *_args: object) -> None:
+        self._tool_admission.usage_changed()
+
+    def _sync_extension_actions(self) -> None:
+        """Boutons de la page Extensions grisés pendant un usage des outils ou une autre modification."""
+        admission = self._tool_admission
+        if admission.tools_in_use():
+            reason = translate_text("Indisponible pendant un traitement, un aperçu ou une analyse en cours.")
+        elif admission.mutation_active():
+            reason = translate_text("Une autre extension est en cours d'installation, de mise à jour ou de suppression.")
+        else:
+            reason = ""
+        self._extensions_panel.set_actions_blocked(reason)
+
+    def _extension_mutation_refused(self) -> bool:
+        """Vrai (avec message) si une modification d'extension ne peut pas être admise maintenant."""
+        admission = self._tool_admission
+        if admission.tools_in_use():
+            message = translate_text("Extension non modifiée : un traitement, un aperçu ou une analyse utilise les "
+                                     "outils. Réessayez à sa fin.")
+        elif admission.mutation_active():
+            message = translate_text("Extension non modifiée : une autre extension est en cours d'installation, de "
+                                     "mise à jour ou de suppression.")
+        else:
+            return False
+        self.log_requested.emit("WARN", message)
+        QMessageBox.information(self, translate_text("Extensions"), message)
+        return True
+
+    def _mutate_extension(self, plugin_id: str, start: Callable[[], bool],
+                          confirm: Callable[[], bool] | None = None) -> bool:
+        """Installe / met à jour / supprime une extension : admission vérifiée avant la question de confirmation
+        et de nouveau après (un traitement a pu démarrer pendant la question)."""
+        if self._extension_mutation_refused():
+            return False
+        if confirm is not None and not confirm():
+            return False
+        if self._extension_mutation_refused():
+            return False
+        return self._tool_admission.start_mutation(plugin_id, start)
+
+    def _defer_auto_update(self, ctrl: PluginController) -> None:
+        """Mise à jour automatique d'une extension : lancée dès qu'aucun outil ni aucune modification n'est actif."""
+        self._tool_admission.defer(ctrl.spec.id, ctrl.update)
 
     def _on_extension_install_requested(self, plugin_id: str) -> None:
         if plugin_id == self._trt_controller.spec.id:
             self._open_trt_install_dialog()
         else:
-            self._extension_controller(plugin_id).install()
+            self._mutate_extension(plugin_id, self._extension_controller(plugin_id).install)
+
+    @staticmethod
+    def _confirm_question(parent: QWidget, title: str, text: str) -> Callable[[], bool]:
+        return lambda: QMessageBox.question(parent, title, text) == QMessageBox.StandardButton.Yes
 
     def _on_extension_remove_requested(self, plugin_id: str) -> None:
+        if plugin_id == NvenccController.plugin_id:
+            self._mutate_extension(plugin_id, self._nvencc_controller.remove, self._confirm_question(
+                self,
+                translate_text("NVEncC (encodeur NVIDIA)"),
+                translate_text(
+                    "Supprimer NVEncC du dossier utilisateur ? Les encodeurs NVEncC ne seront plus proposés ; "
+                    "il peut être réinstallé à tout moment depuis la page Extensions."
+                ),
+            ))
+            return
         if plugin_id == self._fel_controller.spec.id:
-            self._fel_controller.remove()
+            self._mutate_extension(plugin_id, self._fel_controller.remove)
             return
         if plugin_id == self._trt_controller.spec.id:
             self._on_trt_remove_requested()
             return
-        answer = QMessageBox.question(
+        self._mutate_extension(plugin_id, self._rife_controller.remove, self._confirm_question(
             self,
-            translate_text("Interpolation d'images (MVO-RIFE)"),
+            translate_text("Moteur vidéo MVO (débruitage, interpolation)"),
             translate_text(
-                "Supprimer l'extension d'interpolation d'images ? L'interpolation ne sera plus proposée à "
-                "l'encodage ; l'extension peut être réinstallée à tout moment."
+                "Supprimer le moteur vidéo MVO ? Le débruitage MVO-R2 et l'interpolation ne seront plus proposés "
+                "à l'encodage ; l'extension peut être réinstallée à tout moment."
             ),
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._rife_controller.remove()
+        ))
 
     def _apply_trt_plugin_to_encode(self) -> None:
         self._encode_panel.set_trt_plugin(self._trt_controller.plugin_dir())
@@ -2218,9 +2390,7 @@ class MainWindow(QMainWindow):
 
     def show_extensions_page(self) -> None:
         """Ouvre la page Extensions (badges du tableau de bord, liens des fonctions)."""
-        index = self._PAGE_INDEX_BY_PANEL_KEY["extensions"]
-        self._stack.setCurrentIndex(index)
-        self._sidebar.select_page(index)
+        MainWindow._show_page(self, self._PAGE_INDEX_BY_PANEL_KEY["extensions"])
 
     def _open_trt_install_dialog(self) -> None:
         from ui.dialogs.plugin_install_dialog import PluginInstallDialog
@@ -2229,20 +2399,20 @@ class MainWindow(QMainWindow):
         if state.busy or state.installed is not None:
             return
         device = str(getattr(state.capability, "device", "") or "")
-        if PluginInstallDialog(device, self).exec() == QDialog.DialogCode.Accepted:
-            self._trt_controller.install()
+        self._mutate_extension(
+            self._trt_controller.spec.id, self._trt_controller.install,
+            lambda: PluginInstallDialog(device, self).exec() == QDialog.DialogCode.Accepted,
+        )
 
     def _on_trt_remove_requested(self) -> None:
-        answer = QMessageBox.question(
+        self._mutate_extension(self._trt_controller.spec.id, self._trt_controller.remove, self._confirm_question(
             self,
             translate_text("Accélération NVIDIA (TensorRT)"),
             translate_text(
                 "Supprimer l'accélération NVIDIA (TensorRT) ? L'interpolation MVO-RIFE continuera sur le GPU "
                 "(Vulkan) ; l'extension peut être réinstallée à tout moment."
             ),
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._trt_controller.remove()
+        ))
 
     def _apply_locale(self) -> None:
         set_current_language(self._config.language)
@@ -2253,8 +2423,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Bouton "Exécuter l'opération" — logique hybride remux / encode
     # ------------------------------------------------------------------
-
-    _NOISE_RE = re.compile(r"libvmaf\s+ERROR|could not read model from path")
 
     def _request_operation_refresh(self, *_args) -> None:
         if hasattr(self, "_shutdown"):
@@ -2286,12 +2454,19 @@ class MainWindow(QMainWindow):
         # Les pistes et calibrations sont mutables : une copie permet de
         # distinguer une édition réelle d'une simple notification de readiness.
         self._last_operation_signature = copy.deepcopy(self._operation_signature(owner))
+        if owner == "media":
+            self._remux_panel.output_bar.refresh_state()   # fichier publié : signalé comme existant
 
     def _on_ready_changed(self, _ready: bool) -> None:
         self._request_operation_refresh()
 
     def _on_active_page_changed(self, page: int) -> None:
         self._sidebar.select_page(page)
+        # Fichier de sortie : une seule barre, suivie par la page média affichée (Encodage ou Conteneur).
+        if page == 2:
+            self._encode_panel.host_output_bar(self._remux_panel.output_bar)
+        elif page == 3:
+            self._remux_panel.host_output_bar(self._remux_panel.output_bar)
         self._refresh_operation_bar()
 
     def _operation_states(self) -> list[OperationState]:
@@ -2303,12 +2478,15 @@ class MainWindow(QMainWindow):
         analysing = self._remux_panel.cadence_resolution_pending()
         ready = config is not None and not analysing
         output = config.output if config is not None else None
+        # Chemin visible dans la barre « Fichier de sortie » : la barre d'opération résume le traitement.
         media = OperationState(
             "media", 2 if encoding else 3,
             translate_text("Remux & Encode"),
-            str(output) if output else translate_text("Projet média partagé entre remux et encodage"),
+            media_operation_summary(remux, encode if encoding else None) if config is not None
+            else translate_text("Projet média partagé entre remux et encodage"),
             ready, translate_text("Analyse de la hauteur audio en cours (conversion de cadence).") if analysing
             else translate_text("Ajoutez une source et renseignez le fichier de sortie."),
+            project=output.name if output else "",
         )
         return [media, self._hybrid_panel.operation_state(), self._dovi_panel.operation_state(),
                 self._hdr_panel.operation_state()]
@@ -2328,7 +2506,7 @@ class MainWindow(QMainWindow):
                 "extract": "Extraction en cours…", "audio_sync": "Synchronisation en cours…",
             }.get(self._op_mode, "Opération en cours…"))
         current = next((op for op in operations if op.key == active and op.ready), None)
-        project = Path(current.summary.split(" ← ", 1)[0]).name if current else ""
+        project = (current.project or Path(current.summary.split(" ← ", 1)[0]).name) if current else ""
         result = self._last_operation_result
         if result is not None and not self._running:
             if self._operation_signature(result[0]) != self._last_operation_signature:
@@ -2360,7 +2538,14 @@ class MainWindow(QMainWindow):
             self._refresh_operation_bar()
             return
         if not (key == "media" and self._stack.currentIndex() in (2, 3)):
-            self._stack.setCurrentIndex(operation.page)
+            if not self._show_page(operation.page):
+                self._refresh_operation_bar()
+                return
+            # Réglages éventuellement enregistrés depuis la popup : état relu avant de lancer.
+            operation = next((op for op in self._operation_states() if op.key == key), None)
+            if self._running or operation is None or not operation.ready:
+                self._refresh_operation_bar()
+                return
         self._last_operation_result = None
         self._expand_log_panel()
         if key == "hybrid":
@@ -2404,10 +2589,7 @@ class MainWindow(QMainWindow):
         self._signals = task_signals
         self._ffmpeg_version_logged = False
         self._op_encode_config = None
-        self._op_encode_fps = None
-        self._op_encode_frame = None
         self._eta_tracker_video.reset()
-        self._eta_tracker_frame.reset()
         self._op_stage_label = label
         self._reset_multi_encode_progress_tracking()
 
@@ -2443,10 +2625,7 @@ class MainWindow(QMainWindow):
         self._signals = None
         self._ffmpeg_version_logged = False
         self._op_encode_config = None
-        self._op_encode_fps = None
-        self._op_encode_frame = None
         self._eta_tracker_video.reset()
-        self._eta_tracker_frame.reset()
         self._op_stage_label = label
         self._reset_multi_encode_progress_tracking()
 
@@ -2467,6 +2646,13 @@ class MainWindow(QMainWindow):
 
     def _can_start_operation(self) -> bool:
         if self._running:
+            return False
+        admission = getattr(self, "_tool_admission", None)
+        if admission is not None and admission.mutation_active():
+            self._report_blocking_errors([
+                translate_text("Une extension est en cours d'installation, de mise à jour ou de suppression : "
+                               "attendez sa fin."),
+            ])
             return False
         if self._encode_panel.is_preview_running():
             self._report_blocking_errors([
@@ -2504,13 +2690,17 @@ class MainWindow(QMainWindow):
             if errors:
                 self._report_blocking_errors(errors)
                 return
-            if not confirm_overwrite(self, encode_cfg.output):
+            existing = confirm_output(self, encode_cfg.output)
+            if existing is None:
                 return
             self._op_mode = "encode"
             self._op_encode_config = encode_cfg
             self.log_requested.emit("INFO", f"[MEDIA] Encodage → {encode_cfg.output.name}")
             try:
-                signals = self._encode_panel.run_operation(encode_cfg)
+                signals = self._encode_panel.run_operation(encode_cfg, existing=existing)
+            except OutputRefusedError:
+                self._report_blocking_errors([destination_changed_message(encode_cfg.output)])
+                return
             except EncodeError as exc:
                 self._report_blocking_errors([str(exc)])
                 return
@@ -2521,12 +2711,16 @@ class MainWindow(QMainWindow):
             if errors:
                 self._report_blocking_errors(errors)
                 return
-            if not confirm_overwrite(self, remux_cfg.output):
+            existing = confirm_output(self, remux_cfg.output)
+            if existing is None:
                 return
             self._op_mode = "remux"
             self.log_requested.emit("INFO", f"[MEDIA] Remuxage → {remux_cfg.output.name}")
             try:
-                signals = self._remux_panel.run_operation(remux_cfg)
+                signals = self._remux_panel.run_operation(remux_cfg, existing=existing)
+            except OutputRefusedError:
+                self._report_blocking_errors([destination_changed_message(remux_cfg.output)])
+                return
             except RemuxError as exc:
                 self._report_blocking_errors([str(exc)])
                 return
@@ -2543,14 +2737,15 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setVisible(True)
         self._cancel_btn.setEnabled(True)
         self._expand_log_panel()
-        self._op_encode_fps = None
-        self._op_encode_frame = None
         self._eta_tracker_video.reset()
-        self._eta_tracker_frame.reset()
         self._op_stage_label = ""
         self._reset_multi_encode_progress_tracking()
         if self._op_mode == "encode" and self._op_encode_config is not None:
-            self._op_encode_multi_targets = self._encode_panel.get_video_progress_targets(self._op_encode_config)
+            self._op_encode_progress = EncodeProgressTracker(
+                duration_s=self._encode_panel.get_duration_s(),
+                total_frames=self._encode_panel.get_total_frames(),
+                targets=self._encode_panel.get_video_progress_targets(self._op_encode_config),
+            )
         self._prep_progress_active = False
         if self._prep_progress_timer.isActive():
             self._prep_progress_timer.stop()
@@ -2584,130 +2779,42 @@ class MainWindow(QMainWindow):
     def _reset_multi_encode_progress_tracking(self) -> None:
         if self._op_encode_multi_reselect_timer.isActive():
             self._op_encode_multi_reselect_timer.stop()
-        self._op_encode_multi_targets = {}
-        self._op_encode_multi_state = {}
-        self._op_encode_multi_active_label = None
+        self._op_encode_progress = EncodeProgressTracker()
 
-    def _ensure_multi_encode_state(self, label: str) -> dict[str, object]:
-        state = self._op_encode_multi_state.get(label)
-        if state is not None:
-            return state
-
-        parsed = _parse_multi_encode_label(label)
-        order = 0
-        pass_index: int | None = None
-        pass_count = 1
-        if parsed is not None:
-            order, pass_index, pass_count = parsed
-        target = self._op_encode_multi_targets.get(order, {})
-        state = {
-            "label": label,
-            "order": order,
-            "pass_index": pass_index,
-            "pass_count": pass_count,
-            "duration_s": target.get("duration_s"),
-            "total_frames": target.get("total_frames"),
-            "source_name": target.get("source_name"),
-            "started_at": time.monotonic(),
-            "last_update": 0.0,
-            "fps": None,
-            "frame": None,
-            "elapsed_video": None,
-            "done": False,
-        }
-        self._op_encode_multi_state[label] = state
-        return state
-
-    def _multi_encode_progress_parts(
-        self,
-        state: dict[str, object],
-        *,
-        now: float,
-    ) -> tuple[list[str], int | None]:
-        order_raw = state.get("order")
-        if isinstance(order_raw, int):
-            order = order_raw
-        elif isinstance(order_raw, float):
-            order = int(order_raw)
-        elif isinstance(order_raw, str):
-            try:
-                order = int(order_raw.strip())
-            except ValueError:
-                order = 0
-        else:
-            order = 0
-        total_tracks = max(self._op_encode_multi_targets) if self._op_encode_multi_targets else 0
+    def _multi_encode_progress_parts(self, snapshot: ProgressSnapshot) -> list[str]:
+        """Libellé de la piste / passe affichée (encodage multi-pistes)."""
+        order = snapshot.track or 0
+        total_tracks = snapshot.track_count or 0
         track_label = (
             translate_text("Piste vidéo {current}/{total}", current=order, total=total_tracks)
             if order > 0 and total_tracks > 1
             else translate_text("Piste vidéo")
         )
         parts = [track_label]
-
-        pass_index = state.get("pass_index")
-        pass_count_raw = state.get("pass_count")
-        if isinstance(pass_count_raw, int):
-            pass_count = pass_count_raw
-        elif isinstance(pass_count_raw, float):
-            pass_count = int(pass_count_raw)
-        elif isinstance(pass_count_raw, str):
-            try:
-                pass_count = int(pass_count_raw.strip())
-            except ValueError:
-                pass_count = 1
-        else:
-            pass_count = 1
-        if isinstance(pass_index, int) and pass_count > 1:
+        if snapshot.pass_index is not None and (snapshot.pass_count or 1) > 1:
             parts.append(
-                translate_text("passe {current}/{total}", current=pass_index, total=pass_count)
+                translate_text("passe {current}/{total}", current=snapshot.pass_index, total=snapshot.pass_count)
             )
-
-        fps_value = state.get("fps")
-        pct: int | None = None
-        duration_s = state.get("duration_s")
-        elapsed_video = state.get("elapsed_video")
-        if isinstance(duration_s, (int, float)) and duration_s > 0 and isinstance(elapsed_video, (int, float)):
-            pct = min(99, int(float(elapsed_video) / float(duration_s) * 100))
-        else:
-            total_frames = state.get("total_frames")
-            frame = state.get("frame")
-            if isinstance(total_frames, int) and total_frames > 0 and isinstance(frame, int):
-                pct = min(99, int(frame / total_frames * 100))
-
-        if pct is not None:
-            parts.append(f"{pct}%")
-        if isinstance(fps_value, (int, float)) and fps_value > 0:
-            parts.append(f"{float(fps_value):.1f} fps")
-
-        remaining_s = _multi_encode_remaining_seconds(state, now)
-        if remaining_s is not None:
-            parts.append(f"ETA {_fmt_eta(remaining_s)}")
-        return parts, pct
+        if snapshot.pct is not None:
+            parts.append(f"{snapshot.pct}%")
+        if snapshot.fps is not None and snapshot.fps > 0:
+            parts.append(f"{float(snapshot.fps):.1f} fps")
+        if snapshot.eta_s is not None:
+            parts.append(f"ETA {_fmt_eta(snapshot.eta_s)}")
+        return parts
 
     def _reevaluate_multi_encode_progress(self) -> None:
-        if not self._running or self._op_mode != "encode" or not self._op_encode_multi_state:
+        tracker = self._op_encode_progress
+        if not self._running or self._op_mode != "encode" or not tracker.states:
             return
-        now = time.monotonic()
-        active_label = _select_multi_encode_label(
-            self._op_encode_multi_state,
-            self._op_encode_multi_active_label,
-            now,
-        )
-        if active_label is None:
-            self._op_encode_multi_active_label = None
+        snapshot = tracker.multi_snapshot(time.monotonic())
+        if snapshot is None:
             return
-
-        self._op_encode_multi_active_label = active_label
-        state = self._op_encode_multi_state.get(active_label)
-        if state is None:
-            return
-
-        parts, pct = self._multi_encode_progress_parts(state, now=now)
-        if pct is not None:
+        if snapshot.pct is not None:
             self._stop_prep_progress()
-            self._prog_bar.setValue(pct)
-        self._prog_lbl.setText(self._format_progress_label(*parts))
-        if len(self._op_encode_multi_state) > 1 and not self._op_encode_multi_reselect_timer.isActive():
+            self._prog_bar.setValue(snapshot.pct)
+        self._prog_lbl.setText(self._format_progress_label(*self._multi_encode_progress_parts(snapshot)))
+        if len(tracker.states) > 1 and not self._op_encode_multi_reselect_timer.isActive():
             self._op_encode_multi_reselect_timer.start()
 
     def _handle_encode_internal_progress(self, line: str) -> bool:
@@ -2723,11 +2830,12 @@ class MainWindow(QMainWindow):
 
         event = str(payload.get("event") or "").strip().lower()
         raw_line = str(payload.get("line") or "")
-        state = self._ensure_multi_encode_state(label)
+        tracker = self._op_encode_progress
+        now = time.monotonic()
+        tracker.state(label, now)
 
         if event == "done":
-            state["done"] = True
-            state["last_update"] = time.monotonic()
+            tracker.internal_done(label, now)
             self._reevaluate_multi_encode_progress()
             return True
 
@@ -2735,25 +2843,10 @@ class MainWindow(QMainWindow):
             self.log_requested.emit("INFO", f"[MEDIA] {raw_line}")
             return True
 
-        fps_m = _FPS_RE.search(raw_line)
-        if fps_m:
-            try:
-                state["fps"] = float(fps_m.group(1))
-            except ValueError:
-                state["fps"] = None
-        frame_m = _FRAME_RE.search(raw_line)
-        if frame_m:
-            try:
-                state["frame"] = int(frame_m.group(1))
-            except ValueError:
-                state["frame"] = None
-        elapsed_video = ffmpeg_progress_seconds(raw_line)
-        if elapsed_video is not None:
-            state["elapsed_video"] = elapsed_video
-        state["last_update"] = time.monotonic()
+        tracker.internal_line(label, raw_line, now)
         self._reevaluate_multi_encode_progress()
 
-        if _is_encode_progress_noise(raw_line):
+        if _is_encode_progress_noise(raw_line) or _is_libvmaf_noise(raw_line):
             return True
         if _is_ffmpeg_info_noise(raw_line):
             return True
@@ -2873,16 +2966,14 @@ class MainWindow(QMainWindow):
                     parts = [f"{pct}%"]
                     self._prog_lbl.setText(self._format_progress_label(*parts))
                 return
-            if self._NOISE_RE.search(line):
-                return
+            tracker = self._op_encode_progress
             if line.startswith("$ "):
                 self._stop_prep_progress()
                 self._tool_json_depth = 0  # bloc EditConfig éventuellement tronqué
-                self._op_encode_fps = None
-                self._op_encode_frame = None
-                self._eta_tracker_video.reset()
-                self._eta_tracker_frame.reset()
+                tracker.command_started()
                 self.log_requested.emit("INFO", f"[MEDIA] {line}")
+                return
+            if _is_libvmaf_noise(line) and not _encode_uses_nvencc(getattr(self, "_op_encode_config", None)):
                 return
             rife_progress_line = parse_rife_progress(line) is not None
             if self._is_debug_tool_line(line):
@@ -2895,139 +2986,32 @@ class MainWindow(QMainWindow):
                 else None
             )
             if progress_event is not None:
-                if progress_event.fps is not None:
-                    self._op_encode_fps = progress_event.fps
-                if progress_event.frame is not None:
-                    self._op_encode_frame = progress_event.frame
-
-                pct_value: int | None = None
-                pct_label = ""
-                if progress_event.percent is not None:
-                    pct_value = max(0, min(99, int(progress_event.percent)))
-                    pct_label = _fmt_progress_percent(progress_event.percent)
-                elif progress_event.elapsed_seconds is not None:
-                    dur = self._encode_panel.get_duration_s()
-                    if dur and dur > 0:
-                        pct_value = min(99, int(progress_event.elapsed_seconds / dur * 100))
-                        pct_label = f"{pct_value}%"
-                elif progress_event.frame is not None:
-                    total_frames = self._encode_panel.get_total_frames()
-                    if total_frames and total_frames > 0:
-                        pct_value = min(99, int(progress_event.frame / total_frames * 100))
-                        pct_label = f"{pct_value}%"
-
-                if pct_value is not None:
+                snapshot = tracker.on_event(progress_event, time.monotonic())
+                if snapshot.pct is not None:
                     self._stop_prep_progress()
-                    self._prog_bar.setValue(pct_value)
-
-                fps_str = (
-                    f"{progress_event.fps:.1f} fps"
-                    if progress_event.fps is not None and progress_event.fps > 0
-                    else ""
-                )
-                eta_s = progress_event.eta_seconds
-                if (
-                    eta_s is None
-                    and progress_event.elapsed_seconds is not None
-                ):
-                    dur = self._encode_panel.get_duration_s()
-                    if dur and dur > 0:
-                        self._eta_tracker_video.update(progress_event.elapsed_seconds, time.monotonic())
-                        eta_s = self._eta_tracker_video.eta(dur, progress_event.elapsed_seconds)
-                if (
-                    eta_s is None
-                    and progress_event.frame is not None
-                ):
-                    total_frames = self._encode_panel.get_total_frames()
-                    if total_frames and total_frames > 0:
-                        if progress_event.fps is not None and progress_event.fps > 0 and total_frames > progress_event.frame:
-                            eta_s = self._eta_tracker_frame.eta_from_speed(
-                                float(total_frames),
-                                float(progress_event.frame),
-                                float(progress_event.fps),
-                            )
-                        else:
-                            self._eta_tracker_frame.update(float(progress_event.frame), time.monotonic())
-                            eta_s = self._eta_tracker_frame.eta(float(total_frames), float(progress_event.frame))
-                eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
-                if pct_label or fps_str or eta_str:
-                    self._prog_lbl.setText(self._format_progress_label(pct_label, fps_str, eta_str))
+                    self._prog_bar.setValue(snapshot.pct)
+                fps_str = f"{snapshot.fps:.1f} fps" if snapshot.fps is not None and snapshot.fps > 0 else ""
+                eta_str = f"ETA {_fmt_eta(snapshot.eta_s)}" if snapshot.eta_s is not None else ""
+                if snapshot.pct_label or fps_str or eta_str:
+                    self._prog_lbl.setText(self._format_progress_label(snapshot.pct_label, fps_str, eta_str))
                 if progress_event.should_log:
                     self.log_requested.emit("INFO", f"[MEDIA] {progress_event.raw_line}")
                 return
-            fps_m = _FPS_RE.search(line)
-            if fps_m:
-                try:
-                    self._op_encode_fps = float(fps_m.group(1))
-                except ValueError:
-                    self._op_encode_fps = None
-            frame_m = _FRAME_RE.search(line)
-            if frame_m:
-                try:
-                    self._op_encode_frame = int(frame_m.group(1))
-                except ValueError:
-                    self._op_encode_frame = None
-            elapsed_video = ffmpeg_progress_seconds(line)
-            if elapsed_video is not None:
-                self._stop_prep_progress()
-                dur = self._encode_panel.get_duration_s()
-                if dur and dur > 0:
-                    pct = min(99, int(elapsed_video / dur * 100))
-                    self._prog_bar.setValue(pct)
-                    fps_str = (
-                        f"{self._op_encode_fps:.1f} fps"
-                        if self._op_encode_fps is not None and self._op_encode_fps > 0
-                        else ""
-                    )
-                    self._eta_tracker_video.update(elapsed_video, time.monotonic())
-                    eta_s = self._eta_tracker_video.eta(dur, elapsed_video)
-                    eta_str = f"ETA {_fmt_eta(eta_s)}" if eta_s is not None else ""
-                    parts = [f"{pct}%", fps_str, eta_str]
-                    self._prog_lbl.setText(self._format_progress_label(*parts))
-                return
-            if frame_m is not None and self._op_encode_frame is not None:
-                total_frames = self._encode_panel.get_total_frames()
-                if total_frames and total_frames > 0:
+            outcome = tracker.on_line(line, time.monotonic())
+            if outcome.handled:
+                if outcome.elapsed_seen or outcome.snapshot is not None:
                     self._stop_prep_progress()
-                    pct = min(99, int(self._op_encode_frame / total_frames * 100))
-                    self._prog_bar.setValue(pct)
-                    fps_str = (
-                        f"{self._op_encode_fps:.1f} fps"
-                        if self._op_encode_fps is not None and self._op_encode_fps > 0
-                        else ""
-                    )
-                    encode_eta_s: float | None = None
-                    # Si ffmpeg a rapporté un fps instantané, l'utiliser
-                    # directement : c'est déjà la moyenne glissante côté ffmpeg
-                    # et c'est ce que l'utilisateur voit comme "fps". L'ETA
-                    # affiché reste cohérent avec le débit affiché.
-                    if (
-                        self._op_encode_fps is not None
-                        and self._op_encode_fps > 0
-                        and total_frames > self._op_encode_frame
-                    ):
-                        encode_eta_s = self._eta_tracker_frame.eta_from_speed(
-                            float(total_frames),
-                            float(self._op_encode_frame),
-                            float(self._op_encode_fps),
-                        )
-                    else:
-                        # Fallback : EWMA sur la vitesse instantanée mesurée.
-                        self._eta_tracker_frame.update(
-                            float(self._op_encode_frame), time.monotonic()
-                        )
-                        encode_eta_s = self._eta_tracker_frame.eta(
-                            float(total_frames), float(self._op_encode_frame)
-                        )
-                    eta_str = f"ETA {_fmt_eta(encode_eta_s)}" if encode_eta_s is not None else ""
-                    parts = [f"{pct}%", fps_str, eta_str]
-                    self._prog_lbl.setText(self._format_progress_label(*parts))
+                if outcome.snapshot is not None:
+                    snapshot = outcome.snapshot
+                    self._prog_bar.setValue(snapshot.pct or 0)
+                    fps_str = f"{snapshot.fps:.1f} fps" if snapshot.fps is not None and snapshot.fps > 0 else ""
+                    eta_str = f"ETA {_fmt_eta(snapshot.eta_s)}" if snapshot.eta_s is not None else ""
+                    self._prog_lbl.setText(self._format_progress_label(snapshot.pct_label, fps_str, eta_str))
                 return
             if _is_encode_progress_noise(line):
                 return
             if _is_encode_stage_message(line):
-                self._op_encode_fps = None
-                self._op_encode_frame = None
+                tracker.stage_changed()
                 if _is_encode_indeterminate_stage(line):
                     self._start_prep_progress()
                 else:
@@ -3240,6 +3224,55 @@ class MainWindow(QMainWindow):
             self._expand_log_panel()
             if error:
                 self.log_requested.emit("ERROR", f"[MEDIA] {error}")
+            self._prompt_failed_work_dir(first_line)
+
+    def _on_failed_work_dir_retained(self, retained: object) -> None:
+        """Encodage en échec, fichiers déjà produits : choix proposé à la fin de l'opération."""
+        if not isinstance(retained, RetainedProcessWorkDir):
+            return
+        previous, self._failed_work_dir = self._failed_work_dir, retained
+        if previous is not None:
+            self._discard_failed_work_dir(previous)
+        if not self._running:
+            # Échec déjà affiché (notification arrivée après la fin).
+            self._prompt_failed_work_dir("")
+
+    def _prompt_failed_work_dir(self, reason: str) -> None:
+        """Annonce l'échec ; dossier de travail conservé seulement si l'utilisateur le demande."""
+        retained, self._failed_work_dir = self._failed_work_dir, None
+        if retained is None:
+            return
+        if self._ask_keep_failed_work_dir(retained, reason):
+            retained.keep()
+            self.log_requested.emit("INFO", "[MEDIA] " + translate_text(
+                "Fichiers temporaires conservés : {path} (proposés au nettoyage au prochain démarrage).",
+                path=str(retained.path),
+            ))
+        else:
+            self._discard_failed_work_dir(retained)
+
+    def _ask_keep_failed_work_dir(self, retained: RetainedProcessWorkDir, reason: str) -> bool:
+        """Popup d'échec : OK + case « Conserver les fichiers temporaires » (décochée)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(translate_text("Échec de l'encodage"))
+        box.setText(translate_text("L'encodage a échoué."))
+        details = translate_text(
+            "Le dossier de travail contient déjà {size} de fichiers temporaires :\n{path}",
+            size=format_bytes(retained.payload_bytes),
+            path=str(retained.path),
+        )
+        box.setInformativeText(f"{reason}\n\n{details}" if reason else details)
+        keep_box = QCheckBox(translate_text("Conserver les fichiers temporaires (récupération, analyse)"))
+        box.setCheckBox(keep_box)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+        return keep_box.isChecked()
+
+    @staticmethod
+    def _discard_failed_work_dir(retained: RetainedProcessWorkDir) -> None:
+        """Suppression hors du fil de l'interface (fichiers intermédiaires volumineux)."""
+        threading.Thread(target=retained.discard, name="muxiveo-failed-work-dir", daemon=True).start()
 
     def _on_settings_saved(self) -> None:
         previous_theme = DesignSystem.current_theme()
@@ -3259,8 +3292,7 @@ class MainWindow(QMainWindow):
         DesignSystem.apply_to_application(app)
         self._log_panel._max_lines = self._config.log_max_lines
         self._log_panel.set_startup_expanded(self._config.startup_logs_expanded)
-        self._encode_panel.refresh_runtime_settings()
-        self._remux_panel.refresh_runtime_settings()
+        self._refresh_panels_runtime_settings()
         self._sidebar.set_compact(self._config.startup_menu_compact)
         self._apply_locale()
         if new_theme != previous_theme:
@@ -3300,7 +3332,26 @@ class MainWindow(QMainWindow):
             )
         self.log_requested.emit("OK", "Configuration appliquée depuis config.ini.")
 
+    def _refresh_panels_runtime_settings(self) -> None:
+        """Réglages enregistrés appliqués aux workflows (outils, fils, options) ; pendant une opération,
+        différés à sa fin : le traitement en cours garde les outils avec lesquels il a été validé ;
+        jamais pendant l'arrêt de l'application."""
+        if hasattr(self, "_shutdown"):
+            return
+        # Encodage : différé par le panneau lui-même (opération ou aperçu en cours).
+        self._encode_panel.refresh_runtime_settings()
+        if self._running:
+            self._runtime_refresh_pending = True
+            return
+        self._runtime_refresh_pending = False
+        self._remux_panel.refresh_runtime_settings()
+
     def _prompt_restart_for_scale_change(self, percent: int) -> None:
+        settings_panel = getattr(self, "_settings_panel", None)
+        if settings_panel is not None and settings_panel.is_leaving():
+            # Enregistré depuis la question posée avant une autre action (navigation, fermeture,
+            # mise à jour, setup) : cette action continue, la nouvelle échelle vaudra au prochain lancement.
+            return
         reply = QMessageBox.question(
             self,
             translate_text("Redémarrage recommandé"),
@@ -3313,6 +3364,17 @@ class MainWindow(QMainWindow):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        MainWindow._request_restart(self)
+
+    def _request_restart(self) -> None:
+        """Redémarrage (échelle, setup) : la nouvelle instance n'est lancée qu'une fois la fermeture
+        de celle-ci acceptée (réglages non enregistrés, opération en cours), puis celle-ci se ferme."""
+        if not MainWindow._settings_allow_leave(self):
+            return
+        if getattr(self, "_running", False) and not confirm_close_while_running(
+            self, time.monotonic() - getattr(self, "_op_start", time.monotonic()),
+        ):
+            return
 
         restarted = self._config.restart_application()
         if not restarted:
@@ -3323,6 +3385,7 @@ class MainWindow(QMainWindow):
             )
             return
 
+        self._restart_confirmed = True      # fermeture déjà acceptée : closeEvent ne redemande pas
         app = cast(QApplication | None, QApplication.instance())
         if app is not None:
             app.quit()
@@ -3348,9 +3411,7 @@ class MainWindow(QMainWindow):
             return
         self._config.startup_logs_expanded = expanded
         self._log_panel.set_startup_expanded(expanded)
-        checkbox = self._settings_panel.widget_for("ui", "startup_logs_expanded")
-        if isinstance(checkbox, QCheckBox):
-            checkbox.setChecked(expanded)
+        self._settings_panel.refresh_field("ui", "startup_logs_expanded")
 
     # ------------------------------------------------------------------
     # Logging
@@ -3420,7 +3481,9 @@ class MainWindow(QMainWindow):
                 self._append_verbose_tool_output("done", label=label)
                 return
             if raw_line and not raw_line.startswith("$ "):
-                if _is_encode_progress_noise(raw_line) or _is_encode_stage_message(raw_line):
+                if (_is_encode_progress_noise(raw_line) or _is_encode_stage_message(raw_line)
+                        or _is_libvmaf_noise(raw_line)):
+                    # Lignes absentes du journal : conservées dans le journal verbeux.
                     self._append_verbose_tool_output(raw_line, label=label)
             return
 
@@ -3432,14 +3495,12 @@ class MainWindow(QMainWindow):
                 self._append_verbose_tool_output(line)
             return
 
-        encode_cfg = getattr(self, "_op_encode_config", None)
-        encode_codec = str(getattr(getattr(encode_cfg, "video", None), "codec", "") or "").strip().lower()
-        if encode_codec and backend_id_for_codec(encode_codec) == "nvencc":
+        if _encode_uses_nvencc(getattr(self, "_op_encode_config", None)):
             if line and not line.startswith("$ ") and not line.startswith(_PCT_SENTINEL):
                 self._append_verbose_tool_output(line)
             return
 
-        if self._NOISE_RE.search(line):
+        if _is_libvmaf_noise(line):
             self._append_verbose_tool_output(line)
             return
         if ffmpeg_progress_seconds(line) is not None:
@@ -3499,7 +3560,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if not hasattr(self, "_shutdown"):
-            if self._running and not confirm_close_while_running(
+            if not self._settings_allow_leave():
+                event.ignore()
+                return
+            if self._running and not getattr(self, "_restart_confirmed", False) and not confirm_close_while_running(
                 self, time.monotonic() - getattr(self, "_op_start", time.monotonic()),
             ):
                 event.ignore()
@@ -3509,7 +3573,7 @@ class MainWindow(QMainWindow):
             if self._update_download_cancel is not None:
                 self._update_download_cancel.set()
             self._shutdown = Shutdown(tasks=(self._signals,))
-            for name in ("_rife_controller", "_trt_controller", "_fel_controller"):
+            for name in ("_rife_controller", "_trt_controller", "_fel_controller", "_nvencc_controller"):
                 controller = getattr(self, name, None)
                 if controller is not None:
                     controller.shutdown()
@@ -3589,6 +3653,9 @@ class MainWindow(QMainWindow):
                 self.log_warn(translate_text(
                     "Les dépendances Python ont changé : relancez le setup (Paramètres → Relancer le setup)."
                 ))
+        if results:
+            # Affichés dans le journal (et en fenêtre pour un échec) : seulement alors marqués signalés.
+            mark_update_results_reported(results)
 
     def _sync_update_settings(self) -> None:
         """Invalide les réponses et le badge dès que les préférences changent."""
@@ -3648,8 +3715,7 @@ class MainWindow(QMainWindow):
         if prompt:
             self._update_refresh_pending = False
             # Hors ligne, la page de la release déjà connue reste accessible.
-            if self._update_info is not None:
-                self._show_update_dialog(self._update_info)
+            self._show_requested_update_dialog()
 
     def _update_channel(self) -> str:
         return normalize_update_channel(getattr(self._config, "update_channel", None))
@@ -3673,9 +3739,38 @@ class MainWindow(QMainWindow):
             translate_text("Nouvelle version disponible : v{version} — {url}", version=info.version, url=info.url)
         )
         if prompt:
-            self._show_update_dialog(info)
+            self._show_requested_update_dialog()
         else:
             self._maybe_popup_update()
+
+    def _show_requested_update_dialog(self, *, retry: bool = False) -> None:
+        """Réponse d'une vérification demandée : jamais par-dessus un autre dialogue modal
+        (question des paramètres…), affichée ensuite avec l'état connu à ce moment.
+
+        Une seule demande en attente ; toute présentation de la fenêtre (badge, popup) la consomme.
+        """
+        if not retry:
+            self._update_dialog_requested = True
+        elif not getattr(self, "_update_dialog_requested", False):
+            return
+        if hasattr(self, "_shutdown"):
+            return
+        if QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(500, self, lambda: self._show_requested_update_dialog(retry=True))
+            return
+        if self._update_info is not None:
+            self._show_update_dialog(self._update_info)
+        self._update_dialog_requested = False
+
+    def _show_sync_refusals(self, text: str) -> None:
+        """Récapitulatif Hybrid des épisodes refusés pour synchro impossible : affiché une fois l'opération globale
+        libérée, différé tant qu'un panneau travaille ou qu'un dialogue est ouvert."""
+        if hasattr(self, "_shutdown") or not text:
+            return
+        if self._running or QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(1000, self, lambda value=text: self._show_sync_refusals(value))
+            return
+        QMessageBox.warning(self, translate_text("Épisodes non traités : synchro impossible"), text)
 
     def _maybe_popup_update(self) -> None:
         """Popup automatique, une fois par version et par session ; différée pendant une opération ou un dialogue,
@@ -3705,6 +3800,7 @@ class MainWindow(QMainWindow):
         self._show_update_dialog(info)
 
     def _show_update_dialog(self, info: UpdateInfo) -> None:
+        self._update_dialog_requested = False
         self._update_popup_version = info.version
         kind = detect_install_kind()
         remarks: list[str] = []
@@ -3755,6 +3851,10 @@ class MainWindow(QMainWindow):
                 translate_text("Mise à jour"),
                 translate_text("Une opération est en cours : attendez sa fin avant d'installer la mise à jour."),
             )
+            return
+        # L'installation engagée ferme l'application : réglages tranchés avant le téléchargement.
+        if not self._settings_allow_leave():
+            self.log_info(translate_text("Mise à jour annulée."))
             return
         dialog = QProgressDialog(
             translate_text("Téléchargement de Muxiveo v{version}…", version=info.version),

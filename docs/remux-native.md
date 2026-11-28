@@ -11,11 +11,14 @@ différer.
 
 Le job v1 accepte `"mux_backend": "auto" | "native" | "ffmpeg"`. Le champ est
 facultatif : lorsqu'il est absent, le réglage global `[matroska] mux_backend`
-est utilisé, avec `ffmpeg` comme défaut. L'interface propose le même choix pour
-le job courant et initialise le sélecteur depuis ce réglage global.
+est utilisé, avec `auto` comme défaut (une valeur `ffmpeg` enregistrée par une
+version antérieure, ancien défaut, est migrée une fois ; une valeur de
+`config.ini` est respectée). L'interface propose le même choix pour le job
+courant et initialise le sélecteur depuis ce réglage global.
 
-- `auto` inspecte les sources et les préparations, puis utilise le natif si le
-  contrat est transposable. Sinon le repli FFmpeg est explicite dans le log.
+- `auto` inspecte les sources et les préparations, puis utilise le natif pour
+  toute sortie `.mkv` dont le contrat est transposable (pistes MP4 / MOV lues en
+  flux). Sinon le repli FFmpeg est explicite dans le log.
 - `native` interdit tout repli. Une incompatibilité arrête le job avant la
   création de la sortie finale.
 - `ffmpeg` force le backend historique.

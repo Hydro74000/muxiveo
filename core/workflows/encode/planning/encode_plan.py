@@ -34,6 +34,7 @@ def build_planned_video_tracks(
                 tonemap_to_sdr=bool(settings.tonemap_to_sdr),
                 copy_dv=bool(settings.copy_dv),
                 copy_hdr10plus=bool(settings.copy_hdr10plus),
+                generate_hdr10plus=bool(getattr(settings, "generate_hdr10plus", False)),
                 master_display=str(settings.master_display or ""),
                 max_cll=str(settings.max_cll or ""),
                 static_hdr_analysis_request=str(

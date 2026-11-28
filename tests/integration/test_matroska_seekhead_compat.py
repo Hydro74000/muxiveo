@@ -111,7 +111,7 @@ def test_orphan_seekhead_full_workflow_x265_with_dolby_vision_copy(orphan_mkv, t
         source=orphan_mkv, output=output, video=video, video_tracks=[video], audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=0.5, work_dir=tmp_path / "work",
     )
-    workflow = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, generate_nfo=False)
+    workflow = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False)
     state = wait_task(workflow.run(config), timeout=300.0)
     assert state["failed"] is None, state["failed"]
     probe = subprocess.run(

@@ -1,6 +1,7 @@
 """Menu workflow, restauration transactionnelle et sauvegarde de session."""
 from __future__ import annotations
 
+import copy
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -120,16 +121,149 @@ def _track_key(track, source_index):
     return key
 
 
+def _session_tracks_by_key(config) -> dict:
+    """Pistes du job restauré par clé de session (`_track_key`)."""
+    return {
+        (index, int(track.mkv_tid), track.entry_id if track.is_new else None): track
+        for index, source in enumerate(config.sources)
+        for track in source.tracks
+    }
+
+
+def _session_track(tracks_by_key: dict, key):
+    if not isinstance(key, dict):
+        return None
+    return tracks_by_key.get((int(key["source"]), int(key["id"]), key.get("entry_id")))
+
+
+def _restored_track_sync_links(panel, config, payload) -> dict[str, SyncLink]:
+    """Pistes recalées face à une piste de leur fichier (absentes des sessions antérieures)."""
+    if not isinstance(payload, list):
+        return {}
+    tracks_by_key = _session_tracks_by_key(config)
+    links: dict[str, SyncLink] = {}
+    for item in payload:
+        try:
+            target = _session_track(tracks_by_key, item["track"])
+            reference = _session_track(tracks_by_key, item["reference_track"])
+            relative = SyncCalibration.from_dict(item["calibration"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if target is None or reference is None or target is reference or target.file_id != reference.file_id:
+            continue
+        links[target.entry_id] = SyncLink(target.file_id, reference.entry_id, relative)
+    return links
+
+
+def _restore_own_sync_tracks(panel, config, payload) -> None:
+    """Pistes à synchro propre de la session : statut rétabli, calibration toujours explicite. Absente
+    du job (égale à celle de leur source) : celle de la source, sinon son décalage (calibration
+    linéaire de la source convertie en décalages au chargement) ; sans elle, le remux lui
+    appliquerait les coupures que sa source recevrait ensuite."""
+    if not isinstance(payload, list):
+        return
+    tracks_by_key = _session_tracks_by_key(config)
+    for key in payload:
+        try:
+            track = _session_track(tracks_by_key, key)
+            source_index = int(key["source"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if track is None or not panel._track_type_inherits_source_sync(track):
+            continue
+        panel._own_sync_entry_ids.add(track.entry_id)
+        if track.sync_calibration is None:
+            inherited = (config.sync_calibrations.get(str(config.sources[source_index].file_index))
+                         if 0 <= source_index < len(config.sources) else None)
+            track.sync_calibration = (copy.deepcopy(inherited) if inherited is not None
+                                      else SyncCalibration.linear(int(track.time_shift_ms or 0)).to_dict())
+
+
+def _pending_cadence_payload(panel, tracks_by_id, source_index) -> list[dict]:
+    """Analyses de hauteur en cours : piste, référence et synchro relative. Analyse d'une source : sa
+    piste mesurée tant qu'elle existe (même détachée depuis : la reprise mesure la même piste) ;
+    retirée depuis, rattachée à une piste qui suit encore la source."""
+    payload: list[dict] = []
+    for token, (entry_id, reference_id, scope) in panel._cadence_pending.items():
+        entry = tracks_by_id.get(entry_id)
+        if not scope.startswith("track:") and entry is None:
+            # Analyse de la synchro de la source : portée par une piste qui la suit encore.
+            entry = panel._source_audio_track(scope)
+        reference = tracks_by_id.get(reference_id)
+        relative = panel._cadence_relatives.get(token)
+        if (entry is None or reference is None or relative is None
+                or entry.file_id not in source_index or reference.file_id not in source_index):
+            continue
+        payload.append({
+            "scope": "track" if scope.startswith("track:") else "source",
+            "track": _track_key(entry, source_index[entry.file_id]),
+            "reference_track": _track_key(reference, source_index[reference.file_id]),
+            "calibration": relative.to_dict(),
+        })
+    return payload
+
+
+def _restored_cadence_analyses(config, payload) -> list[tuple[str, str, SyncCalibration, str]]:
+    """Analyses de hauteur en cours à la sauvegarde : (piste, référence, synchro relative, portée)."""
+    if not isinstance(payload, list):
+        return []
+    tracks_by_key = _session_tracks_by_key(config)
+    restored: list[tuple[str, str, SyncCalibration, str]] = []
+    for item in payload:
+        try:
+            target = _session_track(tracks_by_key, item["track"])
+            reference = _session_track(tracks_by_key, item["reference_track"])
+            relative = SyncCalibration.from_dict(item["calibration"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if target is not None and reference is not None:
+            # Sauvegarde sans portée : déduite à la reprise de l'état de la piste (« »).
+            scope = str(item.get("scope") or "")
+            restored.append((target.entry_id, reference.entry_id, relative,
+                             scope if scope in ("track", "source") else ""))
+    return restored
+
+
+def _restored_source_references(panel, config, payload) -> dict[str, str]:
+    """Dernière référence de la synchro de chaque source (absente des sessions antérieures)."""
+    if not isinstance(payload, dict):
+        return {}
+    tracks_by_key = _session_tracks_by_key(config)
+    restored: dict[str, str] = {}
+    for index, key in payload.items():
+        try:
+            source = panel._source_files[int(index)]
+            reference = _session_track(tracks_by_key, key)
+        except (IndexError, KeyError, TypeError, ValueError):
+            continue
+        if reference is not None:
+            restored[source.id] = reference.entry_id
+    return restored
+
+
+def _restored_last_references(config, payload) -> dict[str, str]:
+    """Dernière référence choisie par piste (absente des sessions antérieures)."""
+    if not isinstance(payload, list):
+        return {}
+    tracks_by_key = _session_tracks_by_key(config)
+    restored: dict[str, str] = {}
+    for item in payload:
+        try:
+            target = _session_track(tracks_by_key, item["track"])
+            reference = _session_track(tracks_by_key, item["reference_track"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if target is not None and reference is not None and target is not reference:
+            restored[target.entry_id] = reference.entry_id
+    return restored
+
+
 def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
     """Liens de synchro d'une session (absents des sessions antérieures : synchros conservées telles quelles)."""
     if not isinstance(payload, dict):
         return {}
     count = len(panel._source_files)
-    tracks_by_key = {
-        (index, int(track.mkv_tid), track.entry_id if track.is_new else None): track
-        for index, source in enumerate(config.sources)
-        for track in source.tracks
-    }
+    tracks_by_key = _session_tracks_by_key(config)
     links: dict[str, SyncLink] = {}
     for target_index, item in payload.items():
         try:
@@ -137,9 +271,7 @@ def _restored_sync_links(panel, config, payload) -> dict[str, SyncLink]:
             if not (0 <= target < count and 0 <= reference < count) or target == reference:
                 continue
             relative = SyncCalibration.from_dict(item["calibration"])
-            key = item.get("reference_track")
-            track = tracks_by_key.get((int(key["source"]), int(key["id"]), key.get("entry_id"))) \
-                if isinstance(key, dict) else None
+            track = _session_track(tracks_by_key, item.get("reference_track"))
         except (KeyError, TypeError, ValueError):
             continue
         links[panel._source_files[target].id] = SyncLink(
@@ -228,6 +360,7 @@ def _session_job(panel, *, identity_selectors=True):
             {"path": str(source.path), "attachments": "none", "copy_tags": False}
             for source in panel._source_files
         ]
+    tracks_by_id = {track.entry_id: track for track in panel._track_table.current_tracks()}
     job["_muxiveo_session"] = {
         "version": 2,
         "pending_source_indices": pending_indices,
@@ -255,6 +388,46 @@ def _session_job(panel, *, identity_selectors=True):
             for file_id, link in panel._sync_links.items()
             if file_id in source_index and link.reference_file_id in source_index
         },
+        # Piste recalée face à une piste de son fichier : elle suit sa référence.
+        "track_sync_links": [
+            {
+                "track": _track_key(tracks_by_id[entry_id], source_index[link.reference_file_id]),
+                "reference_track": _track_key(tracks_by_id[link.reference_entry_id],
+                                              source_index[link.reference_file_id]),
+                "calibration": link.relative.to_dict(),
+            }
+            for entry_id, link in panel._track_sync_links.items()
+            if entry_id in tracks_by_id and link.reference_entry_id in tracks_by_id
+            and link.reference_file_id in source_index
+        ],
+        # Pistes à synchro propre (recalées, importées) : statut gardé même quand leur calibration
+        # égale celle de leur source (alors absente du job).
+        # Dernière référence choisie par piste (présélection des fenêtres de choix).
+        "last_references": [
+            {
+                "track": _track_key(tracks_by_id[entry_id], source_index[tracks_by_id[entry_id].file_id]),
+                "reference_track": _track_key(tracks_by_id[reference_id],
+                                              source_index[tracks_by_id[reference_id].file_id]),
+            }
+            for entry_id, reference_id in panel._last_reference_ids.items()
+            if entry_id in tracks_by_id and reference_id in tracks_by_id
+            and tracks_by_id[entry_id].file_id in source_index and tracks_by_id[reference_id].file_id in source_index
+        ],
+        # Dernière référence de la synchro de chaque source (reprise des analyses de hauteur).
+        "source_references": {
+            str(source_index[file_id]): _track_key(tracks_by_id[reference_id],
+                                                   source_index[tracks_by_id[reference_id].file_id])
+            for file_id, reference_id in panel._source_reference_ids.items()
+            if file_id in source_index and reference_id in tracks_by_id
+            and tracks_by_id[reference_id].file_id in source_index
+        },
+        # Analyses de hauteur en cours : reprises à la restauration sur leur synchro relative.
+        "pending_cadence_analyses": _pending_cadence_payload(panel, tracks_by_id, source_index),
+        "own_sync_tracks": [
+            _track_key(track, source_index[track.file_id])
+            for track in panel._track_table.current_tracks()
+            if track.entry_id in panel._own_sync_entry_ids and track.file_id in source_index
+        ],
         "auto_sync_tracks": [
             _track_key(track, source_index[track.file_id])
             for track in panel._track_table.current_tracks()
@@ -343,8 +516,8 @@ def load(panel, path):
     panel.setEnabled(False)
     def task():
         try:
-            from cli.remux_config import build_remux_config
-            from cli.options import CommonOptions
+            from core.jobs.remux_config import build_remux_config
+            from core.jobs.options import CommonOptions
             from cli.logging import Logger
             from core.inspector import FileInspector
             config = build_remux_config(job, panel._config, CommonOptions(), Logger())
@@ -455,6 +628,15 @@ def restore(panel, config, infos, session=None):
     panel._sync_links = _restored_sync_links(panel, config, session.get("sync_links"))
     panel._own_sync_entry_ids = set()
     panel._adopt_own_sync_calibrations(ordered)
+    panel._track_sync_links = _restored_track_sync_links(panel, config, session.get("track_sync_links"))
+    panel._own_sync_entry_ids.update(
+        track.entry_id for track in ordered
+        if track.entry_id in panel._track_sync_links and panel._track_type_inherits_source_sync(track)
+    )
+    _restore_own_sync_tracks(panel, config, session.get("own_sync_tracks"))
+    panel._last_reference_ids = _restored_last_references(config, session.get("last_references"))
+    panel._source_reference_ids = _restored_source_references(panel, config, session.get("source_references"))
+    panel._restored_cadence_analyses = _restored_cadence_analyses(config, session.get("pending_cadence_analyses"))
     panel._replace_track_table_tracks(ordered)
     panel._output_edit.setText(str(config.output))
     if isinstance(session.get("output_text"), str):
@@ -479,6 +661,8 @@ def restore(panel, config, infos, session=None):
         panel._chapter_panel.reset_chapters(config.chapter_overrides)
         panel._chapter_panel._modified = True
     panel._sync_entry_calibrations()
+    # Pistes recalées dans leur fichier : synchro égale à celle de leur source non écrite dans le job.
+    panel._follow_track_links(log=False)
     for track in panel._track_table.current_tracks():
         # Le dialogue d'édition doit partir du décalage réellement appliqué, y compris pour
         # détecter une remise à zéro d'une calibration linéaire importée avec un champ à zéro.

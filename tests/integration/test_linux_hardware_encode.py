@@ -81,7 +81,7 @@ def test_nvencc_keeps_source_delay_and_p3(tmp_path, hardware, qt_app, mux_backen
     )
     workflow = EncodeWorkflow(
         ffmpeg_bin=ffmpeg, nvencc_bin=nvencc, rife_bin=rife,
-        ffmpeg_threads=1, ram_buffer_enabled=False, generate_nfo=False,
+        ffmpeg_threads=1, generate_nfo=False,
     )
     assert workflow.validate(config) == []
     state = wait_task(workflow.run(config), timeout=90)
@@ -140,7 +140,7 @@ def execute_case(source, tmp_path, hardware, video, backend, *, expected_size=(6
     )
     workflow = EncodeWorkflow(
         ffmpeg_bin=ffmpeg, nvencc_bin=nvencc, ffmpeg_threads=2,
-        ram_buffer_enabled=False, generate_nfo=False,
+        generate_nfo=False,
     )
     logs = []
     workflow.log_message.connect(lambda level, message: logs.append(f"{level}: {message}"))
@@ -241,7 +241,7 @@ def test_gpu_workflow_dynamic_hdr(qt_app, tmp_path, hardware, codec, backend):
     )
     workflow = EncodeWorkflow(
         ffmpeg_bin=ffmpeg, nvencc_bin=nvencc, ffmpeg_threads=2,
-        ram_buffer_enabled=False, generate_nfo=False,
+        generate_nfo=False,
     )
     logs = []
     workflow.log_message.connect(lambda level, message: logs.append(f"{level}: {message}"))
@@ -299,7 +299,7 @@ def test_gpu_cancel_active_encoder(qt_app, source, tmp_path, hardware, codec):
     )
     workflow = EncodeWorkflow(
         ffmpeg_bin=ffmpeg, nvencc_bin=nvencc, ffmpeg_threads=2,
-        ram_buffer_enabled=False, generate_nfo=False,
+        generate_nfo=False,
     )
     signals = workflow.run(cfg)
     active = []

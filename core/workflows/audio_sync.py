@@ -188,6 +188,8 @@ class AudioSyncWorkflow:
             "-of", "json",
         ]
         cmd.extend(ffprobe_input_args(track.source_path))
+        # ffprobe configuré, arguments séparés et chemin média protégé, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -222,6 +224,8 @@ class AudioSyncWorkflow:
             "-of", "json",
         ]
         cmd.extend(ffprobe_input_args(track.source_path))
+        # Commande FFmpeg / ffprobe construite ici (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -311,6 +315,8 @@ class AudioSyncWorkflow:
             "pipe:1",
         ])
         self._log("INFO", "$ " + " ".join(str(part) for part in cmd))
+        # Commande FFmpeg / ffprobe construite ici (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             cmd,
             capture_output=True,

@@ -1,0 +1,694 @@
+"""Lots de jobs (``batch``) : découverte, planification, refus des collisions, exécution dans l'ordre.
+
+Les étapes d'un job (construction, aperçu, exécution) sont injectées (:class:`BatchSteps`) :
+le CLI y branche ses fonctions historiques, la couche de service les siennes (événements par
+job enfant). Une annulation arrête le lot : le job en cours est annulé, les suivants ne
+démarrent pas.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
+from glob import glob
+from pathlib import Path
+from typing import Any
+
+from core.config import AppConfig
+from core.bluray import discover_titles, find_disc_root
+from core.file_types import is_accepted
+from core.json_documents import document_path_errors, resolve_document_paths, without_internal_keys
+from core.output_commit import destination_key
+
+from core.jobs.constants import EXIT_ARGS, EXIT_OK, EXIT_PARTIAL, EXIT_WORKFLOW, EXIT_VALIDATION
+from core.jobs.contract import validate_batch_contract, validate_job_contract
+from core.service.errors import ErrorCode, error_code
+from core.jobs.errors import JobError
+from core.jobs.inspection import source_path_items
+from core.jobs.loader import apply_metadata_overrides
+from core.jobs.json_io import deep_merge, load_job_document, load_json, without_excluded, write_json
+from core.jobs.logging import JobLogger as Logger
+from core.jobs.options import call_supported, CommonOptions
+from core.service.context import CancelToken
+from core.workflows.remux_models import RemuxConfig
+
+
+BuildStep = Callable[[dict[str, Any], AppConfig, CommonOptions, Logger], RemuxConfig]
+PreviewStep = Callable[[AppConfig, CommonOptions, Logger, RemuxConfig], int]
+RunStep = Callable[..., int]  # (config, options, logger, remux_config, *, force) -> code de sortie
+
+
+@dataclass(frozen=True)
+class BatchSteps:
+    """Étapes d'un job du lot : construction du remux, aperçu (``--dry-run``), exécution.
+
+    ``encode`` résout le bloc ``encode`` d'un job (``None`` : copie pure, le job reste un remux) ;
+    ``preview_encode`` / ``run_encode`` traitent les jobs encodés.
+    """
+
+    build: BuildStep
+    preview: PreviewStep
+    run: RunStep
+    encode: Callable[..., Any] | None = None  # (job, remux_config, config, options, logger) -> EncodeConfig | None
+    preview_encode: Callable[..., int] | None = None  # (config, options, logger, encode_config) -> code
+    run_encode: Callable[..., int] | None = None  # (config, options, logger, encode_config, *, force, accept) -> code
+    finish: Callable[[Any, str], None] | None = None  # (logger du job, "failed" | "cancelled") : job non exécuté
+
+
+def plan_job_encode(steps: BatchSteps, entry: PlannedBatchJob, job: dict[str, Any], remux_config: RemuxConfig,
+                    config: AppConfig, options: CommonOptions, logger: Logger) -> None:
+    """Encodage du job résolu dès la planification (erreurs connues avant le premier traitement)."""
+    block = job.get("encode")
+    if steps.encode is None or block is None:
+        return
+    entry.encode_config = steps.encode(job, remux_config, config, options, logger)
+    entry.accept_dovi_nvenc_crop = bool(isinstance(block, dict) and block.get("accept_dovi_nvenc_crop"))
+
+
+def execute_job(steps: BatchSteps, entry: PlannedBatchJob, config: AppConfig, options: CommonOptions,
+                logger: Logger, *, dry_run: bool, force: bool) -> int:
+    """Aperçu ou exécution d'un job planifié (encodage ou remux)."""
+    if entry.encode_config is not None and steps.run_encode is not None and steps.preview_encode is not None:
+        if dry_run:  # même contrôle qu'au lancement (géométrie DV + NVENC acceptée ou non)
+            return call_supported(steps.preview_encode, config, options, logger, entry.encode_config,
+                                  accept_dovi_nvenc_crop=entry.accept_dovi_nvenc_crop)
+        return steps.run_encode(config, options, logger, entry.encode_config, force=force,
+                                accept_dovi_nvenc_crop=entry.accept_dovi_nvenc_crop)
+    if dry_run:
+        return steps.preview(config, options, logger, entry.remux_config)
+    return steps.run(config, options, logger, entry.remux_config, force=force)
+
+
+@dataclass(frozen=True)
+class BatchOutcome:
+    """Bilan d'un lot : code de sortie historique, résumé (``--summary``), annulation."""
+
+    exit_code: int
+    summary: dict[str, Any] = field(default_factory=dict)
+    cancelled: bool = False
+
+
+def _without(spec: dict[str, Any], overridden: dict[str, Any]) -> dict[str, Any]:
+    """``spec`` sans les champs (feuilles, imbriquées comprises) que ``overridden`` fixe."""
+    kept: dict[str, Any] = {}
+    for key, value in spec.items():
+        if key not in overridden or key == "select":
+            kept[key] = value
+        elif isinstance(value, dict) and isinstance(overridden[key], dict):
+            # Choix exclusifs (``static_hdr`` : analyse ou valeurs) : la surcharge retire aussi l'autre choix.
+            rest = _without(without_excluded(key, value, overridden[key]), overridden[key])
+            if rest:
+                kept[key] = rest
+    return kept
+
+
+def merge_encode_block(job: dict[str, Any], block: dict[str, Any]) -> dict[str, Any]:
+    """Job avec ``block`` fusionné dans son bloc ``encode`` (``block`` prime ; pistes et audio ajoutés).
+
+    Les champs du ``video.default`` de ``block`` priment aussi sur les surcharges par piste du job : sinon une
+    piste JSON à CRF 18 resterait à 18 malgré ``--crf 28`` (couche piste appliquée après la couche défaut).
+    """
+    merged = dict(job)
+    existing = merged.get("encode")
+    base = existing if isinstance(existing, dict) else {}
+    overriding = (block.get("video", {}) or {}).get("default") or {}
+    base_tracks = [_without(track, overriding) if isinstance(track, dict) else track
+                   for track in (base.get("video", {}) or {}).get("tracks", [])]
+    tracks = [*base_tracks, *(block.get("video", {}) or {}).get("tracks", [])]
+    combined = deep_merge(base, block)
+    if tracks:
+        combined.setdefault("video", {})["tracks"] = tracks
+    if base.get("audio") or block.get("audio"):
+        combined["audio"] = [*base.get("audio", []), *block.get("audio", [])]
+    merged["encode"] = combined
+    return merged
+
+
+@dataclass(frozen=True)
+class BatchDiscovery:
+    jobs: list[dict[str, Any]]
+    scanned: int
+    selected: int
+    explicit_inputs: int
+    roots: list[str]
+
+
+def _matches_any(path: Path, patterns: list[str] | None) -> bool:
+    if not patterns:
+        return False
+    rel = path.as_posix()
+    name = path.name
+    return any(fnmatch(rel, pattern) or fnmatch(name, pattern) for pattern in patterns)
+
+
+def _expand_input_dirs(raw_dir: str) -> list[Path]:
+    expanded = Path(str(raw_dir)).expanduser()
+    raw_text = str(expanded)
+    if any(char in raw_text for char in "*?["):
+        matches = sorted(Path(match) for match in glob(raw_text))
+        dirs = [path for path in matches if path.is_dir()]
+        if not dirs:
+            raise JobError(f"Aucun dossier --input-dir ne correspond au glob : {raw_dir}", EXIT_ARGS)
+        return dirs
+    return [expanded]
+
+
+def _generated_output_path(output_dir: str | None, relative_path: Path) -> str | None:
+    if not output_dir:
+        return None
+    return str(Path(output_dir).expanduser() / relative_path.with_suffix(".mkv"))
+
+
+def _job_for_source(
+    path: Path,
+    *,
+    output: str | None = None,
+    output_dir: str | None = None,
+    output_template: str = "",
+    output_all: bool = False,
+) -> dict[str, Any]:
+    job: dict[str, Any] = {"sources": [{"path": str(path)}]}
+    if output_template:
+        job["output_template"] = output_template
+        if output_all:
+            job["output_all"] = True
+        if output_dir:
+            job["_batch_output_dir"] = str(Path(output_dir).expanduser())
+        job["_batch_generated_output"] = True
+    elif output:
+        job["output"] = output
+        job["_batch_generated_output"] = True
+    return job
+
+
+def _assert_unique_generated_outputs(jobs: list[dict[str, Any]]) -> None:
+    seen: dict[str, str] = {}
+    for job in jobs:
+        if not job.get("_batch_generated_output"):
+            continue
+        output = str(job.get("output") or "")
+        if not output:
+            # Template à résoudre plus tard — dedup post-rendu fait dans la boucle batch.
+            continue
+        input_path = job_primary_input(job)
+        previous = seen.get(output)
+        if previous is not None:
+            raise JobError(
+                "Sortie générée en double : "
+                f"{output} pour {previous} et {input_path}. "
+                "Utilisez des dossiers distincts ou un batch JSON avec sorties explicites.",
+                EXIT_ARGS,
+            )
+        seen[output] = input_path
+
+
+@dataclass
+class PlannedBatchJob:
+    """Job préparé avant exécution (configuration ou erreur de préparation)."""
+
+    index: int
+    input_label: str
+    output_label: str
+    remux_config: Any = None
+    error: Exception | None = None
+    generated_output: bool = False
+    template: str = ""
+    #: Encodage résolu du job (bloc ``encode`` ; ``None`` : remux) et acceptation du recadrage DV NVENC.
+    encode_config: Any = None
+    accept_dovi_nvenc_crop: bool = False
+
+
+def _destination_keys(output: Path) -> list[str]:
+    """Clés d'identité d'une sortie : chemin canonique, et fichier existant (alias)."""
+    keys = [destination_key(output)]
+    try:
+        stat = os.stat(output)
+    except OSError:
+        return keys
+    if stat.st_ino:
+        keys.append(f"file:{stat.st_dev}:{stat.st_ino}")
+    return keys
+
+
+def assert_unique_batch_outputs(planned: list[PlannedBatchJob]) -> None:
+    """Refuse deux jobs d'un même batch vers une même sortie, avant tout traitement.
+
+    Toutes les sorties sont comparées (explicites, héritées, générées ou
+    rendues par template) sur leur chemin canonique et l'identité des
+    fichiers existants (liens). Indépendant de ``--force``, qui n'autorise que
+    le remplacement d'une sortie préexistante.
+    """
+    seen: dict[str, PlannedBatchJob] = {}
+    for entry in planned:
+        config = entry.remux_config
+        output = getattr(config, "output", None)
+        if output is None:
+            continue
+        keys = _destination_keys(Path(output))
+        previous = next((seen[key] for key in keys if key in seen), None)
+        if previous is not None:
+            hint = (
+                f" Le template '{entry.template}' ne discrimine pas les deux sources — "
+                "ajoutez {source_name}, {episode} ou {season_episode}."
+                if entry.template
+                else " Donnez une sortie distincte à chaque job (output, --output-dir ou --output-template)."
+            )
+            raise JobError(
+                "Sortie générée en double : "
+                f"{output} pour les jobs {previous.index + 1} ({previous.input_label}) "
+                f"et {entry.index + 1} ({entry.input_label}). Aucun job n'a été lancé."
+                + hint,
+                EXIT_ARGS,
+            )
+        for key in keys:
+            seen[key] = entry
+
+
+def discover_direct_batch_jobs(
+    *,
+    cli_inputs: list[str] | None = None,
+    input_dirs: list[str] | None = None,
+    output_dir: str | None = None,
+    recursive: bool = False,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    output_template: str = "",
+    output_all: bool = False,
+) -> BatchDiscovery:
+    jobs: list[dict[str, Any]] = []
+    scanned = 0
+    roots: list[str] = []
+
+    for raw in cli_inputs or []:
+        path = Path(str(raw)).expanduser()
+        scanned += 1
+        output = _generated_output_path(output_dir, Path(path.name)) if not output_template else None
+        jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template, output_all=output_all))
+
+    for raw_dir in input_dirs or []:
+        for root in _expand_input_dirs(str(raw_dir)):
+            if not root.exists():
+                raise JobError(f"Dossier batch introuvable : {root}", EXIT_ARGS)
+            if not root.is_dir():
+                raise JobError(f"Chemin --input-dir invalide, attendu dossier : {root}", EXIT_ARGS)
+            roots.append(str(root))
+            bluray_titles = discover_titles(root, min_duration_s=60.0)
+            if bluray_titles:
+                title = bluray_titles[0]
+                output_relative = Path(title.disc_root.name or title.label)
+                jobs.append(_job_for_source(
+                    title.playlist_path,
+                    output=(_generated_output_path(output_dir, output_relative) if not output_template else None),
+                    output_dir=output_dir,
+                    output_template=output_template,
+                    output_all=output_all,
+                ))
+                continue
+            iterator = root.rglob("*") if recursive else root.iterdir()
+            candidates = sorted(
+                (path for path in iterator if path.is_file()),
+                key=lambda path: path.relative_to(root).as_posix().lower(),
+            )
+            for path in candidates:
+                scanned += 1
+                if find_disc_root(path.parent) is not None and path.suffix.lower() == ".m2ts":
+                    continue
+                relative = path.relative_to(root)
+                if not is_accepted(path, video_only=True):
+                    continue
+                if include_patterns and not _matches_any(relative, include_patterns):
+                    continue
+                if _matches_any(relative, exclude_patterns):
+                    continue
+                output = _generated_output_path(output_dir, relative) if not output_template else None
+                jobs.append(_job_for_source(path, output=output, output_dir=output_dir, output_template=output_template, output_all=output_all))
+
+    _assert_unique_generated_outputs(jobs)
+    return BatchDiscovery(
+        jobs=jobs,
+        scanned=scanned,
+        selected=len(jobs),
+        explicit_inputs=len(cli_inputs or []),
+        roots=roots,
+    )
+
+
+def batch_jobs(batch: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_jobs = batch.get("jobs", batch.get("inputs", []))
+    if not isinstance(raw_jobs, list) or not raw_jobs:
+        raise JobError("Le batch doit contenir `jobs` ou `inputs`.", EXIT_ARGS)
+    jobs: list[dict[str, Any]] = []
+    for item in raw_jobs:
+        if isinstance(item, dict):
+            jobs.append(item)
+        else:
+            jobs.append({"sources": [str(item)]})
+    return jobs
+
+
+def job_primary_input(job: dict[str, Any]) -> str:
+    try:
+        first = source_path_items(job)[0]["path"]
+        return str(first)
+    except Exception:
+        return ""
+
+
+def write_batch_summary(path: str | None, payload: dict[str, Any], guard: Any = None) -> None:
+    """Résumé du lot (``--summary``) ; ``guard`` : garde des annexes du lot (résumé réservé au précontrôle)."""
+    if not path:
+        return
+    if guard is not None:
+        guard.write_json(Path(path).expanduser(), payload)
+        return
+    write_json(Path(path).expanduser(), payload)
+
+
+def batch_sidecar_guard(planned: list[PlannedBatchJob], *, config: Any, options: CommonOptions,
+                        documents: tuple[str | Path | None, ...], summary_path: str | None, dry_run: bool) -> Any:
+    """Précontrôle des annexes d'un lot, avant le premier job : résumé, exact-jobs (``--export-workflow``) et NFO de
+    chaque job qui en écrit un, jamais sur une source, une sortie, un document du lot ni une autre annexe.
+
+    Seules les écritures effectives sont réservées (aucun NFO en aperçu ni en export).
+    """
+    from core.jobs.runtime import exact_job_destination
+    from core.sidecar_output import SidecarGuard, encode_input_paths, nfo_enabled, nfo_path, remux_input_paths
+
+    guard = SidecarGuard()
+    guard.protect_many(getattr(options, "protected_paths", ()) or (), "document de la requête")
+    guard.protect_many((doc for doc in documents if doc and Path(doc).expanduser().is_file()), "document du lot")
+    ready = [entry for entry in planned if entry.remux_config is not None]
+    for entry in ready:
+        guard.protect_many(remux_input_paths(entry.remux_config), "source")
+        guard.protect(entry.remux_config.output, "sortie")
+        if entry.encode_config is not None:
+            guard.protect_many(encode_input_paths(entry.encode_config), "source")
+            guard.protect(getattr(entry.encode_config, "output", None), "sortie")
+    exporting = bool(getattr(options, "export_workflow", None))
+    writes_nfo = not dry_run and not exporting and nfo_enabled(config, options)
+    for entry in ready:
+        if exporting:
+            guard.claim(exact_job_destination(entry.remux_config, options), f"exact-job du job {entry.index + 1}")
+        elif writes_nfo:
+            output = getattr(entry.encode_config, "output", None) or entry.remux_config.output
+            guard.claim(nfo_path(output), f"NFO du job {entry.index + 1}")
+    if summary_path:
+        guard.claim(Path(summary_path).expanduser(), "résumé du lot (--summary)")
+    return guard
+
+
+def log_batch_failures(logger: Logger, summary_jobs: list[dict[str, Any]], *, event: str = "batch_failure") -> None:
+    """Récapitule les fichiers non traités et la cause en fin de batch."""
+    failed = [job for job in summary_jobs if job.get("status") == "failed"]
+    if not failed:
+        return
+    logger.emit("warn", f"{len(failed)} fichier(s) non traité(s) :", event=f"{event}_report", count=len(failed))
+    for job in failed:
+        cause = str(job.get("error") or f"exit_code={job.get('exit_code')}")
+        logger.emit(
+            "error",
+            f"  - {job.get('input') or '?'} : {cause}",
+            event=event,
+            job_index=job.get("job_index"),
+            input=job.get("input"),
+            output=job.get("output"),
+            exit_code=job.get("exit_code"),
+            error=job.get("error"),
+        )
+
+
+def api_file_document(document: Any, base_dir: Path, where: str) -> Any:
+    """Document lu d'un fichier pour une requête de l'API : chemins utilisables ici (déjà résolus depuis le dossier
+    du document), clés internes ``_…`` retirées avant que le moteur n'ajoute les siennes."""
+    errors = document_path_errors(document, base_dir, prefix=where)
+    if errors:
+        raise JobError("Document refusé :\n" + "\n".join(f"- {path} : {message}" for path, message in errors),
+                       EXIT_VALIDATION)
+    return without_internal_keys(document)
+
+
+def run_batch(
+    *,
+    template_path: str,
+    batch_path: str | None,
+    cli_inputs: list[str] | None,
+    input_dirs: list[str] | None,
+    recursive: bool,
+    include_patterns: list[str] | None,
+    exclude_patterns: list[str] | None,
+    output_dir: str | None,
+    dry_run: bool,
+    force: bool,
+    continue_on_error: bool,
+    summary_path: str | None,
+    config: AppConfig,
+    options: CommonOptions,
+    logger: Logger,
+    auto_tmdb: bool = False,
+    tmdb: bool = False,
+    tmdb_id: int | None = None,
+    tmdb_apikey: str = "",
+    output_template: str = "",
+    output_all: bool = False,
+    no_cover: bool = False,
+    no_attach: bool = False,
+    mux_backend: str | None = None,
+    encode_overrides: dict[str, Any] | None = None,
+    steps: BatchSteps,
+    cancel: CancelToken | None = None,
+    job_logger: Callable[[int], Logger] | None = None,
+) -> BatchOutcome:
+    direct_mode = bool(cli_inputs or input_dirs or recursive or include_patterns or exclude_patterns)
+    if batch_path and direct_mode:
+        raise JobError(
+            "`--batch` ne peut pas être combiné avec `-i/--input`, `--input-dir`, "
+            "`--recursive`, `--include` ou `--exclude`.",
+            EXIT_ARGS,
+        )
+
+    # Chemins relatifs du template et des items du fichier batch : résolus
+    # depuis le dossier de leur propre document.
+    template = load_job_document(Path(template_path))
+    if getattr(options, "api", False):
+        template = api_file_document(template, Path(template_path).expanduser().absolute().parent, "template")
+    validate_job_contract(template, require_version=True)
+
+    discovery: BatchDiscovery | None = None
+    batch_base: Path | None = None
+    if batch_path:
+        batch = load_json(Path(batch_path).expanduser())
+        batch_base = Path(batch_path).expanduser().absolute().parent
+    else:
+        discovery = discover_direct_batch_jobs(
+            cli_inputs=cli_inputs,
+            input_dirs=input_dirs,
+            output_dir=output_dir,
+            recursive=recursive,
+            include_patterns=include_patterns,
+            exclude_patterns=exclude_patterns,
+            output_template=output_template,
+            output_all=output_all,
+        )
+        if not discovery.jobs:
+            raise JobError("Aucun fichier vidéo compatible trouvé pour le batch.", EXIT_ARGS)
+        logger.emit(
+            "info",
+            f"Découverte batch : {discovery.selected}/{discovery.scanned} fichier(s) sélectionné(s).",
+            event="batch_discovery",
+            scanned=discovery.scanned,
+            selected=discovery.selected,
+            explicit_inputs=discovery.explicit_inputs,
+            roots=discovery.roots,
+            recursive=recursive,
+        )
+        batch = {"jobs": discovery.jobs}
+
+    validate_batch_contract(batch)
+    # Phase 1 — préparation de tous les jobs, sans écriture : fusion, contrat,
+    # configuration et sortie rendue. Les collisions de sorties sont refusées
+    # ensuite, avant le premier traitement, même avec --force.
+    planned: list[PlannedBatchJob] = []
+    for job_index, item in enumerate(batch_jobs(batch)):
+        if cancel is not None and cancel.cancelled:
+            break  # Ctrl+C pendant la préparation : aucun job lancé (phase 2)
+        if batch_base is not None:
+            item = resolve_document_paths(item, batch_base)
+            if getattr(options, "api", False):
+                item = api_file_document(item, batch_base, f"jobs[{job_index}]")
+        job = deep_merge(template, item)
+        if mux_backend:
+            job["mux_backend"] = mux_backend
+        if encode_overrides:
+            job = merge_encode_block(job, encode_overrides)
+        if str(template.get("kind") or "") == "exact-job":
+            job["_relaxed_selectors"] = True
+        apply_metadata_overrides(
+            job,
+            auto_tmdb=auto_tmdb,
+            tmdb=tmdb,
+            tmdb_id=tmdb_id,
+            tmdb_apikey=tmdb_apikey,
+            no_cover=no_cover,
+            no_attach=no_attach,
+        )
+        if output_template and "output_template" not in job:
+            job["output_template"] = output_template
+            if output_all:
+                job["output_all"] = True
+            if output_dir:
+                job["_batch_output_dir"] = str(Path(output_dir).expanduser())
+            job["_batch_generated_output"] = True
+        elif output_all:
+            job["output_all"] = True
+        if (output_dir and getattr(options, "api", False) and job.get("output_template")
+                and "_batch_output_dir" not in job):
+            # Requête de l'API : le dossier de sortie sert de base au gabarit hérité (template, élément du lot)
+            # comme au gabarit des options, plutôt que le dossier de référence.
+            job["_batch_output_dir"] = str(Path(output_dir).expanduser())
+        entry = PlannedBatchJob(job_index, job_primary_input(job), str(job.get("output") or ""))
+        planned.append(entry)
+        try:
+            # `--output-dir` prime sur la sortie héritée du template quand l'item
+            # batch ne fixe pas sa propre sortie (sinon collisions dans le cwd).
+            item_output = isinstance(item, dict) and "output" in item
+            if output_dir and not item_output and "output_template" not in job:
+                first = source_path_items(job)[0]["path"]
+                job["output"] = str(Path(output_dir).expanduser() / (Path(str(first)).stem + ".mkv"))
+                job["_batch_generated_output"] = True
+                entry.output_label = str(job["output"])
+            # Sortie générée ou rendue par template : dossier créé à l'exécution.
+            entry.generated_output = bool(job.get("_batch_generated_output") or job.get("output_template"))
+            entry.template = str(job.get("output_template") or "")
+            allow_missing = bool(job.get("_allow_missing_output_dir", False))
+            if entry.generated_output:
+                # Dossier créé seulement à l'exécution (jamais en dry-run).
+                job["_allow_missing_output_dir"] = True
+            validate_job_contract(job, path=f"jobs[{job_index}]", require_version=True)
+            remux_config = steps.build(job, config, options, logger)
+            if entry.generated_output and not dry_run:
+                remux_config.allow_missing_output_dir = allow_missing
+            entry.remux_config = remux_config
+            entry.output_label = str(remux_config.output)
+            plan_job_encode(steps, entry, job, remux_config, config, options, logger)
+        except Exception as exc:
+            entry.error = exc
+            if not continue_on_error:
+                break
+    assert_unique_batch_outputs(planned)
+    sidecars = batch_sidecar_guard(planned, config=config, options=options, documents=(template_path, batch_path),
+                                   summary_path=summary_path, dry_run=dry_run)
+
+    # Phase 2 — exécution dans l'ordre du batch.
+    failures = 0
+    total = 0
+    summary_jobs: list[dict[str, Any]] = []
+    # Annulation pendant la découverte ou la préparation : aucun job lancé, lot annulé.
+    cancelled = cancel is not None and cancel.cancelled
+    for entry in planned:
+        if cancel is not None and cancel.cancelled:
+            cancelled = True
+            break
+        job_index = entry.index
+        input_label = entry.input_label
+        output_label = entry.output_label
+        job_log = job_logger(job_index) if job_logger is not None else logger
+        total += 1
+        logger.emit(
+            "info",
+            f"Batch job {job_index + 1} démarré",
+            event="batch_job",
+            job_index=job_index,
+            input=input_label,
+            output=output_label,
+            status="started",
+        )
+        try:
+            if entry.error is not None:
+                raise entry.error
+            remux_config = entry.remux_config
+            if remux_config is None:
+                raise ValueError("Configuration remux absente du job planifié")
+            if not dry_run and entry.generated_output:
+                Path(output_label).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            rc = execute_job(steps, entry, config, options, job_log, dry_run=dry_run, force=force)
+            if rc != EXIT_OK:
+                failures += 1
+                status = "cancelled" if cancel is not None and cancel.cancelled else "failed"
+                summary_jobs.append(
+                    {"job_index": job_index, "input": input_label, "output": output_label, "status": status, "exit_code": rc}
+                )
+                logger.emit(
+                    "error",
+                    f"Batch job {job_index + 1} {'annulé' if status == 'cancelled' else 'échoué'}",
+                    event="batch_job",
+                    job_index=job_index,
+                    input=input_label,
+                    output=output_label,
+                    status=status,
+                    exit_code=rc,
+                )
+                if status == "cancelled":
+                    cancelled = True
+                    break
+                if not continue_on_error:  # job en échec : lot arrêté (bilan déjà enregistré)
+                    break
+            else:
+                summary_jobs.append(
+                    {"job_index": job_index, "input": input_label, "output": output_label, "status": "success", "exit_code": EXIT_OK}
+                )
+                logger.emit(
+                    "info",
+                    f"Batch job {job_index + 1} terminé",
+                    event="batch_job",
+                    job_index=job_index,
+                    input=input_label,
+                    output=output_label,
+                    status="success",
+                )
+        except Exception as exc:
+            failures += 1
+            # Annulation levée par une étape (sonde, inspection) : job annulé, lot arrêté.
+            job_cancelled = (cancel is not None and cancel.cancelled) or error_code(exc) is ErrorCode.CANCELLED
+            if steps.finish is not None:  # préparation en échec, annulation : le job enfant se termine
+                steps.finish(job_log, "cancelled" if job_cancelled else "failed")
+            summary_jobs.append(
+                {
+                    "job_index": job_index,
+                    "input": input_label,
+                    "output": output_label,
+                    "status": "cancelled" if job_cancelled else "failed",
+                    "exit_code": getattr(exc, "exit_code", EXIT_WORKFLOW),
+                    "error": str(exc),
+                }
+            )
+            logger.emit(
+                "error",
+                f"Job batch échoué : {exc}",
+                event="batch_job",
+                job_index=job_index,
+                input=input_label,
+                output=output_label,
+                status="cancelled" if job_cancelled else "failed",
+                exception=repr(exc),
+            )
+            if job_cancelled:
+                cancelled = True
+                break
+            if not continue_on_error:
+                break
+    exit_code = EXIT_OK if failures == 0 and not cancelled else EXIT_PARTIAL
+    summary = {
+        "total": total,
+        "successes": total - failures,
+        "failures": failures,
+        "exit_code": exit_code,
+        "jobs": summary_jobs,
+    }
+    if cancelled:
+        summary["cancelled"] = True
+    write_batch_summary(summary_path, summary, sidecars)
+    log_batch_failures(logger, summary_jobs)
+    logger.emit("info", f"Batch terminé : {total - failures}/{total} succès.", event="batch_summary", total=total, failures=failures)
+    return BatchOutcome(exit_code, summary, cancelled)

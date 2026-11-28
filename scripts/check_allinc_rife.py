@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Vérifie qu'un paquet all-inclusive embarque l'extension mvo-rife préinstallée (version épinglée, contrat,
-SHA-256 du moteur, des modèles, des poids du sélecteur et des préréglages d'après son manifest.json).
+SHA-256 du moteur, des modèles, des poids du sélecteur et des préréglages d'après son manifest.json), et NVEncC
+selon la variante : présent (binaire + tools-manifest.json) dans l'AllInc, absent avec le marqueur
+``_ALLINC_NOVIDIA`` dans l'AllInc NoVidia (nom de paquet contenant « novidia »).
 
 Le packaging se contente d'un avertissement quand l'extension est indisponible :
 ce contrôle fait échouer la release dans ce cas.
@@ -29,31 +31,68 @@ sys.path.insert(0, str(ROOT))
 
 from core.version import MVO_RIFE_CONTRACT, MVO_RIFE_VERSION  # noqa: E402
 
-_TOOLS_MEMBER = re.compile(r"(^|/)tools/(muxiveo-rife(\.exe)?$|rife-models/|manifest\.json$|presets\.json$)")
+_TOOLS_MEMBER = re.compile(
+    r"(^|/)(tools/(muxiveo-rife(\.exe)?$|rife-models/|restore-models/|manifest\.json$|presets\.json$"
+    r"|tools-manifest\.json$|nvencc$|NVEncC64\.exe$)|_ALLINC_NOVIDIA$)"
+)
+# Membres facultatifs selon la variante (NVEncC, marqueur NoVidia) : extraction sans échec s'ils manquent.
+_APPIMAGE_VARIANT_MEMBERS = ("usr/bin/tools/tools-manifest.json", "usr/bin/tools/nvencc", "usr/bin/_ALLINC_NOVIDIA")
+_NSIS_VARIANT_MEMBERS = ("tools/tools-manifest.json", "tools/NVEncC64.exe", "_ALLINC_NOVIDIA")
 
 
 def _extract(package: Path, dest: Path) -> None:
-    """Extrait muxiveo-rife, rife-models/, manifest.json et presets.json de ``package`` dans ``dest``."""
+    """Extrait muxiveo-rife, rife-models/, restore-models/ (graphes MVO-R2), manifest.json et presets.json de
+    ``package`` dans ``dest``."""
     name = package.name
     if name.endswith(".AppImage"):
         package.chmod(package.stat().st_mode | 0o111)
-        for pattern in ("usr/bin/tools/muxiveo-rife", "usr/bin/tools/rife-models/*", "usr/bin/tools/manifest.json",
-                        "usr/bin/tools/presets.json"):
+        for pattern in ("usr/bin/tools/muxiveo-rife", "usr/bin/tools/rife-models/*", "usr/bin/tools/restore-models/*",
+                        "usr/bin/tools/manifest.json", "usr/bin/tools/presets.json"):
             subprocess.run(
                 [str(package.resolve()), "--appimage-extract", pattern],
                 cwd=dest, check=True, stdout=subprocess.DEVNULL,
+            )
+        for pattern in _APPIMAGE_VARIANT_MEMBERS:
+            subprocess.run(
+                [str(package.resolve()), "--appimage-extract", pattern],
+                cwd=dest, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
     elif name.endswith(".zip"):
         with zipfile.ZipFile(package) as zf:
             zf.extractall(dest, [n for n in zf.namelist() if _TOOLS_MEMBER.search(n)])
     elif name.endswith(".exe"):
         subprocess.run(
-            ["7z", "x", str(package), f"-o{dest}", "tools/muxiveo-rife.exe", "tools/rife-models", "tools/manifest.json",
-             "tools/presets.json", "-r", "-y"],
+            ["7z", "x", str(package), f"-o{dest}", "tools/muxiveo-rife.exe", "tools/rife-models", "tools/restore-models",
+             "tools/manifest.json", "tools/presets.json", "-r", "-y"],
             check=True, stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["7z", "x", str(package), f"-o{dest}", *_NSIS_VARIANT_MEMBERS, "-r", "-y"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     else:
         raise ValueError(f"format de paquet non géré : {name}")
+
+
+def _extract_manifest(package: Path, dest: Path) -> Path | None:
+    """Extrait ``tools-manifest.json`` d'un paquet, à la racine (installeur standard, sans outils) ou dans
+    ``tools/`` ; renvoie le moins profond, ``None`` s'il est absent."""
+    name = package.name
+    if name.endswith(".AppImage"):
+        package.chmod(package.stat().st_mode | 0o111)
+        for pattern in ("usr/bin/tools-manifest.json", "usr/bin/tools/tools-manifest.json"):
+            subprocess.run([str(package.resolve()), "--appimage-extract", pattern], cwd=dest, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif name.endswith(".zip"):
+        with zipfile.ZipFile(package) as zf:
+            zf.extractall(dest, [n for n in zf.namelist() if n.rsplit("/", 1)[-1] == "tools-manifest.json"])
+    elif name.endswith(".exe"):
+        subprocess.run(["7z", "x", str(package), f"-o{dest}", "tools-manifest.json", "-r", "-y"],
+                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        raise ValueError(f"format de paquet non géré : {name}")
+    manifests = sorted(dest.rglob("tools-manifest.json"), key=lambda path: (len(path.parts), str(path)))
+    return manifests[0] if manifests else None
 
 
 def _sha256(path: Path) -> str:
@@ -64,16 +103,88 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+#: Distributions attendues dans l'inventaire Python d'un build : exécution (requirements.txt) et outils de build
+#: (requirements-build.txt).
+_REQUIRED_DISTRIBUTIONS = ("pyside6", "numpy", "pymediainfo", "certifi", "pyinstaller", "pillow")
+
+
+def inventory_errors(python: object) -> list[str]:
+    """Inventaire Python du manifeste (décision DE) : chaque entrée nommée et versionnée, dépendances
+    d'exécution toutes présentes."""
+    if not isinstance(python, list) or not python:
+        return ["inventaire Python absent de tools-manifest.json"]
+    versions = {str(item.get("name", "")).lower(): str(item.get("version", "")) for item in python
+                if isinstance(item, dict)}
+    errors = [f"inventaire Python : entrée sans nom ou sans version ({item!r})" for item in python
+              if not isinstance(item, dict) or not item.get("name") or not item.get("version")]
+    errors += [f"inventaire Python : {name} absent ou sans version" for name in _REQUIRED_DISTRIBUTIONS
+               if not versions.get(name)]
+    return errors
+
+
+def manifest_inventory_errors(manifest: Path) -> list[str]:
+    """Contrôle d'un manifeste seul (bundle macOS monté, installeur standard)."""
+    try:
+        return inventory_errors(json.loads(manifest.read_text(encoding="utf-8")).get("python"))
+    except (OSError, ValueError, AttributeError) as exc:
+        return [f"{manifest.name} illisible ({exc})"]
+
+
+#: Fichiers de licence livrés avec chaque artefact (bundle macOS : ``Contents/Resources``).
+_LICENSE_FILES = ("LICENSE", "NOTICE", "SOURCES.md")
+
+
+def license_errors(directory: Path) -> list[str]:
+    """LICENSE, NOTICE, SOURCES.md et un dossier LICENSES/ non vide présents dans ``directory``."""
+    errors = [f"{name} absent" for name in _LICENSE_FILES if not (directory / name).is_file()]
+    licenses = directory / "LICENSES"
+    if not licenses.is_dir() or not any(path.is_file() for path in licenses.rglob("*")):
+        errors.append("LICENSES/ absent ou vide")
+    return errors
+
+
+def nvencc_errors(package_name: str, dest: Path) -> list[str]:
+    """Anomalies NVEncC de la variante : embarqué dans l'AllInc, absent (marqueur posé) dans l'AllInc NoVidia."""
+    novidia = "novidia" in package_name.lower()
+    files = [p for p in dest.rglob("*") if p.is_file()]
+    binary = any(p.name in ("nvencc", "NVEncC64.exe") for p in files)
+    marker = any(p.name == "_ALLINC_NOVIDIA" for p in files)
+    manifest_path = next((p for p in files if p.name == "tools-manifest.json"), None)
+    if manifest_path is None:
+        return ["tools-manifest.json absent"]
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tools = {entry.get("tool") for entry in document.get("tools", [])}
+        python = document.get("python")
+    except (OSError, ValueError, AttributeError) as exc:
+        return [f"tools-manifest.json illisible ({exc})"]
+    errors: list[str] = []
+    errors += inventory_errors(python)
+    if novidia:
+        if binary or "nvencc" in tools:
+            errors.append("NVEncC embarqué dans la variante NoVidia")
+        if not marker:
+            errors.append("marqueur _ALLINC_NOVIDIA absent")
+    else:
+        if not binary or "nvencc" not in tools:
+            errors.append("NVEncC absent de la variante AllInc")
+        if marker:
+            errors.append("marqueur _ALLINC_NOVIDIA présent dans la variante AllInc")
+    if not errors:
+        print(f"  NVEncC {'absent (NoVidia)' if novidia else 'embarqué'}")
+    return errors
+
+
 def check(package: Path) -> list[str]:
-    """Renvoie la liste des anomalies (vide si muxiveo-rife est correctement embarqué)."""
+    """Renvoie la liste des anomalies (vide si muxiveo-rife et la variante NVEncC sont corrects)."""
     with tempfile.TemporaryDirectory(prefix="rife-check-") as tmp:
         dest = Path(tmp)
         _extract(package, dest)
+        errors = nvencc_errors(package.name, dest)
         binaries = [p for p in dest.rglob("*") if p.is_file() and p.name in ("muxiveo-rife", "muxiveo-rife.exe")]
         if not binaries:
-            return ["muxiveo-rife absent"]
+            return errors + ["muxiveo-rife absent"]
         exe = binaries[0]
-        errors: list[str] = []
         if exe.suffix == ".exe" and os.name != "nt":
             print(f"  {exe.name} : version non vérifiée (hôte non Windows)")
         else:
@@ -94,7 +205,7 @@ def check(package: Path) -> list[str]:
             errors.append(f"contrat {manifest.get('contract')} au lieu de {MVO_RIFE_CONTRACT}")
         checked = 0
         for rel, digest in (manifest.get("files") or {}).items():
-            if not (rel.startswith("rife-models/") or rel in (exe.name, "presets.json")):
+            if not (rel.startswith(("rife-models/", "restore-models/")) or rel in (exe.name, "presets.json")):
                 continue
             path = exe.parent / rel
             if not path.is_file():
@@ -109,10 +220,36 @@ def check(package: Path) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Vérifie l'extension mvo-rife dans des paquets all-inclusive.")
-    parser.add_argument("packages", nargs="+", type=Path)
+    parser.add_argument("packages", nargs="*", type=Path)
+    parser.add_argument("--manifest", type=Path, action="append", default=[],
+                        help="tools-manifest.json d'un artefact déjà monté (DMG macOS) : inventaire Python seul.")
+    parser.add_argument("--inventory-only", action="store_true",
+                        help="Paquets sans outils embarqués (installeur standard) : inventaire Python seul.")
+    parser.add_argument("--licenses", type=Path, action="append", default=[],
+                        help="Dossier d'un artefact monté (Contents/Resources du DMG) : fichiers de licence.")
     args = parser.parse_args()
     failed = False
-    for package in args.packages:
+    for directory in args.licenses:
+        print(f"{directory} (licences) :")
+        errors = license_errors(directory)
+        for error in errors:
+            print(f"::error::{directory} : {error}")
+        failed |= bool(errors)
+    for manifest in args.manifest:
+        print(f"{manifest} :")
+        errors = manifest_inventory_errors(manifest)
+        for error in errors:
+            print(f"::error::{manifest.name} : {error}")
+        failed |= bool(errors)
+    for package in args.packages if args.inventory_only else ():
+        print(f"{package.name} :")
+        with tempfile.TemporaryDirectory(prefix="inventory-check-") as tmp:
+            manifest = _extract_manifest(package, Path(tmp))
+            errors = manifest_inventory_errors(manifest) if manifest is not None else ["tools-manifest.json absent"]
+        for error in errors:
+            print(f"::error::{package.name} : {error}")
+        failed |= bool(errors)
+    for package in () if args.inventory_only else args.packages:
         print(f"{package.name} :")
         errors = check(package)
         for error in errors:

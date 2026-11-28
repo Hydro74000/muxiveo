@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Collection, Mapping
 
 from core.workflows.encode.models import EncodeConfig
 
@@ -25,6 +25,7 @@ def plan_isolated_subtitle_inputs(
     source_idx: Mapping[Path, int],
     sync_remap: Mapping[MapKey, tuple[int, int]],
     start_input_index: int,
+    shared_inputs: Collection[int] = (),
 ) -> IsolatedSubtitleInputs:
     """Reopen sources whose selected audio and subtitles share a demuxer.
 
@@ -32,6 +33,10 @@ def plan_isolated_subtitle_inputs(
     a late subtitle from the audio input can make FFmpeg write minutes of audio
     ahead of that video, even with max_interleave_delta set. Keep the subtitle
     reader independent, without extracting or transforming any media.
+
+    ``shared_inputs`` : entrées gardées telles quelles (chemin direct : l'entrée
+    qui fournit aussi la vidéo, lue dans l'ordre du fichier par un seul
+    démultiplexeur ; la rouvrir doublerait sa lecture sans rien corriger).
 
     Run after timeline sync and before metadata/offset inputs. Existing sync
     remaps remain authoritative; subsequent per-track offsets still apply.
@@ -54,7 +59,7 @@ def plan_isolated_subtitle_inputs(
             if Path(path) == source and (Path(path), int(stream), "subtitle") not in remap
         ]
         subtitle_input_index = input_index
-        if input_index in audio_inputs and (keys or wildcard):
+        if input_index in audio_inputs and input_index not in shared_inputs and (keys or wildcard):
             subtitle_input_index = start_input_index + len(paths)
             paths.append(source)
             for key in keys:

@@ -99,7 +99,6 @@ def test_encode_interpolation_multiplies_frame_rate(tmp_path: Path, mux_backend:
     )
     wf = EncodeWorkflow(
         ffmpeg_bin="ffmpeg",
-        ram_buffer_enabled=False,
         ffmpeg_threads=1,
         generate_nfo=False,
         rife_bin=RIFE_BIN,
@@ -142,7 +141,7 @@ def test_encode_interpolation_hybrid_preset(tmp_path: Path) -> None:
         keep_chapters=False,
         duration_s=1.0,
     )
-    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ffmpeg_threads=1, generate_nfo=False,
                         rife_bin=RIFE_BIN)
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=180.0)
@@ -171,7 +170,7 @@ def test_encode_interpolation_keeps_video_delay(tmp_path: Path, mux_backend: str
         mux_backend=mux_backend,
         track_time_offsets=[TrackTimeOffset(track_type="video", source_path=src, stream_index=0, offset_ms=400)],
     )
-    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ffmpeg_threads=1, generate_nfo=False,
                         rife_bin=RIFE_BIN)
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=180.0)
@@ -278,7 +277,7 @@ def test_interpolation_dynamic_hdr_decodes_past_two_minutes(
     )
     wf = EncodeWorkflow(
         ffmpeg_bin="ffmpeg", nvencc_bin=shutil.which("nvencc"), rife_bin=RIFE_BIN,
-        ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False,
+        ffmpeg_threads=1, generate_nfo=False,
     )
     logs: list[str] = []
     wf.log_message.connect(lambda level, message: logs.append(f"{level}: {message}"))

@@ -412,8 +412,8 @@ def test_prepare_matrix_episode_with_cadence_auto_apply(monkeypatch, tmp_path):
         sync_mode="container",  # Même si la recette était container, la cadence doit forcer physical
     )
 
-    import cli.remux_config
-    monkeypatch.setattr(cli.remux_config, "build_remux_config", lambda *args, **kwargs: mock_remux_config)
+    import core.jobs.remux_config
+    monkeypatch.setattr(core.jobs.remux_config, "build_remux_config", lambda *args, **kwargs: mock_remux_config)
 
     # Mock audio scanner
     from core.workflows.audio_sync_scan import AudioSyncScanner
@@ -531,6 +531,7 @@ def test_parse_framerate_fraction_canonical_and_custom():
     assert parse_framerate_fraction(25.0) == Fraction(25, 1)
     assert parse_framerate_fraction(24.0) == Fraction(24, 1)
     assert parse_framerate_fraction("50/1 fps") == Fraction(50, 1)
+    assert parse_framerate_fraction("500/21") == Fraction(24000, 1001)
     assert parse_framerate_fraction(None) is None
 
 

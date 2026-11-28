@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -10,12 +12,20 @@ from core.bluray import append_ffmpeg_input_args
 from core.runner import TaskCancelledError, TaskSignals
 from core.subprocess_utils import run_cancellable_capture
 from core.workflows.common.validation_override import ValidationOverride, accept_validation_override
-from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, dovi_geometry_edit_json
+from core.workflows.encode.runtime.dovi_geometry import (
+    convert_p7_rpu_to_p81, crop_dovi_rpu, dovi_geometry_edit_json, prepared_source_rpu,
+)
 from core.workflows.encode.runtime.frame_count_guard import FrameCountGuard, FrameCountAuditError, MetadataAdjustment
 from core.workdir import remove_path
 from core.workflows.encode.domain import (
     needs_static_hdr_sei_reinjection,
     should_reinject_static_hdr_metadata,
+)
+from core.workflows.encode.hdr10plus_output import (
+    generates_hdr10plus,
+    has_hdr10plus_sei,
+    hdr10plus_from_source,
+    outputs_hdr10plus,
 )
 from core.workflows.encode.models import EncodeConfig, EncodeError, QualityMode, VideoEncodeSettings
 from core.workflows.encode.planning.plan_models import EncodePlan
@@ -26,6 +36,7 @@ from core.workflows.hevc_static_hdr_metadata import (
 )
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    dynamic_metadata_adequacy, light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
@@ -40,7 +51,7 @@ from core.matroska.editors.dovi import DolbyVisionConfigRecord
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import dovi_output_compat_id_for, rpu_extract_mode
 from core.matroska.hevc.access_units import HevcStreamCancelled
-from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
+from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter, discarded_nal_message
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.encode.runtime_helpers import (
@@ -49,6 +60,8 @@ from core.workflows.encode.runtime_helpers import (
     VideoTrackPrepTask,
 )
 from core.workflows.remux_timeline_sync import LiveSyncSession
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.timeline_sync import SyncInput
 
 
 @dataclass(frozen=True)
@@ -80,9 +93,9 @@ class MultiVideoPipelineRunnerCallbacks:
     format_bytes: Callable[[int], str]
     available_ram_bytes: Callable[[], int]
     source_input_index_map: Callable[[list[Path], int], dict[Path, int]]
-    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]]
-    sync_cleanup_paths: Callable[[list[Path | str]], list[Path]]
-    append_sync_inputs: Callable[[list[str], list[Path | str]], None]
+    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]]
+    sync_cleanup_paths: Callable[[list[SyncInput]], list[Path]]
+    append_sync_inputs: Callable[[list[str], list[SyncInput]], None]
     prepare_container_metadata_inputs: Callable[..., tuple[int, int | None, int | None]]
     ffmpeg_thread_args: Callable[[], list[str]]
     append_offset_aux_inputs: Callable[..., tuple[int, dict[tuple[Path, int, str], tuple[int, int]]]]
@@ -107,6 +120,11 @@ class MultiVideoPipelineRunnerCallbacks:
     #: de synchronisation (calibrations multi-segments), comme le chemin direct.
     resolve_track_assembly_and_offset_remap: Callable[..., tuple[object, dict[tuple[Path, int, str], tuple[int, int]]]] | None = None
     validation_override: ValidationOverride | None = None
+    log_warn: Callable[[str], None] | None = None
+    #: HDR10+ généré refait après une reprise sur le BL (méthode FEL caduque) : (config, piste, n°, dossier, signaux).
+    regenerate_hdr10plus: Callable[..., VideoEncodeSettings] | None = None
+    #: Départ (s) d'un flux tel que lu par FFmpeg (``stream_start_time``) : compensation des pistes copiées.
+    stream_start_time: Callable[[Path, int], float] | None = None
 
 
 class MultiVideoPipelineRunner:
@@ -145,7 +163,13 @@ class MultiVideoPipelineRunner:
             except FelError as exc:
                 self._callbacks.check_cancelled(signals)
                 signals.progress.emit(f"[WARN] Piste vidéo {spec.order+1} : {exc} ; reprise complète sur le BL.")
-        return self._prepare_multi_video_track(config=config, spec=replace(spec, video=fallback_video(spec.video)),
+        fallback = fallback_video(spec.video)
+        if generates_hdr10plus(fallback) and fallback.generated_hdr10plus_json is None:
+            if self._callbacks.regenerate_hdr10plus is None:
+                raise EncodeError("HDR10+ généré : reprise sur le BL impossible sans nouvelle préparation.")
+            # Méthode FEL caduque : HDR10+ du BL mesuré (ou estimé depuis le L1) avant la reprise.
+            fallback = self._callbacks.regenerate_hdr10plus(config, fallback, spec.order + 1, work_dir, signals)
+        return self._prepare_multi_video_track(config=config, spec=replace(spec, video=fallback),
             work_dir=work_dir, total_tracks=total_tracks, thread_count=thread_count, signals=signals, run_cmd=run_cmd)
 
     def _prepare_multi_video_track(
@@ -170,9 +194,12 @@ class MultiVideoPipelineRunner:
         cb.check_cancelled(signals)
         cb.log_info(f"Préparation vidéo {index}/{total_tracks}…")
 
+        # Copy : flux jamais réencodé ; seul un HDR10+ généré y est injecté (RPU, EL et record intacts).
+        copy_video = str(video.codec or "").strip().lower() == "copy"
+        dv_processing = bool(video.copy_dv) and not copy_video
         if (
-            video.copy_dv
-            or video.copy_hdr10plus
+            dv_processing
+            or outputs_hdr10plus(video)
             or needs_static_hdr_sei_reinjection(video)
             # FEL intégré : MaxCLL/MaxFALL exacts écrits après l'encodage (SEI CLL et Colour).
             or deferred_light_levels(video)
@@ -194,8 +221,12 @@ class MultiVideoPipelineRunner:
             )
             # FEL : le RPU original extrait à la préparation évite une relecture complète de la source.
             fel_rpu = video.fel_context.original_rpu if video.fel_context is not None else None
-            reuse_fel_rpu = bool(video.copy_dv and fel_rpu is not None and fel_rpu.is_file())
-            if needs_annexb and ((video.copy_dv and not reuse_fel_rpu) or video.copy_hdr10plus):
+            reuse_fel_rpu = bool(dv_processing and fel_rpu is not None and fel_rpu.is_file())
+            # RPU de la source extrait (et complété) à la préparation : dérivé sans relecture.
+            prepared_rpu = bool(dv_processing and video.source_rpu_path is not None and video.source_rpu_path.is_file())
+            # HDR10+ généré : JSON préparé, aucune lecture HDR10+ de la source.
+            if needs_annexb and ((dv_processing and not reuse_fel_rpu and not prepared_rpu)
+                                 or hdr10plus_from_source(video)):
                 annexb_src = work_dir / f"video_{index}.source.hevc"
                 annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
                 append_ffmpeg_input_args(annexb_cmd, source)
@@ -209,7 +240,7 @@ class MultiVideoPipelineRunner:
                 meta_input = annexb_src
             else:
                 meta_input = source
-            if video.copy_dv:
+            if dv_processing:
                 if reuse_fel_rpu and fel_rpu is not None and convert_p7_rpu_to_p81(
                     dovi_tool_bin=cb.bins["dovi_tool"], rpu_bin=fel_rpu, output_rpu=rpu_bin,
                     run_cmd=lambda cmd: run_cmd(cmd, f"dovi-fel-p81-{index}"),
@@ -220,10 +251,14 @@ class MultiVideoPipelineRunner:
                     if reuse_fel_rpu and needs_annexb:
                         raise EncodeError("Dolby Vision : RPU FEL original inattendu (profil autre que 7).")
                     mode = rpu_extract_mode(video)
-                    run_cmd([
-                        cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",
-                        "-i", str(meta_input), "-o", str(rpu_bin),
-                    ], f"dovi-extract-{index}")
+                    if prepared_source_rpu(
+                        video, dovi_tool_bin=cb.bins["dovi_tool"], target=rpu_bin, mode=mode,
+                        run_cmd=lambda cmd: run_cmd(cmd, f"dovi-source-rpu-{index}"),
+                    ) is None:
+                        run_cmd([
+                            cb.bins["dovi_tool"], *(["-m", mode] if mode else []), "extract-rpu",
+                            "-i", str(meta_input), "-o", str(rpu_bin),
+                        ], f"dovi-extract-{index}")
                     local_cleanup.append(rpu_bin)
                     rpu_p81 = rpu_bin.with_name(f"{rpu_bin.stem}.p81.bin")
                     # Source au record P8 portant un RPU P7 : image réencodée sans couche d'amélioration.
@@ -244,11 +279,18 @@ class MultiVideoPipelineRunner:
                 local_cleanup.extend([rpu_bin, dovi_geometry_edit_json(rpu_bin)])
             # FEL intégré avec HDR10+ recalculé : JSON généré après l'encodage (statistiques du plugin).
             fel_statistics = fel_statistics_path(video)
-            if video.copy_hdr10plus and not hdr10plus_recomputed(video):
+            if hdr10plus_from_source(video) and not hdr10plus_recomputed(video):
                 run_cmd([
                     cb.bins["hdr10plus_tool"], "extract",
                     str(meta_input), "-o", str(hdr10p_json),
                 ], f"hdr10plus-extract-{index}")
+                local_cleanup.append(hdr10p_json)
+            elif generates_hdr10plus(video) and not hdr10plus_recomputed(video):
+                # HDR10+ généré à la préparation (indexé sur la source) : copie étendue ci-dessous.
+                generated = video.generated_hdr10plus_json
+                if generated is None or not Path(generated).is_file():
+                    raise EncodeError(f"Piste vidéo {index}: HDR10+ généré absent : préparation incomplète.")
+                shutil.copyfile(generated, hdr10p_json)
                 local_cleanup.append(hdr10p_json)
 
             frame_ratio = resolve_frame_ratio(
@@ -256,15 +298,18 @@ class MultiVideoPipelineRunner:
             )
             expand_dynamic_hdr_metadata(
                 ratio=frame_ratio,
-                rpu_bin=rpu_bin if video.copy_dv else None,
-                hdr10p_json=hdr10p_json if (video.copy_hdr10plus and fel_statistics is None) else None,
+                rpu_bin=rpu_bin if dv_processing else None,
+                hdr10p_json=hdr10p_json if (
+                    (hdr10plus_from_source(video) and fel_statistics is None)
+                    or (generates_hdr10plus(video) and not hdr10plus_recomputed(video))
+                ) else None,
                 dovi_tool_bin=cb.bins.get("dovi_tool"),
                 run_cmd=lambda cmd: run_cmd(cmd, f"dovi-scenes-{index}"),
                 log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
             )
 
             record_for_rewriter = None
-            if video.copy_dv and rpu_bin.exists():
+            if dv_processing and rpu_bin.exists():
                 record_for_rewriter = cb.build_dovi_record_from_rpu(
                     rpu_bin=rpu_bin,
                     dovi_tool_bin=cb.bins["dovi_tool"],
@@ -291,19 +336,25 @@ class MultiVideoPipelineRunner:
                 if video.quality_mode == QualityMode.SIZE
                 else None
             )
+            if copy_video:
+                # Copie : la piste d'origine fournit le timing, ses blocs sont remplacés un pour un.
+                copy_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
+                append_ffmpeg_input_args(copy_cmd, source)
+                copy_cmd.extend(["-map", f"0:{stream_index}", "-c:v", "copy", "-an", "-sn", "-dn",
+                                 *matroska_output_args(cb.ffmpeg_bin, enc_video_mkv), str(enc_video_mkv)])
+                commands = [copy_cmd]
+            else:
+                commands = cb.build_video_only_mkv_commands(
+                    config,
+                    video,
+                    source,
+                    enc_video_mkv,
+                    offset_ms=offset_ms,
+                    passlog_prefix=passlog_prefix,
+                    thread_count=thread_count,
+                )
             try:
-                for pass_index, cmd in enumerate(
-                    cb.build_video_only_mkv_commands(
-                        config,
-                        video,
-                        source,
-                        enc_video_mkv,
-                        offset_ms=offset_ms,
-                        passlog_prefix=passlog_prefix,
-                        thread_count=thread_count,
-                    ),
-                    start=1,
-                ):
+                for pass_index, cmd in enumerate(commands, start=1):
                     run_cmd(cmd, f"ffmpeg-video-{index}-pass{pass_index}" if passlog_prefix else f"ffmpeg-video-{index}")
             finally:
                 if passlog_prefix is not None:
@@ -332,13 +383,19 @@ class MultiVideoPipelineRunner:
             remove_path(enc_video_mkv)
 
             light_levels: tuple[int, int] | None = None
-            if fel_statistics is not None and (hdr10plus_recomputed(video) or deferred_light_levels(video)):
-                # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
+            light_statistics = light_level_statistics_path(video)
+            if (fel_statistics is not None and hdr10plus_recomputed(video)) or (
+                    light_statistics is not None and deferred_light_levels(video)):
+                # HDR10+ de l'image reconstruite (FEL) et MaxCLL/MaxFALL de l'image produite (restaurée par le
+                # moteur, sinon reconstruite), mesurés pendant l'encodage.
                 try:
-                    statistics = read_frame_statistics(fel_statistics)
+                    statistics = (read_frame_statistics(fel_statistics)
+                                  if fel_statistics is not None and hdr10plus_recomputed(video) else None)
+                    light = (read_frame_statistics(light_statistics)
+                             if light_statistics is not None and deferred_light_levels(video) else None)
                 except FrameStatisticsError as exc:
                     raise EncodeError(str(exc)) from exc
-                if hdr10plus_recomputed(video):
+                if statistics is not None:
                     write_hdr10plus_json(statistics, hdr10p_json)
                     local_cleanup.append(hdr10p_json)
                     expand_dynamic_hdr_metadata(
@@ -348,8 +405,8 @@ class MultiVideoPipelineRunner:
                         log=lambda message: cb.log_info(f"Piste vidéo {index}: {message}"),
                     )
                     cb.log_info(f"Piste vidéo {index}: HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
-                if deferred_light_levels(video):
-                    exact = statistics.static_light_levels()
+                if light is not None:
+                    exact, message = written_light_levels(video, light)
                     video = replace(video, max_cll=exact)
                     max_cll, max_fall = (int(value) for value in exact.split(","))
                     light_levels = (max_cll, max_fall)
@@ -361,10 +418,13 @@ class MultiVideoPipelineRunner:
                         current_hevc = cll_out
                     else:
                         cll_out.unlink(missing_ok=True)
-                    cb.log_info(f"Piste vidéo {index}: MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+                    cb.log_info(f"Piste vidéo {index}: {message}")
                 cb.check_cancelled(signals)
+            if adequacy := dynamic_metadata_adequacy(video, frame_ratio):
+                (cb.log_warn if adequacy[0] == "WARN" and cb.log_warn is not None else cb.log_info)(
+                    f"Piste vidéo {index}: {adequacy[1]}")
 
-            if video.copy_dv or video.copy_hdr10plus:
+            if dv_processing or outputs_hdr10plus(video):
                 guard = FrameCountGuard(
                     mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
                     ffprobe_bin=cb.bins.get("ffprobe") or ffprobe_beside(cb.ffmpeg_bin),
@@ -378,18 +438,23 @@ class MultiVideoPipelineRunner:
                 )
                 audit = guard.audit(
                     source=meta_input, encoded=current_hevc,
-                    rpu_bin=rpu_bin if video.copy_dv else None,
-                    hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                    # Source lue directement (génération seule) : flux sélectionné, pas le premier.
+                    source_stream_index=None if meta_input != source else stream_index,
+                    rpu_bin=rpu_bin if dv_processing else None,
+                    hdr10p_json=hdr10p_json if outputs_hdr10plus(video) else None,
                     known_encoded_frames=skeleton_result.blocks_written,
                     frame_ratio=frame_ratio,
+                    # HDR10+ généré : compte source exact (paquets), jamais le raccourci des métadonnées.
+                    exact_source=generates_hdr10plus(video) and outputs_hdr10plus(video),
                 )
                 try:
                     guard.enforce(
                         audit, adjustment=MetadataAdjustment.TRIM_TAIL,
-                        rpu_bin=rpu_bin if video.copy_dv else None,
-                        hdr10p_json=hdr10p_json if video.copy_hdr10plus else None,
+                        rpu_bin=rpu_bin if dv_processing else None,
+                        hdr10p_json=hdr10p_json if outputs_hdr10plus(video) else None,
                         on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
                         on_info=cb.log_info,
+                        strict=generates_hdr10plus(video) and outputs_hdr10plus(video),  # compte illisible : refus
                     )
                 except FrameCountAuditError as exc:
                     cb.check_cancelled(signals)
@@ -402,7 +467,15 @@ class MultiVideoPipelineRunner:
                         raise RuntimeError(f"Audit frame count : {exc}") from exc
                 cb.check_cancelled(signals)
 
-            if video.copy_hdr10plus and hdr10p_json.exists():
+            if generates_hdr10plus(video) and hdr10p_json.exists() and has_hdr10plus_sei(current_hevc):
+                # Remplacement : HDR10+ de la source (copie, ou repris par l'encodeur) retiré d'abord.
+                clean_out = work_dir / f"video_{index}.sans_hdr10plus.hevc"
+                run_cmd([cb.bins["hdr10plus_tool"], "remove", "-i", str(current_hevc), "-o", str(clean_out)],
+                        f"hdr10plus-remove-{index}")
+                local_cleanup.append(clean_out)
+                remove_path(current_hevc)
+                current_hevc = clean_out
+            if outputs_hdr10plus(video) and hdr10p_json.exists():
                 hdr10_out = work_dir / f"video_{index}.hdr10plus.hevc"
                 run_cmd([
                     cb.bins["hdr10plus_tool"], "inject",
@@ -413,7 +486,7 @@ class MultiVideoPipelineRunner:
                 local_cleanup.append(hdr10_out)
                 remove_path(current_hevc)
                 current_hevc = hdr10_out
-            if video.copy_dv and rpu_bin.exists():
+            if dv_processing and rpu_bin.exists():
                 dovi_out = work_dir / f"video_{index}.dovi.hevc"
                 run_cmd([
                     cb.bins["dovi_tool"],
@@ -476,12 +549,21 @@ class MultiVideoPipelineRunner:
                 f"Piste video {index}: payloads réécrits "
                 f"({rewrite_result.frames_rewritten} frame(s), timestamps encodeur)."
             )
+            if rewrite_result.discarded_nal_units:
+                (cb.log_warn or cb.log_info)(
+                    f"Piste video {index}: " + discarded_nal_message(rewrite_result.discarded_nal_units))
             # Le squelette et le bitstream injecté ne sont plus consultés
             # après le retour du rewriter. Les libérer ici borne le pic disque
             # quand plusieurs pistes HDR/DoVi sont préparées en parallèle.
             remove_path(timing_mkv)
             remove_path(current_hevc)
             local_cleanup.append(wrapped)
+            if copy_video:
+                return PreparedVideoInput(
+                    input_args=self._copied_input_args(source, stream_index, wrapped, offset_ms),
+                    path=wrapped,
+                    map_arg=f"{order}:v:0",
+                ), local_cleanup
             return PreparedVideoInput(
                 input_args=[],
                 path=wrapped,
@@ -522,6 +604,20 @@ class MultiVideoPipelineRunner:
             map_arg=f"{order}:v:0",
             start_offset_s=self._intended_start_s(source, spec.stream_index, offset_ms),
         ), local_cleanup
+
+    def _copied_input_args(self, source: Path, stream_index: int, wrapped: Path, offset_ms: int) -> list[str]:
+        """Entrée d'une piste copiée puis patchée : mêmes décalages que la piste copiée telle quelle, départ de
+        l'intermédiaire ramené à celui de la source (FFmpeg peut l'avoir décalé au muxage MKV)."""
+        args = list(self._callbacks.offset_input_args(offset_ms))
+        start_time = self._callbacks.stream_start_time
+        if start_time is None:
+            return args
+        shift = start_time(source, stream_index) - start_time(wrapped, 0)
+        if abs(shift) <= 0.0005:
+            return args
+        if args[:1] == ["-itsoffset"]:
+            return ["-itsoffset", f"{float(args[1]) + shift:.6f}", *args[2:]]
+        return ["-itsoffset", f"{shift:.6f}", *args]
 
     def _intended_start_s(self, source: Path, stream_index: int, offset_ms: int) -> float:
         """Départ voulu d'une piste réencodée : décalage du flux dans la source + retard positif."""
@@ -609,7 +705,8 @@ class MultiVideoPipelineRunner:
 
                 transcode_specs: list[VideoTrackPrepSpec] = []
                 for spec in track_specs:
-                    if spec.video.codec == "copy":
+                    # Copy avec HDR10+ généré : piste patchée, préparée comme une piste réencodée.
+                    if spec.video.codec == "copy" and not generates_hdr10plus(spec.video):
                         order = spec.order
                         prepared_inputs[order] = PreparedVideoInput(
                             input_args=cb.offset_input_args(spec.offset_ms),
@@ -716,7 +813,7 @@ class MultiVideoPipelineRunner:
                 all_sources = list(encode_plan.all_sources)
                 source_idx = cb.source_input_index_map(all_sources, len(prepared_inputs_ready))
                 sync_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
-                sync_inputs: list[Path | str] = []
+                sync_inputs: list[SyncInput] = []
                 strict_interleave = False
 
                 final_cmd: list[str] = [cb.ffmpeg_bin, "-hide_banner", "-y"]
@@ -831,6 +928,7 @@ class MultiVideoPipelineRunner:
                     include_copy_video_stream_passthrough=False,
                     plan=encode_plan,
                 )
+                final_cmd.extend(matroska_output_args(final_cmd[0], config.output))
                 final_cmd.append(str(config.output))
                 output = cb.finalize_ffmpeg(
                     config,

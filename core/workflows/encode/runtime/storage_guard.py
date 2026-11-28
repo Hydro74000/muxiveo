@@ -84,7 +84,7 @@ def estimate_inject_storage_requirements(
     sidecars = 32 * 1024 * 1024
     if video.copy_dv:
         sidecars += 64 * 1024 * 1024
-    if video.copy_hdr10plus:
+    if video.copy_hdr10plus or video.generate_hdr10plus:
         sidecars += 64 * 1024 * 1024
     if config.chapter_overrides:
         sidecars += 16 * 1024 * 1024
@@ -129,8 +129,6 @@ def ensure_inject_storage_available(
     *,
     estimate_requirements: Callable[[EncodeConfig], tuple[int, int]],
     log_info: Callable[[str], None],
-    ram_buffer_enabled: bool,
-    ram_buffer_dir: Callable[[], Path | None],
     disk_usage: Callable[[str | bytes | os.PathLike[str] | os.PathLike[bytes]], shutil._ntuple_diskusage] = shutil.disk_usage,
     stat: Callable[[str | bytes | os.PathLike[str] | os.PathLike[bytes]], os.stat_result] = os.stat,
     temp_dir: Callable[[], str] = tempfile.gettempdir,
@@ -152,9 +150,6 @@ def ensure_inject_storage_available(
         f"temp≈{format_bytes_fn(work_required)} sur {work_root} ; "
         f"sortie≈{format_bytes_fn(output_required)} sur {output_root}."
     )
-
-    if ram_buffer_enabled and ram_buffer_dir() is not None:
-        log_info("Buffer RAM actif: estimation disque conservative (fallback disque).")
 
     same_fs = False
     try:

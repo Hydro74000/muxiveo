@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 import subprocess
+import threading
 from pathlib import Path
 
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import run_probe, subprocess_text_kwargs
 
 
 def video_sample_times(duration_s: float | None) -> list[float]:
@@ -19,15 +20,21 @@ def video_sample_times(duration_s: float | None) -> list[float]:
     return sorted({min(duration_s * fraction, last_start) for fraction in fractions})
 
 
-def probe_video_duration(source: Path, *, ffprobe_bin: str = "ffprobe") -> float | None:
+def probe_video_duration(source: Path, *, ffprobe_bin: str = "ffprobe",
+                         cancel_event: threading.Event | None = None) -> float | None:
+    """Durée du conteneur ; ``cancel_event`` : sonde tuée dès l'annulation (``ProbeCancelledError``)."""
+    command = [ffprobe_bin, "-v", "error", "-show_entries", "format=duration",
+               "-of", "default=noprint_wrappers=1:nokey=1", str(source)]
     try:
-        # argv séparés, sans shell ; ffprobe provient de la configuration locale.
-        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-        result = subprocess.run(  # nosec B603
-            [ffprobe_bin, "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(source)],
-            capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
-        )
+        if cancel_event is not None:
+            result = run_probe(command, timeout=10, cancel_event=cancel_event)
+            result.check_returncode()
+        else:
+            # argv séparés, sans shell ; ffprobe provient de la configuration locale.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            result = subprocess.run(  # nosec B603
+                command, capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
+            )
         duration = float(result.stdout.strip())
         return duration if math.isfinite(duration) and duration > 0 else None
     except (OSError, ValueError, subprocess.SubprocessError):

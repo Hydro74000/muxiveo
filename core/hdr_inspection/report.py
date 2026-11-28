@@ -11,6 +11,7 @@ import json
 import struct
 import zlib
 from dataclasses import asdict
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,10 +19,11 @@ import numpy as np
 
 from core.atomic_io import atomic_write_text
 from core.hdr_inspection import axes, summary
+from core.hdr_inspection.advice import LEVEL_SOURCES, TV_MODELS, Advice, advice_data, describe_risk
 from core.hdr_inspection.compare import SOURCE_LABELS, Comparison
 from core.hdr_inspection.fel_analyzer import CATEGORIES, JND_NOTE, LEVEL_KEYS, FelReport, verdict
 from core.hdr_inspection.inspector import InspectionReport
-from core.hdr_inspection.measure import ImageMeasurement
+from core.hdr_inspection.measure import ImageMeasurement, frames_status
 from core.hdr_inspection.pq import pq12_to_nits
 from core.hdr_inspection.snapshot import HdrSnapshot
 from core.i18n import current_language, translate_text
@@ -152,14 +154,14 @@ def _comparison_data(comparison: Comparison, other: InspectionReport, fps: float
 
 def report_data(report: InspectionReport, *, measurement: ImageMeasurement | None = None,
                 fel: FelReport | None = None, comparison: Comparison | None = None,
-                other: InspectionReport | None = None, columns: int = COLUMNS) -> dict:
-    """Rapport sérialisable (``json.dumps(..., allow_nan=False)``)."""
+                other: InspectionReport | None = None, columns: int = COLUMNS, advice: Advice | None = None) -> dict:
+    """Rapport sérialisable (``json.dumps(..., allow_nan=False)``) ; ``advice`` : clé ``advice`` ajoutée."""
     snapshot = report.snapshot
     fps = snapshot.fps or 24000 / 1001
     curves = series(report, measurement)
     frames = max((values.size for *_, values in curves), default=0)
     mastering = snapshot.mastering
-    return {
+    data = {
         "format": REPORT_FORMAT, "version": REPORT_VERSION, "generator": f"{APP_NAME} {APP_VERSION}",
         "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": _source(snapshot), "dynamic_metadata_read": report.dynamic,
@@ -169,7 +171,11 @@ def report_data(report: InspectionReport, *, measurement: ImageMeasurement | Non
         "measurement": None if measurement is None else {
             "layer": measurement.layer, "frames": measurement.frames, "max_cll": measurement.max_cll(),
             "max_fall": measurement.max_fall(), "window": list(measurement.window),
-            "sampled_frames": measurement.sampled or None},
+            "sampled_frames": measurement.sampled or None,
+            # Nombre d'images face à la piste : verified (compte exact égal), quick_match (compte de l'inspection
+            # égal, non compté), unverified (aucun compte, compte illisible, estimation).
+            "frames_status": frames_status(measurement, report.snapshot.frames if report.snapshot.frames_exact
+                                           else None).value},
         "findings": [{"severity": f.severity.value, "category": f.category, "title": f.title, "detail": f.detail}
                      for f in report.findings],
         "errors": list(report.errors),
@@ -179,6 +185,9 @@ def report_data(report: InspectionReport, *, measurement: ImageMeasurement | Non
         "fel": None if fel is None else _fel_data(fel),
         "comparison": None if comparison is None or other is None else _comparison_data(comparison, other, fps),
     }
+    if advice is not None:
+        data["advice"] = advice_data(advice)
+    return data
 
 
 # ── HTML ────────────────────────────────────────────────────────────────────
@@ -292,15 +301,19 @@ def svg_chart(curves: list[tuple[str, str, list[float | None], str]], *, frames:
 
 def png_data_uri(image: np.ndarray) -> str:
     """Image RGB 8 bits (H × W × 3) → PNG en data URI (sans dépendance d'imagerie)."""
+    return "data:image/png;base64," + base64.b64encode(png_bytes(image)).decode("ascii")
+
+
+def png_bytes(image: np.ndarray) -> bytes:
+    """Image RGB 8 bits (H × W × 3) → fichier PNG (sans dépendance d'imagerie)."""
     height, width = image.shape[:2]
     raw = b"".join(b"\x00" + np.ascontiguousarray(image[row], dtype=np.uint8).tobytes() for row in range(height))
 
     def chunk(kind: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 
-    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-           + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
-    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
 def _findings_html(report: InspectionReport) -> str:
@@ -377,9 +390,35 @@ def _comparison_html(comparison: Comparison, report: InspectionReport, other: In
     return "".join(parts)
 
 
+def _advice_html(advice: Advice) -> str:
+    rows = [(translate_text("Écran simulé"), f"{round(advice.display_peak)} nits · "
+             + translate_text(TV_MODELS[advice.tv_model]))]
+    if advice.level_source:
+        rows.append((translate_text("Niveaux"), translate_text(LEVEL_SOURCES[advice.level_source])))
+    levels = advice.light_levels
+    if levels is not None:
+        rows.append((translate_text("MaxCLL / MaxFALL proposés"),
+                     f"{levels[0]} / {levels[1] if levels[1] is not None else '—'} ({levels[2]})"))
+    edit = advice.mastering
+    rows.append((translate_text("Écran de mastering proposé"),
+                 f"{edit.primaries} · {edit.min_nits:g}–{edit.max_nits:g} nits ({advice.mastering_source})"))
+    for label, risk in ((translate_text("Valeurs du fichier"), advice.file_risk),
+                        (translate_text("Valeurs proposées"), advice.suggested_risk)):
+        if risk is not None:
+            rows.append((label, " ; ".join(describe_risk(risk))))
+    body = _kv(rows)
+    realignment = advice.realignment
+    if realignment is not None and realignment.proposals:
+        body += f"<h2>{_e(translate_text('Réalignement d’après la mesure'))}</h2>" + _table(
+            [translate_text("Correction"), translate_text("Actuel"), translate_text("Proposé"), translate_text("Effet")],
+            [[("" if p.applicable else "⚠ ") + p.title, p.current, p.proposed, p.impact]
+             for p in realignment.proposals])
+    return body
+
+
 def render_html(report: InspectionReport, *, measurement: ImageMeasurement | None = None,
                 fel: FelReport | None = None, comparison: Comparison | None = None,
-                other: InspectionReport | None = None) -> str:
+                other: InspectionReport | None = None, advice: Advice | None = None) -> str:
     """Page HTML autonome (aucune ressource externe), thème clair ou sombre selon le système."""
     snapshot = report.snapshot
     fps = snapshot.fps or 24000 / 1001
@@ -403,7 +442,8 @@ def render_html(report: InspectionReport, *, measurement: ImageMeasurement | Non
             [(label, _SERIES_COLORS.get(key, "#888"), _column_values(values, columns, mode), mode)
              for key, label, mode, values in curves], frames=frames, fps=fps)))
     if measurement is not None:
-        body.append(_section(translate_text("Mesure de l'image"), _kv(summary.measurement_rows(measurement, fps))))
+        body.append(_section(translate_text("Mesure de l'image"), _kv(summary.measurement_rows(
+            measurement, fps, snapshot.frames if snapshot.frames_exact else None))))
     if report.dovi is not None:
         dovi_body = _kv(summary.dovi_rows(report.dovi, fps))
         headers, rows = summary.l6_table(report.dovi)
@@ -415,6 +455,8 @@ def render_html(report: InspectionReport, *, measurement: ImageMeasurement | Non
         body.append(_section(translate_text("Dolby Vision (RPU)"), dovi_body))
     if report.hdr10plus is not None:
         body.append(_section(translate_text("HDR10+"), _kv(summary.hdr10plus_rows(report.hdr10plus))))
+    if advice is not None:
+        body.append(_section(translate_text("Recommandations"), _advice_html(advice)))
     if fel is not None:
         body.append(_section(translate_text("FEL Analyzer"), _fel_html(fel)))
     if comparison is not None and other is not None:
@@ -428,13 +470,20 @@ def render_html(report: InspectionReport, *, measurement: ImageMeasurement | Non
 
 def write_report(path: Path, report: InspectionReport, *, measurement: ImageMeasurement | None = None,
                  fel: FelReport | None = None, comparison: Comparison | None = None,
-                 other: InspectionReport | None = None) -> Path:
-    """Écrit le rapport : HTML si l'extension est ``.html``/``.htm``, JSON sinon (écriture atomique)."""
+                 other: InspectionReport | None = None, advice: Advice | None = None,
+                 write: Callable[[Path, str], object] | None = None) -> Path:
+    """Écrit le rapport : HTML si l'extension est ``.html``/``.htm``, JSON sinon (écriture atomique).
+
+    ``write`` : écriture de l'annexe (garde des sorties annexes de la requête) ; défaut : remplacement atomique."""
     path = Path(path)
     if path.suffix.lower() in (".html", ".htm"):
-        content = render_html(report, measurement=measurement, fel=fel, comparison=comparison, other=other)
+        content = render_html(report, measurement=measurement, fel=fel, comparison=comparison, other=other,
+                              advice=advice)
     else:
-        content = json.dumps(report_data(report, measurement=measurement, fel=fel, comparison=comparison, other=other),
-                             ensure_ascii=False, indent=2, allow_nan=False) + "\n"
-    atomic_write_text(path, content, mode=0o644)  # document à partager
+        content = json.dumps(report_data(report, measurement=measurement, fel=fel, comparison=comparison, other=other,
+                                         advice=advice), ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    if write is not None:
+        write(path, content)
+    else:
+        atomic_write_text(path, content, mode=0o644)  # document à partager
     return path

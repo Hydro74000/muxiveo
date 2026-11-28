@@ -39,6 +39,8 @@ class ReleaseAsset:
     name: str
     url: str
     sha256: str
+    #: Date de mise à jour de l'asset (ISO 8601, API GitHub) : identifie une release roulante.
+    updated_at: str = ""
 
 
 def requested_tag(tool: str) -> str | None:
@@ -78,7 +80,7 @@ def github_release_asset(repo: str, tag: str | None, *patterns: str) -> ReleaseA
     """Asset ``patterns`` d'une release GitHub quelconque, SHA-256 publié obligatoire.
 
     Sert aux binaires hors ``THIRD_PARTY_TOOLS`` : muxiveo-rife (release
-    épinglée du dépôt) et FFmpeg BtbN (release roulante ``latest``).
+    épinglée du dépôt) et FFmpeg-Builds (ex-BtbN, release roulante ``latest``).
     """
     return select_asset(fetch_release_by_repo(repo, tag), repo, *patterns)
 
@@ -149,7 +151,7 @@ def select_asset(release: dict, repo: str, *patterns: str) -> ReleaseAsset:
             f"{repo} {tag} : aucun SHA-256 publié par GitHub pour {name}, "
             "intégrité invérifiable — téléchargement refusé."
         )
-    return ReleaseAsset(repo, tag, name, url, sha256)
+    return ReleaseAsset(repo, tag, name, url, sha256, str(asset.get("updated_at") or ""))
 
 
 def release_asset(tool: str, *patterns: str, user_agent: str = "Muxiveo-builder") -> ReleaseAsset:

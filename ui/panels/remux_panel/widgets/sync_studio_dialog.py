@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from fractions import Fraction
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -14,6 +15,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDoubleSpinBox,
     QFrame,
@@ -88,6 +90,16 @@ def _parse_timestamp_ms(text: str) -> float | None:
     return seconds * 1000.0
 
 
+def _same_ratio(first: str | None, second: str | None) -> bool:
+    """Rapports de cadence égaux, comparés comme fractions (« 1001/960 » = « 25025/24000 »)."""
+    if not first or not second:
+        return False
+    try:
+        return Fraction(first) == Fraction(second)
+    except (ValueError, ZeroDivisionError):
+        return first == second
+
+
 def _pitch_method(calibration: SyncCalibration) -> str | None:
     """Méthode retenue par l'analyse de hauteur de la calibration, s'il y en a une."""
     pitch = calibration.cadence_pitch_analysis
@@ -130,6 +142,7 @@ class SyncStudioDialog(QDialog):
         cadence_audio_method: str = "auto",
         apply_cadence_hint: bool = True,
         analysis_stream_index: int | None = None,
+        cadence_choices: tuple[CadenceMismatch, ...] = (),
     ) -> None:
         """`quick_validated` : synchro actuelle validée par la seule vérification rapide.
 
@@ -142,6 +155,8 @@ class SyncStudioDialog(QDialog):
         (conversion refusée auparavant, ou plan qui en décide).
         `analysis_stream_index` : piste de la source cible comparée à la référence par les
         analyses (synchro automatique, hauteur) ; défaut : la cible.
+        `cadence_choices` : conversions proposées au choix (décochées) quand les vidéos ne disent
+        rien de la cadence des pistes (référence du même fichier : piste issue d'un master PAL).
         """
         super().__init__(parent)
         self.quick_validated = bool(quick_validated)
@@ -182,6 +197,14 @@ class SyncStudioDialog(QDialog):
         self._cadence_available = (
             self._initial_calibration.active_cadence or hint
         )
+        # Choix manuel du rapport (aucune cadence connue des vidéos) : premier choix proposé, décoché ;
+        # conversion déjà choisie parmi eux : liste conservée, positionnée sur elle.
+        current_ratio = self._cadence_available.speed_ratio if self._cadence_available is not None else None
+        self._cadence_choices = tuple(cadence_choices) if (
+            current_ratio is None or any(_same_ratio(choice.speed_ratio, current_ratio) for choice in cadence_choices)
+        ) else ()
+        if self._cadence_choices and self._cadence_available is None:
+            self._cadence_available = self._cadence_choices[0]
         self._cadence_method_default = cadence_audio_method or "auto"
         # Méthode portée par une conversion (sinon celle par défaut d'une calibration sans cadence).
         self._cadence_method_set = self._initial_calibration.active_cadence is not None
@@ -278,9 +301,22 @@ class SyncStudioDialog(QDialog):
         ))
         self.cadence_check.toggled.connect(self._on_cadence_toggled)
         top_row.addWidget(self.cadence_check)
-        lbl_cad_title = QLabel(mismatch.description)
-        lbl_cad_title.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
-        top_row.addWidget(lbl_cad_title)
+        if self._cadence_choices:
+            # Cadence des pistes inconnue des vidéos : rapport choisi à la main.
+            self.cadence_combo = QComboBox()
+            for choice in self._cadence_choices:
+                self.cadence_combo.addItem(choice.description, choice)
+                if _same_ratio(choice.speed_ratio, mismatch.speed_ratio):
+                    self.cadence_combo.setCurrentIndex(self.cadence_combo.count() - 1)
+            self.cadence_combo.setToolTip(translate_text(
+                "Même vidéo pour les deux pistes : choisir la cadence d'origine de la piste (master PAL…)."
+            ))
+            self.cadence_combo.currentIndexChanged.connect(self._on_cadence_choice_changed)
+            top_row.addWidget(self.cadence_combo)
+        else:
+            lbl_cad_title = QLabel(mismatch.description)
+            lbl_cad_title.setStyleSheet(f"color: {_C.TEXT_PRI}; font-size: {_font_px(11)}px;")
+            top_row.addWidget(lbl_cad_title)
         top_row.addStretch()
         self._cadence_metric_lbl = QLabel()
         self._cadence_metric_lbl.setStyleSheet(f"color: {_C.OK}; font-size: {_font_px(11)}px;")
@@ -328,13 +364,29 @@ class SyncStudioDialog(QDialog):
         return self._cadence_unchecked and self.current_calibration.active_cadence is None
 
     def _sync_cadence_controls(self) -> None:
-        """Case et méthode de la carte Cadence d'après la calibration courante (résultat, réinitialisation)."""
+        """Case et méthode de la carte Cadence d'après la calibration courante (résultat, réinitialisation).
+
+        Conversion apportée par une analyse alors que la carte était absente : la carte est créée,
+        pour pouvoir la décocher ou en changer la méthode avant validation."""
         if not hasattr(self, "cadence_check"):
-            return
+            active = self.current_calibration.active_cadence
+            layout = getattr(self, "_header_layout", None)
+            if active is None or layout is None:
+                return
+            self._cadence_available = self.current_calibration.cadence_mismatch
+            layout.addWidget(self._build_cadence_frame(self._cadence_available))
         calibration = self.current_calibration
         if calibration.active_cadence is not None:
             self._cadence_available = calibration.cadence_mismatch
             self._cadence_method_set = True
+        if hasattr(self, "cadence_combo") and self._cadence_available is not None:
+            # Liste du rapport alignée sur la conversion retenue (réinitialisation, synchro automatique).
+            index = next((i for i, choice in enumerate(self._cadence_choices)
+                          if _same_ratio(choice.speed_ratio, self._cadence_available.speed_ratio)), -1)
+            if index >= 0:
+                self.cadence_combo.blockSignals(True)
+                self.cadence_combo.setCurrentIndex(index)
+                self.cadence_combo.blockSignals(False)
         self.cadence_check.blockSignals(True)
         self.cadence_check.setChecked(calibration.active_cadence is not None)
         self.cadence_check.blockSignals(False)
@@ -390,6 +442,29 @@ class SyncStudioDialog(QDialog):
             self._reload_timer.start()
         self.calibration_changed.emit(self.current_calibration)
         self._sync_cadence_controls()
+
+    def _cadence_settings(self) -> tuple[str, str]:
+        """Réglages de conversion qui conditionnent une analyse : rapport (vide sans conversion) et
+        méthode demandée."""
+        cadence = self.current_calibration.active_cadence
+        ratio = str(Fraction(cadence.speed_ratio)) if cadence is not None and cadence.speed_ratio else ""
+        return ratio, self.current_calibration.cadence_method_requested if cadence is not None else ""
+
+    def _on_cadence_choice_changed(self, index: int) -> None:
+        """Rapport de cadence choisi à la main : appliqué aussitôt si la conversion est cochée."""
+        if not 0 <= index < len(self._cadence_choices):
+            return
+        self._cadence_available = self._cadence_choices[index]
+        # La hauteur analysée valait pour l'ancien rapport : effacée (mode « Auto » : analyse à refaire).
+        auto = self.current_calibration.cadence_method_requested == "auto"
+        self.current_calibration = replace(
+            self.current_calibration, cadence_pitch_analysis=None,
+            cadence_audio_method="auto" if auto else self.current_calibration.cadence_audio_method,
+        )
+        if self.cadence_check.isChecked():
+            self._on_cadence_toggled(True)
+        else:
+            self._refresh_cadence_info()
 
     def _resolve_cadence_method(self) -> None:
         """Méthode « auto » sans analyse : tranchée en arrière-plan par la hauteur des deux pistes."""
@@ -497,7 +572,8 @@ class SyncStudioDialog(QDialog):
         info_lbl.setWordWrap(True)
         hc_layout.addWidget(info_lbl)
 
-        # Section Cadence & Hauteur tonale (Pitch)
+        # Section Cadence & Hauteur tonale (Pitch) ; créée plus tard si une analyse découvre une conversion.
+        self._header_layout = hc_layout
         if self._cadence_available is not None:
             hc_layout.addWidget(self._build_cadence_frame(self._cadence_available))
 
@@ -697,7 +773,7 @@ class SyncStudioDialog(QDialog):
 
         ctrl_row.addStretch()
 
-        if self.target_entry.is_subtitle:
+        if self.target_entry.is_subtitle and self.reference_entry is not None:
             self.btn_auto_sub_sync = _secondary_button(translate_text("Synchro sous-titres"), padding_h=10)
             self.btn_auto_sub_sync.setIcon(_bolt_icon())
             self.btn_auto_sub_sync.setToolTip(translate_text("Lancer l'alignement automatique des sous-titres"))
@@ -1056,18 +1132,8 @@ class SyncStudioDialog(QDialog):
     def _on_shift_spin_changed(self, value: float) -> None:
         self._stop_playback()
         self.waveform.set_shift(value)
-        old_shift = self.current_calibration.segments[self._current_segment_index].shift_ms
-        delta = value - old_shift
-
-        # Propagation du delta vers les segments suivants pour préserver les sauts relatifs
-        new_segments = []
-        for i, s in enumerate(self.current_calibration.segments):
-            if i < self._current_segment_index:
-                new_segments.append(s)
-            else:
-                new_segments.append(SyncSegment(s.start_ms, s.shift_ms + delta))
-
-        self.current_calibration = replace(self.current_calibration, segments=tuple(new_segments))
+        # Écart reporté sur les segments suivants : sauts relatifs conservés.
+        self.current_calibration = self.current_calibration.with_segment_shift(self._current_segment_index, value)
         self._current_shift_ms = self.current_calibration.segments[0].shift_ms
         self._update_cuts_table()
         self._push_waveform_calibration()
@@ -1397,6 +1463,8 @@ class SyncStudioDialog(QDialog):
             return
         self._is_sub_sync_running = True
         self._set_auto_sync_buttons_enabled(False)
+        # Conversion au lancement : un résultat obtenu avec d'autres réglages est écarté.
+        self._auto_sync_launch = self._cadence_settings()
         text = (
             translate_text("Synchronisation approfondie en cours…")
             if deep
@@ -1431,12 +1499,19 @@ class SyncStudioDialog(QDialog):
         self._executor.submit(_worker)
 
     def _run_auto_subtitle_sync(self) -> None:
-        if self._closing or self._is_sub_sync_running:
+        if self._closing or self._is_sub_sync_running or self.reference_entry is None:
             return
         self._is_sub_sync_running = True
         self._set_auto_sync_buttons_enabled(False)
         self.waveform.set_loading(translate_text("Synchronisation automatique des sous-titres en cours…"))
         self.listen_status.setText(translate_text("Synchronisation automatique des sous-titres en cours…"))
+        # Conversion de cadence capturée au lancement : répliques comparées sur ses temps ; un rapport
+        # changé pendant l'analyse écarte le résultat.
+        cadence = self.current_calibration.active_cadence
+        # Marqueur propre à cet alignement (le gestionnaire du résultat sert aussi la synchro audio).
+        self._sub_sync_launch = (cadence,)
+        self._auto_sync_launch = self._cadence_settings()
+        scale = cadence.time_stretch_ratio if cadence is not None else 1.0
 
         def _worker() -> None:
             try:
@@ -1452,6 +1527,7 @@ class SyncStudioDialog(QDialog):
                     target_stream_index=self.target_stream_index,
                     is_ref_sub=is_ref_sub,
                     detect_cuts=True,
+                    target_time_scale=scale,
                 )
                 if not self._closing:
                     self._auto_sub_sync_ready.emit(cal)
@@ -1461,13 +1537,30 @@ class SyncStudioDialog(QDialog):
 
         self._executor.submit(_worker)
 
-    def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> None:
+    def _on_auto_sub_sync_ready(self, cal: SyncCalibration) -> bool:
+        """Résultat d'une synchro automatique appliqué ; faux s'il est écarté."""
         if getattr(self, "_closing", False):
-            return
+            return False
         # Nouveau résultat : les zones d'une proposition précédente ne valent plus.
         self._set_review_ranges(())
         self._is_sub_sync_running = False
         self._set_auto_sync_buttons_enabled(True)
+        launch = self.__dict__.pop("_sub_sync_launch", None)
+        settings = self.__dict__.pop("_auto_sync_launch", None)
+        current_cadence = self.current_calibration.active_cadence
+        if settings is not None and settings != self._cadence_settings():
+            # Conversion cochée, décochée, rapport ou méthode changés pendant l'analyse : résultat écarté.
+            self.listen_status.setText(translate_text(
+                "Conversion de cadence changée pendant l'analyse : résultat écarté, relancer la synchro."
+            ))
+            return False
+        if launch is not None and current_cadence is not None:
+            # Mesuré sur les temps convertis : la conversion retenue est conservée.
+            current = self.current_calibration
+            cal = replace(cal, cadence_mismatch=current.cadence_mismatch,
+                          cadence_audio_method=current.cadence_audio_method,
+                          cadence_method_auto=current.cadence_method_auto,
+                          cadence_pitch_analysis=current.cadence_pitch_analysis)
 
         measured_ms = cal.segments[0].shift_ms
         # Décalage constant seul : une conversion de cadence reste à appliquer, quel que soit le départ.
@@ -1505,12 +1598,15 @@ class SyncStudioDialog(QDialog):
                 )
             )
         self.calibration_changed.emit(self.current_calibration)
+        return True
 
     def _on_auto_sync_review(self, cal: SyncCalibration, ranges_ms) -> None:
-        """Synchro cohérente proposée : chargée comme un résultat, zones à relire affichées."""
+        """Synchro cohérente proposée : chargée comme un résultat, zones à relire affichées (une
+        cadence découverte par l'analyse comprise)."""
         if getattr(self, "_closing", False):
             return
-        self._on_auto_sub_sync_ready(cal)
+        if not self._on_auto_sub_sync_ready(cal):
+            return
         self._set_review_ranges(ranges_ms)
         self._goto_review_range(0)
 

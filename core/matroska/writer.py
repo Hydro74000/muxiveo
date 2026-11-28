@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import heapq
-from collections.abc import Iterable
+import itertools
+import threading
+from collections import deque
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 from .ebml import (
     binary_element, element, encode_unknown_size_marker, encode_vint_size,
@@ -37,13 +40,118 @@ from .native_muxer import (
 )
 from .reader import read_element, _split_lace_sizes
 from .reader import MatroskaAttachment
-from .validation import MatroskaPacketValidation
+from .validation import InterleaveTracker, MatroskaPacketValidation
 from core.output_commit import OutputCommitError, publish_candidate, reserve_candidate
 
 
 #: Charge utile maximale d'un Cluster (octets). Borne le pic mémoire du
 #: writer (groupe courant + copies transitoires) indépendamment du flux.
 _MAX_CLUSTER_PAYLOAD_BYTES = 4 * 1024 * 1024
+#: Clusters en attente d'écriture (octets) dans le fil d'écriture.
+_BACKGROUND_WRITE_BYTES = 16 * 1024 * 1024
+
+
+class _BackgroundWriter:
+    """Écriture des Clusters dans un fil, file bornée en octets.
+
+    L'appel système (copie vers le cache, attente du disque quand les pages
+    sales s'accumulent) recouvre la lecture des sources et l'assemblage du
+    Cluster suivant (Remux réel : 6,8 s d'écriture sur 23 s dans le fil
+    principal). ``position`` suit la fin logique du fichier. Une erreur
+    d'écriture est relevée au prochain appel ; ``close`` attend la fin des
+    écritures, ou les abandonne (``abandon=True``, candidat supprimé ensuite) :
+    l'écriture en cours se termine, les suivantes sont retirées de la file.
+    """
+
+    def __init__(self, fh: BinaryIO, *, limit: int | None = None) -> None:
+        self._fh = fh
+        self._limit = _BACKGROUND_WRITE_BYTES if limit is None else limit
+        self.position = fh.tell()
+        self._queue: deque[tuple[bytes | list[bytes], int]] = deque()
+        self._pending = 0
+        self._error: BaseException | None = None
+        self._closed = False
+        self._cond = threading.Condition()
+        self._thread = threading.Thread(target=self._run, name="matroska-writer", daemon=True)
+        self._thread.start()
+
+    def write(self, data: bytes | list[bytes], size: int | None = None) -> None:
+        """Met en file ``data`` (ou les morceaux d'une liste, joints dans le fil)."""
+        size = len(data) if size is None else size
+        with self._cond:
+            while self._error is None and self._pending and self._pending + size > self._limit:
+                self._cond.wait()
+            if self._error is not None:
+                raise self._error
+            self._queue.append((data, size))
+            self._pending += size
+            self._cond.notify_all()
+        self.position += size
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._queue and not self._closed:
+                    self._cond.wait()
+                if not self._queue:
+                    return
+                # Retiré sous verrou : un abandon pendant l'écriture ne vide que la suite.
+                data, size = self._queue.popleft()
+            try:
+                # Jointure hors du fil principal (sans GIL au-delà d'un Mio).
+                self._fh.write(b"".join(data) if isinstance(data, list) else data)
+            except BaseException as exc:
+                with self._cond:
+                    self._error = exc
+                    self._queue.clear()
+                    self._pending = 0
+                    self._cond.notify_all()
+                return
+            with self._cond:
+                self._pending -= size
+                self._cond.notify_all()
+
+    def close(self, *, abandon: bool = False) -> None:
+        """Fin des écritures (attendues, ou abandonnées) ; relève une erreur d'écriture."""
+        with self._cond:
+            if abandon:
+                self._pending -= sum(size for _data, size in self._queue)
+                self._queue.clear()
+            self._closed = True
+            self._cond.notify_all()
+        self._thread.join()
+        if self._error is not None and not abandon:
+            raise self._error
+
+class _AbandonOnError:
+    """Fil d'écriture des Clusters, abandonné et rejoint en cas d'erreur **avant** la fermeture du fichier.
+
+    Placé après le fichier dans le même ``with`` : sa sortie précède celle du
+    fichier, aucune écriture du fil ne vise donc un fichier fermé, et
+    l'exception d'origine est conservée (l'abandon ne lève jamais).
+    """
+
+    def __init__(self) -> None:
+        self._sink: _BackgroundWriter | None = None
+
+    def start(self, fh: BinaryIO) -> _BackgroundWriter:
+        self._sink = _BackgroundWriter(fh)
+        return self._sink
+
+    def finish(self) -> None:
+        """Fin normale : écritures attendues, erreur différée relevée."""
+        sink, self._sink = self._sink, None
+        if sink is not None:
+            sink.close()
+
+    def __enter__(self) -> "_AbandonOnError":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        sink, self._sink = self._sink, None
+        if sink is not None:
+            sink.close(abandon=exc_type is not None)
+
 
 _PATCHED_TRACK_FLAG_FIELDS = {
     FLAG_ENABLED_ID, FLAG_DEFAULT_ID, FLAG_FORCED_ID,
@@ -100,23 +208,29 @@ def _simple_tag_name(raw_simple_tag: bytes) -> str:
 def rewrite_tag_target_uids(
     raw_tags: bytes,
     *,
-    track_uids: dict[int, int],
-    attachment_uids: dict[int, int],
+    track_uids: Mapping[int, int | Sequence[int]],
+    attachment_uids: Mapping[int, int],
     drop_chapter_targets: bool = False,
     drop_track_statistics: bool = False,
+    track_targets_only: bool = False,
 ) -> bytes:
     """Remap copied Tag targets and discard tags whose target was not selected.
+
+    ``track_targets_only`` : seuls les tags ciblant une piste retenue sont gardés
+    (en-tête de producteur : son tag global ``ENCODER`` n'est pas celui de la source).
 
     Fresh per-track statistics are generated from packets by the native
     assembler.  When requested, stale technical statistics attached to a
     selected source track are dropped before those fresh values are appended.
+    Une piste source copiée vers plusieurs sorties (``track_uids`` : liste
+    d'UID) voit ses tags dupliqués, un par piste de sortie.
     """
     rebuilt_tags: list[bytes] = []
     for child_id, child_raw in _raw_children(_element_payload(raw_tags)):
         if child_id != TAG_ID:
             rebuilt_tags.append(child_raw)
             continue
-        rebuilt_tag: list[bytes] = []
+        variants: list[list[bytes]] = [[]]
         keep_tag = True
         remapped_track_target = False
         has_tag_value = False
@@ -128,34 +242,41 @@ def rewrite_tag_target_uids(
                     and _simple_tag_name(tag_child_raw).upper() in _TRACK_STATISTICS_TAGS
                 ):
                     continue
-                rebuilt_tag.append(tag_child_raw)
+                for variant in variants:
+                    variant.append(tag_child_raw)
                 has_tag_value = True
                 continue
             if tag_child_id != TARGETS_ID:
-                rebuilt_tag.append(tag_child_raw)
+                for variant in variants:
+                    variant.append(tag_child_raw)
                 has_tag_value = True
                 continue
-            rebuilt_targets: list[bytes] = []
+            choices: list[list[bytes]] = []
             for target_id, target_raw in _raw_children(_element_payload(tag_child_raw)):
                 if target_id in {TAG_CHAPTER_UID_ID, TAG_EDITION_UID_ID} and drop_chapter_targets:
                     keep_tag = False
                     break
                 if target_id not in {TAG_TRACK_UID_ID, TAG_ATTACHMENT_UID_ID}:
-                    rebuilt_targets.append(target_raw)
+                    choices.append([target_raw])
                     continue
                 old_uid = int.from_bytes(_element_payload(target_raw), "big")
-                uid_map = track_uids if target_id == TAG_TRACK_UID_ID else attachment_uids
+                uid_map: Mapping[int, int | Sequence[int]] = (
+                    track_uids if target_id == TAG_TRACK_UID_ID else attachment_uids
+                )
                 if old_uid and old_uid not in uid_map:
                     keep_tag = False
                     break
                 if target_id == TAG_TRACK_UID_ID and old_uid in track_uids:
                     remapped_track_target = True
-                rebuilt_targets.append(uint_element(target_id, uid_map.get(old_uid, old_uid)))
+                mapped = uid_map.get(old_uid, old_uid)
+                new_uids = [mapped] if isinstance(mapped, int) else list(mapped)
+                choices.append([uint_element(target_id, uid) for uid in new_uids])
             if not keep_tag:
                 break
-            rebuilt_tag.append(element(TARGETS_ID, b"".join(rebuilt_targets)))
-        if keep_tag and has_tag_value:
-            rebuilt_tags.append(element(TAG_ID, b"".join(rebuilt_tag)))
+            alternatives = [element(TARGETS_ID, b"".join(combo)) for combo in itertools.product(*choices)]
+            variants = [[*variant, alternative] for variant in variants for alternative in alternatives]
+        if keep_tag and has_tag_value and (remapped_track_target or not track_targets_only):
+            rebuilt_tags.extend(element(TAG_ID, b"".join(variant)) for variant in variants)
     return element(TAGS_ID, b"".join(rebuilt_tags))
 
 
@@ -319,7 +440,11 @@ def build_attachments_element(attachments: list[MatroskaAttachment]) -> bytes:
     return element(ATTACHMENTS_ID, b"".join(files)) if files else b""
 
 
-def build_chapters_element(entries: list[object]) -> bytes:
+def build_chapters_element(entries: list[object], *, edition_hidden: bool = False,
+                           edition_default: bool = False) -> bytes:
+    """Élément ``Chapters`` (une édition) ; drapeaux simples écrits quand ils diffèrent du défaut Matroska :
+    ``EditionFlagHidden`` / ``EditionFlagDefault`` de l'édition, ``ChapterFlagHidden`` / ``ChapterFlagEnabled``
+    (attributs ``hidden`` / ``enabled``) de chaque chapitre, enfants compris."""
     def chapter_atom(chapter: object, position: tuple[int, ...]) -> bytes:
         seconds = float(getattr(chapter, "timecode_s", 0.0))
         name = str(getattr(chapter, "name", "") or "")
@@ -341,6 +466,10 @@ def build_chapters_element(entries: list[object]) -> bytes:
         end_value = getattr(chapter, "end_s", None)
         if end_value is not None:
             atom += uint_element(CHAPTER_TIME_END_ID, round(float(end_value) * 1_000_000_000))
+        if getattr(chapter, "hidden", False):
+            atom += uint_element(bytes.fromhex("98"), 1)        # ChapterFlagHidden
+        if not getattr(chapter, "enabled", True):
+            atom += uint_element(bytes.fromhex("4598"), 0)      # ChapterFlagEnabled
         atom += display_elements
         atom += b"".join(
             chapter_atom(child, (*position, child_index))
@@ -349,7 +478,9 @@ def build_chapters_element(entries: list[object]) -> bytes:
         return element(CHAPTER_ATOM_ID, atom)
 
     atoms = [chapter_atom(chapter, (index,)) for index, chapter in enumerate(entries, start=1)]
-    return element(CHAPTERS_ID, element(EDITION_ENTRY_ID, b"".join(atoms))) if atoms else b""
+    flags = ((uint_element(bytes.fromhex("45bd"), 1) if edition_hidden else b"")       # EditionFlagHidden
+             + (uint_element(bytes.fromhex("45db"), 1) if edition_default else b""))   # EditionFlagDefault
+    return element(CHAPTERS_ID, element(EDITION_ENTRY_ID, flags + b"".join(atoms))) if atoms else b""
 
 
 def build_tags_element(tags: dict[str, str]) -> bytes:
@@ -478,6 +609,7 @@ def _plan_info(plan: MatroskaMuxPlan, duration_ns: int) -> bytes:
         string_element(TITLE_ID, plan.title) if plan.title else b"",
         string_element(MUXING_APP_ID, plan.muxing_app),
         string_element(WRITING_APP_ID, plan.writing_app),
+        *plan.info_passthrough,
     )))
 
 
@@ -629,8 +761,9 @@ class MatroskaWriter:
         # Candidat propre à cette écriture : un `.partial` existant (autre job,
         # ancien schéma de nommage) n'est jamais réutilisé ni supprimé.
         partial = reserve_candidate(destination)
+        sinks = _AbandonOnError()
         try:
-            with partial.open("wb") as fh:
+            with partial.open("wb") as fh, sinks:
                 fh.write(_build_ebml_header())
                 # Taille de Segment : VINT 8 octets « inconnue » réservée,
                 # patchée avec la taille réelle en fin d'écriture.
@@ -670,7 +803,10 @@ class MatroskaWriter:
                     32767 * plan.timestamp_scale_ns,
                 )
                 packet_iter = iter(packets)
+                # Entrelacement mesuré dans l'ordre d'écriture (avertissement, jamais bloquant).
+                interleave = InterleaveTracker()
                 _notify("clusters", fh.tell())
+                sink = sinks.start(fh)
                 pending = next(packet_iter, None)
                 while pending is not None:
                     _check_cancel("clusters")
@@ -706,9 +842,13 @@ class MatroskaWriter:
                         parts = _packet_parts(packet, cluster_time, plan.timestamp_scale_ns)
                         payload_parts.extend(parts)
                         packet_sizes.append(sum(map(len, parts)))
-                    cluster_offset = fh.tell() - payload_start
-                    fh.write(CLUSTER_ID + encode_vint_size_minimal(len(timestamp_element) + sum(packet_sizes)))
-                    fh.write(b"".join(payload_parts))
+                    cluster_offset = sink.position - payload_start
+                    interleave.cluster(cluster_time * plan.timestamp_scale_ns)
+                    for packet in group:
+                        interleave.packet(packet.output_track_number, _timestamp_ns(packet))
+                    cluster_payload = len(timestamp_element) + sum(packet_sizes)
+                    sink.write(CLUSTER_ID + encode_vint_size_minimal(cluster_payload))
+                    sink.write(payload_parts, cluster_payload)
                     # CueRelativePosition (RFC 9559) : relatif au premier
                     # octet du payload du Cluster (0 = premier élément).
                     relative_position = len(timestamp_element)
@@ -742,7 +882,9 @@ class MatroskaWriter:
                         packet_counts[packet.output_track_number] = (
                             packet_counts.get(packet.output_track_number, 0) + 1
                         )
-                    _notify("clusters", fh.tell())
+                    _notify("clusters", sink.position)
+                # Toutes les écritures de Clusters terminées avant tout repositionnement.
+                sinks.finish()
                 _check_cancel("cues")
                 if plan.regenerate_statistics:
                     statistics_tags = build_track_statistics_tags_element({
@@ -815,6 +957,7 @@ class MatroskaWriter:
                         track_numbers=frozenset(packet_counts),
                         max_packet_timestamp_ns=validation_max_packet_timestamp_ns,
                         last_delta_by_track=dict(last_delta_by_track),
+                        interleave=interleave.report(),
                     ),
                 )
             _check_cancel("commit")
@@ -824,8 +967,18 @@ class MatroskaWriter:
             # Destination apparue pendant l'écriture : elle et le résultat sont conservés.
             raise
         except BaseException:
-            partial.unlink(missing_ok=True)
+            # Nettoyage qui ne masque jamais l'exception en cours (annulation comprise).
+            try:
+                partial.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise
+        finally:
+            # Flux paresseux interrompu (erreur, annulation) : lecteurs, fichiers
+            # et fenêtres mmap des sources fermés tout de suite, pas au ramasse-miettes.
+            close = getattr(packets, "close", None)
+            if callable(close):
+                close()  # pylint: disable=not-callable  # vérifié par callable()
         return destination
 
 

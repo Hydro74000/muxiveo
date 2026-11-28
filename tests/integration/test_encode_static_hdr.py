@@ -81,7 +81,7 @@ def _encode(tmp_path: Path, src: Path, name: str, **video_kw) -> Path:
     )
     cfg = EncodeConfig(source=src, output=out, video=video, audio_tracks=[], copy_subtitles=False,
                        keep_chapters=False, duration_s=1.0, work_dir=tmp_path)
-    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, ffmpeg_threads=1, generate_nfo=False)
+    wf = EncodeWorkflow(ffmpeg_bin="ffmpeg", ffmpeg_threads=1, generate_nfo=False)
     assert wf.validate(cfg) == []
     state = wait_task(wf.run(cfg), timeout=120.0)
     assert state["failed"] is None, state["failed"]

@@ -2,6 +2,23 @@
 
 `Muxiveo-cli` est le point d'entrée headless de Muxiveo. Il ne lance pas l'interface graphique et reste strictement non interactif.
 
+## Guide par tâche
+
+| Je veux… | Commande | Section |
+|---|---|---|
+| Inspecter une source, partir d'un job | `inspect`, `inspect --config-template` | [Contrat JSON](#contrat-json) |
+| Remuxer (pistes, métadonnées, TMDB, profils) | `remux`, `run`, `batch`, `profile …` | [Contrat JSON](#contrat-json), [batch](#batch) |
+| Encoder (vidéo, audio, HDR, débruitage, interpolation) | `encode`, `encode-preset` | [Encodage](#encodage--commande-encode-et-bloc-encode) |
+| Extraire pistes, couches DV, HDR10+, pièces jointes | `extract`, `bluray-titles` | [Extraction](#extraction--commande-extract) |
+| Inspecter ou corriger le HDR | `inspect --hdr`, `hdr-patch` | [Inspection HDR](#inspection-hdr-inspect---hdr) |
+| Synchroniser (chaînes, calibrations, forme d'onde) | `--auto-sync-all`, `sources[i].sync`, `calibration`, `sync-scan` | [Synchro en chaîne](#synchro-en-chaîne--sourcesisync) |
+| Hybrider une saison | `hybrid` | [Cas 2](#cas-2--hybrid-le-studio-dhybridation-headless-v4) |
+| Profils, TMDB, Blu-ray | `profile`, `tmdb`, `bluray-titles` | [TMDB, profils, Blu-ray](#tmdb-profils-enregistrés-blu-ray) |
+| Configurer, nettoyer, NVEncC, mettre à jour | `config`, `workdir`, `nvencc`, `version --install` | [Administration](#administration--configuration-dossier-de-travail-nvencc) |
+| Piloter Muxiveo depuis un programme | `call`, `serve`, `operations`, `--log-format events` | [api.md](api.md) |
+
+Aide intégrée : `muxiveo --cli help COMMANDE`, `help --all` ; référence complète : [reference.md](reference.md).
+
 ## Lancement
 
 ```bash
@@ -27,7 +44,7 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `inspect` | inspecte une source et sort du JSON |
 | `inspect --config-template` | génère un template JSON de départ |
 | `inspect --hdr static\|dynamic\|measure` | inspection HDR (HDR Studio) : contrôles, métadonnées, courbes ; comparaison et rapport HTML/JSON |
-| `schema` | affiche le schéma JSON public du contrat CLI |
+| `schema` | affiche le schéma JSON public du contrat CLI (`--version api` : catalogue des opérations de la couche de service) |
 | `tools` | affiche en JSON les chemins d'outils effectivement résolus par Muxiveo |
 | `version [--check] [--channel stable\|unstable]` | affiche la version ; `--check` la compare à la dernière release du canal (stable = `main`, unstable = pré-versions `devel-cli`) |
 | `validate` | valide un job/template sans exécuter ffmpeg |
@@ -38,9 +55,21 @@ Depuis les sources, `python3 main.py --cli ...` lance aussi le mode CLI sans ini
 | `preview --profile` | applique un profil en dry preview JSON/commande |
 | `run/remux --profile` | applique un profil et remuxe |
 | `batch --profile` | applique un profil à un dossier |
-| `hybrid` | hybridation de référence et donneur (paire ou saison entière) |
+| `hybrid` | hybridation (moteur du Hybrid Studio) : sources à rôles, appariement, recette, plan, exact-jobs ; voir « Cas 2 » |
 | `sync-scan` | corrélation acoustique FFT et extraction de calibration |
 | `shift-subs` | recalage physique de fichiers sous-titres (SRT, ASS) |
+| `encode` | encode (job + bloc `encode` ou options d'encodage), ou aperçus `--preview-image/--preview-video` ; voir « Encodage » |
+| `encode-preset list\|show\|save\|import\|export\|delete` | presets d'encodage (communs avec l'interface) |
+| `extract` | extrait des pistes, couches Dolby Vision (EL, BL, RPU), HDR10+ ou pièces jointes ; voir « Extraction » |
+| `hdr-patch` | corrige les métadonnées HDR sans réencodage (onglet Édition du HDR Studio) ; voir « Inspection HDR » |
+| `help [COMMANDE]`, `help --all`, `help --format md` | aide complète (traduite selon `[ui] language`), référence Markdown |
+| `tmdb search\|details`, `profile list\|show\|save\|delete\|capture`, `bluray-titles` | TMDB, profils enregistrés, titres d'un Blu-ray ; voir « TMDB, profils enregistrés, Blu-ray » |
+| `config path\|show\|get\|set\|unset\|reset`, `workdir list\|clean`, `nvencc status\|install\|update\|remove` | administration ; voir « Administration » |
+| `calibration show\|edit\|compose\|invert`, `sync-waveform` | calibrations de synchro (éditions du Synchro Studio), forme d'onde ; voir « Synchro en chaîne » |
+| `capabilities [--section …]` | capacités de la machine : encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO |
+| `operations [--json] [--describe OPÉRATION]` | liste les opérations de la couche de service, ou décrit l'une d'elles (schémas de requête et de résultat, erreurs) |
+| `call OPÉRATION --request FICHIER\|-` | appelle une opération avec une requête JSON stricte : réponse JSON sur stdout, événements sur stderr ; `--allow-privileged` pour une opération privilégiée |
+| `serve [--allow-privileged] [--max-jobs N] [--max-analyses N]` | worker JSON-RPC sur stdio pour un client local : jobs concurrents, événements, annulation ; voir [api.md](api.md#worker-serve) |
 
 Exemples :
 
@@ -99,13 +128,19 @@ Règles de lecture communes à la CLI et à la GUI :
 
 - les fichiers JSON sont lus en UTF-8, avec ou sans BOM ; les constantes non
   standard `NaN`, `Infinity` et `-Infinity` sont refusées ;
-- un chemin relatif écrit dans un document JSON (`sources`, `input`,
-  `extra_attachments`, `chapters.import`, `output`) est résolu depuis le
-  **dossier de ce document**, pas depuis le répertoire courant. Le template,
+- un chemin relatif écrit dans un document JSON (`sources` et leur
+  `sync.calibration`, `input`, `extra_attachments`, `chapters.import`, `output`,
+  `calibration`, `tracks[].sync.calibration`, `encode.preset` quand il désigne un
+  fichier) est résolu depuis le **dossier de ce document**, pas depuis le
+  répertoire courant. Le template,
   le job (`--config`) et le fichier `--batch` sont résolus chacun depuis leur
   propre dossier, avant fusion ;
 - un chemin passé en ligne de commande (`-i`, `-o`, `--output-dir`…) reste
-  relatif au répertoire courant ; `output_template` n'est pas un chemin.
+  relatif au répertoire courant ; `output_template` n'est pas un chemin ;
+- une clé hors du contrat (`schema --version 1`, bloc `encode` compris) est
+  signalée par un avertissement et ignorée, sauf dans les objets fermés
+  (`sync`, `flags`) qui la refusent comme avant ; dans une requête `call`, elle
+  est refusée (`invalid_request`).
 
 Un JSON qui comptait sur le répertoire courant pour ses chemins relatifs doit
 être lancé avec des chemins absolus, ou recevoir ses chemins en ligne de commande.
@@ -123,14 +158,17 @@ facultatif et son absence conserve tous les jobs v1 existants :
 }
 ```
 
-- `auto` inspecte le plan complet, choisit le writer natif lorsqu'il peut tenir
-  le contrat et journalise tout repli FFmpeg avec sa raison exacte ;
+- `auto` (défaut) choisit le writer natif pour toute sortie `.mkv` que le plan
+  permet (entrelacement exact, échelle de temps 1 ms, pistes MP4/MOV lues en
+  flux) et journalise tout repli FFmpeg avec sa raison exacte ;
 - `native` est strict et ne replie jamais ;
-- `ffmpeg` conserve le chemin historique.
+- `ffmpeg` conserve le muxage FFmpeg.
 
 `--mux-backend auto|native|ffmpeg` surcharge le job pour `validate`, `preview`,
-`run`, `remux`, `batch` et les variantes basées sur un profil. La préférence
-persistée `[matroska] mux_backend = auto` ne remplace pas un choix explicite du job.
+`run`, `remux`, `batch` et les variantes basées sur un profil. Sans champ dans le
+job, la préférence persistée `[matroska] mux_backend` (défaut `auto`) s'applique ;
+elle ne remplace jamais un choix explicite du job. Un gabarit exporté sans choix
+n'écrit pas de `mux_backend`.
 
 ### `sources`
 
@@ -149,6 +187,55 @@ Chaque source peut être une chaîne ou un objet :
 - `"none"` ou `false`;
 - `"all"` ou `true`;
 - une liste de noms ou indices.
+
+#### Synchro en chaîne : `sources[i].sync`
+
+Comme les références du panneau Conteneur : la source est mesurée face à une piste d'une autre
+source, et suit la position de cette référence dans la sortie (références en chaîne composées,
+résolues dans l'ordre des dépendances ; boucle refusée).
+
+```json
+"sources": [
+  {"path": "uhd.mkv"},
+  {"path": "bluray.mkv", "sync": {"reference": 0}},
+  {"path": "vf.mkv", "sync": {"reference": 1, "reference_track": "a:0", "mode": "deep"}},
+  {"path": "vo.mkv", "sync": {"reference": 0, "offset_ms": -120}}
+]
+```
+
+| Champ | Effet |
+|---|---|
+| `reference` | index de la source de référence (défaut 0) |
+| `reference_track` | piste de référence : `mkv_tid` ou `a:N` / `s:N` (défaut : première audio) |
+| `track` | piste mesurée (défaut : audio de la source dans la langue de la référence, hors commentaire) |
+| `mode` | `auto` (réglage `[sync] quick_audio_check`), `quick` (synchro rapide), `deep` (approfondie) |
+| `type` | `auto`, `audio` (corrélation acoustique) ou `subtitle` (sous-titres) |
+| `calibration` / `offset_ms` | synchro relative donnée (objet, fichier JSON, ou décalage constant) : aucune mesure |
+
+`--auto-sync-all` (ou `"auto_sync_all": true`) ajoute `{"reference": 0}` à chaque source ≥ 1 sans
+bloc ; `--auto-sync` reste limité à la source 1. Synchro propre à une piste (« Synchroniser cette
+piste », elle seule bouge) : `tracks[i].sync` (mêmes champs, sans `track`), prioritaire sur la synchro
+de sa source. Exemple : `docs/cli/examples/sync-links.json`.
+
+#### Calibrations : `calibration`, `sync-waveform`
+
+Mêmes éditions que le Synchro Studio (instants de sortie en ms ou `HH:MM:SS.mmm`, appliquées dans
+l'ordre de la ligne de commande) :
+
+```bash
+Muxiveo-cli calibration show calib.json
+Muxiveo-cli calibration edit calib.json --cut 600000-602500 --silence 1:00:00-1:00:04 \
+    --shift-from-segment 2:-120 -o calib2.json
+Muxiveo-cli calibration edit calib.json --cadence-method auto --resolve-cadence ref.mkv:1 cible.mkv:2 -o c.json
+Muxiveo-cli calibration compose mesure.json position-reference.json -o synchro.json
+Muxiveo-cli calibration invert synchro.json -o inverse.json
+Muxiveo-cli sync-waveform -i film.mkv --stream 0:a:0 --start 1:00:00 --duration 30 --resolution-ms 10
+```
+
+`--remove-junction N` retire la jonction du segment N, `--shift-ms MS` fixe le départ (toute la
+suite suit), `--shift-from-segment N:MS` fixe le segment N en reportant l'écart sur les suivants.
+`sync-waveform` publie les pics d'amplitude par tranche (données d'un client graphique) ; la
+pré-écoute reste propre à l'interface.
 
 ### `decision-profile`
 
@@ -250,8 +337,8 @@ Keywords de renommage disponibles :
 
 ```text
 {type} {source_index} {track_index}
-{language} {lang} {lang_name} {source_language}
-{title} {source_title}
+{language} {lang} {lang_name} {source_language} {file_language}
+{title} {source_title} {file_title}
 {codec} {codec_raw} {codec_name} {channels} {channel_layout} {audio_object} {atmos} {dtsx}
 {resolution} {width} {height} {hdr} {video_flags_hex}
 {video_hdr} {video_hdr10} {video_hdr10plus}
@@ -661,6 +748,255 @@ l'exécution réelle. La preview texte commence par le backend choisi. En JSONL,
 l'événement `mux_backend` expose séparément le backend demandé/sélectionné, le
 repli, sa raison et les diagnostics.
 
+## Encodage : commande `encode` et bloc `encode`
+
+Un job encode dès qu'il contient un bloc `encode` qui demande autre chose qu'une copie (même
+règle que la barre d'exécution de l'interface) ; sinon il reste un remux. `encode` est la commande
+dédiée (mêmes options que `remux`), mais `run`, `remux`, `batch` (template) et `profile` acceptent
+aussi le bloc et les options d'encodage. Exemple complet : [examples/encode.json](examples/encode.json).
+
+```bash
+Muxiveo-cli encode -i film.mkv -o film.x265.mkv --video-codec libx265 --crf 18 --encoder-preset slow
+Muxiveo-cli encode -i film.mkv -o film.mkv --video-codec hevc_nvenc --rate-control vbr_cq --cq 24 --dv copy
+Muxiveo-cli encode -i film.mkv -o film.mkv --video-codec libx265 --crop auto --denoise mvo-r2:moyen \
+    --audio-codec 0:1=eac3:640
+Muxiveo-cli encode --config job.json --dry-run          # commandes prévues, sans écriture
+Muxiveo-cli validate --config job.json --json           # plan d'encodage résolu (clé "encode")
+Muxiveo-cli capabilities                                # encodeurs, préréglages, Vulkan, NVOF, TensorRT, moteur MVO
+```
+
+**Couches**, de la plus basse à la plus haute : réglages par défaut de la source (copie, HDR de la
+source) → preset d'encodage (`preset` : nom enregistré par l'interface ou fichier JSON ; les
+réglages HDR propres à la source ne sont jamais repris du preset) → `video.default` (toutes les
+pistes vidéo) → `video.tracks[]` (une piste, désignée par `select` : `source` + `stream` index
+ffprobe, `index` rang parmi les pistes vidéo, ou `entry_id`) → options courtes du CLI.
+
+**Champs vidéo** : `codec`, `rate_control` (modes du codec), `crf`, `cq`, `bitrate_kbps`,
+`encoder_preset`, `extra_params`, `bit_depth` (`auto` / `8` / `10`), `crop` (`auto` mesure les
+bandes noires comme le bouton Auto-crop ; sinon `top` / `bottom` / `left` / `right` en pixels),
+`resize`, `filters` (YADIF, deblock, NLMeans…), `interpolation` (MVO-RIFE : `factor` ou
+`target_fps`, `quality`, `mode`), `restoration` (débruitage MVO-R2 : `level`, `mode`, `animation`,
+`sharpen`), `static_hdr` (`mode` `source` / `manual` / `off`, `master_display`, `max_cll`,
+`estimate` `fast` / `precise`), `dolby_vision` (`mode` `copy` / `off`, `profile`), `hdr10plus`
+(`mode` `copy` / `generate` / `off` ; `generate` : HDR10+ généré depuis le Dolby Vision de la source, mesuré sur
+l'image par l'extension mvo-fel sinon estimé depuis le L1 du RPU, remplace celui de la source, Copy compris
+sauf source HEVC brute `.hevc` / `.h265` (sans horodatage : remuxer d'abord en MKV) ; NVEncC : préfiltres FFmpeg
+— deblock, chroma_smooth, crop ou resize en % — refusés hors intégration FEL), `fel` (`bake`, `precision`, `device`, `hdr10plus`), `tonemap` (`enabled`,
+`algorithm`). Fournir un bloc `resize`, `interpolation` ou `restoration` l'active (sauf
+`"enabled": false`). Le bloc est validé strictement : clé inconnue ou valeur hors bornes refusée.
+
+**Audio** : `audio[]` = `select`, `codec` (`copy`, `aac`, `ac3`, `eac3`, `flac`), `bitrate_kbps`
+(défaut selon les canaux, réglages `[audio_encoding]`), `truehd_core`. Les pistes non citées
+sont copiées ; les variantes (`audio_variants`) gardent leur codec.
+
+**Politique HDR (identique à l'interface)** : en copie, Dolby Vision, HDR10+ et HDR10 statique de
+la source sont conservés — `dolby_vision.mode: off` (ou `--dv off`), `static_hdr.mode: off` ou le
+tone mapping sur une piste copiée sont refusés (code 3) : il faut réencoder. Une copie Dolby
+Vision ou HDR10+ demandée mais impossible (source sans métadonnées, codec incompatible) donne un
+avertissement, comme un HDR10+ à générer sans effet (source sans Dolby Vision à image de base PQ, Copy d'une
+source P5, codec sans HDR10+, tone mapping ; intention venue d'un preset comprise). Source HDR vers un codec sans HDR (H.264…, par le codec ou par un preset) : sortie
+SDR par défaut, tone mapping coché d'office comme dans le panneau (`tonemap.enabled: false`, ou
+`--video-set tonemap.enabled=false`, l'empêche). Retour sur un codec HDR (preset suivant, piste,
+`video.default`) : ce tone mapping est retiré et les options HDR10, Dolby Vision et HDR10+
+décochées pour le codec sans HDR sont rétablies, sauf choix explicite du job (`static_hdr`,
+`dolby_vision`, `hdr10plus`). Un choix explicite (`tonemap.enabled` vrai ou faux) est gardé aux
+changements de codec.
+
+**Couches** (`video.default`, puis `video.tracks[]`, puis options courtes) : la dernière couche qui
+fixe un choix le remplace (tone mapping, `mode` Dolby Vision / HDR10+ / HDR10 statique) ; une
+couche qui ne le touche pas (`algorithm` ou `profile` seuls) le laisse. `static_hdr.estimate`
+(analyse HDR10 P5→P8.1, sur champs vides comme le panneau) et `mode` / `master_display` /
+`max_cll` s'excluent : une couche ou une fusion de documents (gabarit, lot, `--video-set`) qui
+fournit l'un retire l'autre ; dans un même objet, `estimate` avec `mode: off` ou une valeur non
+vide est refusé (code 3). Une couche `manual` ne marque saisis que les champs qu'elle fournit ;
+`source` / `off` remettent les valeurs de la source.
+
+**Dolby Vision + NVENC** : quand l'alignement sur 32 lignes impose un recadrage, l'encodage est
+refusé (code 3, recadrage calculé et encodeurs sans cette contrainte indiqués) sauf
+`accept_dovi_nvenc_crop: true` (`--accept-dovi-nvenc-crop`).
+
+**Options courtes** : `--encode-preset`, `--video-codec`, `--rate-control`, `--crf`, `--cq`,
+`--bitrate`, `--target-size`, `--encoder-preset`, `--bit-depth`, `--crop auto|HAUT,BAS,GAUCHE,DROITE`,
+`--resize PRESET|LxH|N%`, `--deinterlace`, `--denoise mvo-r2[:NIVEAU]|nlmeans[:FORCE]|off`,
+`--interpolate xN|CADENCE`, `--interpolation-preset`, `--tonemap [ALGO]`, `--dv copy|off`,
+`--hdr10plus copy|off`, `--bake-fel`, `--audio-codec SOURCE:FLUX=CODEC[:KBPS]` (répétable),
+`--video-track SOURCE:FLUX` (options vidéo pour cette piste seulement), `--video-set
+CLÉ.POINTÉE=VALEUR` (tout champ vidéo, valeur JSON ou texte), `--accept-dovi-nvenc-crop`,
+`--keep-failed-work-dir` (encodage en échec : dossier de travail conservé pour examen, proposé au
+prochain « Nettoyer » de l'interface ; option `keep_failed_work_dir` des requêtes).
+
+**Aperçus** (au lieu d'encoder, comme les boutons Aperçu du panneau) : `encode … --preview-image
+SECONDES` (répétable ; une image de la sortie par instant : extrait court encodé avec tous les réglages du
+job — filtres, redimensionnement, HDR, FEL, MVO-R2, interpolation —, première image d'instant ≥ SECONDES),
+`--preview-video
+SECONDES:DURÉE` (extrait encodé, 5–30 s), `--random-scene`, `--preview-dir DOSSIER` (défaut : dossier de
+la sortie). Opération : `encode.preview_capture`.
+
+**Presets d'encodage** (les mêmes que ceux de l'interface) : `encode-preset list`, `show NOM`,
+`save NOM [options d'encodage] [--description …]`, `import FICHIER [--name NOM]`, `export NOM FICHIER`,
+`delete NOM` ; utilisation : `--encode-preset NOM|FICHIER` ou `"preset"` dans le bloc. Un preset ne
+contient que des réglages d'encodeur : HDR statique, copie Dolby Vision / HDR10+ et tone mapping
+restent ceux de la source (refusés à l'enregistrement). Gabarit de départ :
+`inspect film.mkv --config-template --with-encode`.
+
+Sans `--verbose`, la sortie brute de FFmpeg n'est pas affichée ; avec `--log-format events`, la
+progression (`pct`, `fps`, `eta_s`) est publiée en événements `progress`. Ctrl+C annule
+l'encodage proprement.
+
+## Extraction : commande `extract`
+
+Extrait des éléments d'une source vers des fichiers autonomes (opération `media.extract`, même
+moteur que « Extraire… » du panneau Conteneur) :
+
+```bash
+Muxiveo-cli extract -i film.mkv --track a:0 --output-dir pistes/          # TrueHD → .thd
+Muxiveo-cli extract -i film.mkv --track 3 --format mkv -o vf.mka          # piste en Matroska
+Muxiveo-cli extract -i film.mkv --track v:0 --layer el -o film.el.hevc    # EL (FEL/MEL) d'un profil 7
+Muxiveo-cli extract -i film.mkv --track v:0 --layer rpu --track v:0 --layer hdr10plus
+Muxiveo-cli extract -i film.mkv --attachment cover.jpg --output-dir .
+Muxiveo-cli extract -i film.mkv --all --output-dir film/ --dry-run        # sorties prévues
+```
+
+- **Pistes** : `--track` = index ffprobe (`3`) ou nature et rang (`v:0`, `a:1`, `s:0`), répétable.
+  Flux élémentaire par défaut (`.hevc`/`.h264` en Annex B, `.obu`, `.thd`, `.eac3`, `.dts`, `.m4a`,
+  `.flac`, `.wav`, `.srt`, `.ass`, `.sup`…), Matroska (`.mkv`/`.mka`/`.mks`) avec `--format mkv` ou
+  quand le codec n'a pas de format élémentaire. VobSub est toujours livré en `.mks` (FFmpeg n'écrit
+  pas `.idx`/`.sub`) ; les sous-titres à OCR (DVB, télétexte) sont refusés.
+- **Couches** (`--layer`, s'applique au `--track` qui précède) : `el` / `bl` (`dovi_tool demux`,
+  Dolby Vision profil 7 seulement), `rpu` (`dovi_tool extract-rpu`), `hdr10plus`
+  (`hdr10plus_tool extract`). Lecture directe par l'outil quand il lit le fichier (même règle que
+  l'inspection HDR), sinon flux Annex B de FFmpeg en pipe : aucun fichier HEVC intermédiaire.
+- **Pièces jointes** : `--attachment` = rang affiché par `inspect` ou nom de fichier.
+- **Sorties** : `-o` (un seul élément) ou `--output-dir` (défaut : dossier de la source). Chaque
+  fichier est écrit dans un candidat `.partial` puis publié ; échec ou Ctrl+C : rien d'autre ne
+  reste. Avec `--all`, toute collision est refusée avant la première extraction (`--force` pour
+  remplacer). `--json` : résultat JSON (`outputs[]` : nature, piste, couche, format, chemin).
+
+Requête équivalente pour `call media.extract` : `docs/cli/examples/extract.json`.
+
+## TMDB, profils enregistrés, Blu-ray
+
+```bash
+Muxiveo-cli tmdb search "The Office" --kind tv              # identifiants, puis --tmdb-id
+Muxiveo-cli tmdb details 2316 --kind tv --season 2 --episode 1 --json
+Muxiveo-cli profile list                                      # profils de l'interface
+Muxiveo-cli profile show "Films VF"
+Muxiveo-cli profile capture -i film.mkv --name "Films VF" --save   # comme « Capturer » du Conteneur
+Muxiveo-cli profile save profil.json --force                  # profil édité à la main, validé
+Muxiveo-cli profile delete "Ancien"
+Muxiveo-cli bluray-titles /disques/FILM --min-duration 600    # playlists, du plus long au plus court
+```
+
+`profile capture` construit le job (`-i` ou `--config`) puis capture sa table des pistes ;
+`--no-selection`, `--no-metadata`, `--no-flags`, `--no-order`, `--no-audio-variants` retirent une
+partie de la capture. Les profils sont ceux de l'interface (`<config>/profiles/decision/`). Une
+playlist Blu-ray s'utilise ensuite comme source (`…/BDMV/PLAYLIST/00800.mpls`).
+
+## Administration : configuration, dossier de travail, NVEncC
+
+```bash
+Muxiveo-cli config path                         # config.ini et fichier des réglages de l'interface
+Muxiveo-cli config show ui                      # réglages d'une section, avec leur provenance
+Muxiveo-cli config set ui.theme light           # écrit config.ini (comme Enregistrer des Paramètres)
+Muxiveo-cli config unset ui.theme               # retire la surcharge (le réglage de l'interface reste)
+Muxiveo-cli config reset ui.theme               # revient au défaut
+Muxiveo-cli workdir list                        # dossiers abandonnés (jobs actifs exclus)
+Muxiveo-cli workdir clean --dry-run
+Muxiveo-cli nvencc status --check               # présence, version, provenance, mise à jour
+Muxiveo-cli nvencc install | update | remove    # apt / dnf (sudo), sinon dossier utilisateur
+```
+
+Les réglages se nomment `section.clé` (ceux du panneau Paramètres, plus `plugins.tensorrt_enabled`
+et `plugins.auto_update`). Provenance affichée : `ini` (config.ini, prioritaire), `settings`
+(réglage enregistré par l'interface), `default`. `set` valide la valeur (booléen, entier borné, choix,
+langue de l'interface) avant d'écrire. `nvencc remove` ne retire que la copie installée par Muxiveo
+dans le dossier utilisateur ; un paquet système se retire par apt / dnf.
+
+Mise à jour de Muxiveo (installation intégrée : AppImage, installeur Windows, archive source,
+application macOS) :
+
+```bash
+Muxiveo-cli version --check                     # code 8 si une mise à jour est disponible
+Muxiveo-cli version --install --yes             # télécharge, vérifie (SHA-256) et installe
+```
+
+L'interface n'est jamais relancée. AppImage : remplacée aussitôt (`installed`). Installeur Windows,
+archive source, application macOS : installation confiée à un processus qui attend la fin du CLI
+(`scheduled`) ; son compte rendu est affiché au prochain `version --install` (et par l'interface).
+Flatpak, Homebrew, dépôt git : gestionnaire externe (`brew upgrade`, `git pull`).
+
+## Couche de service : `call`, `serve`, `operations`, `--log-format events`
+
+Chaque fonctionnalité du CLI est une **opération** de la couche de service (`core/service/`) :
+requête JSON typée → événements → résultat JSON. Les commandes historiques gardent leurs sorties ;
+`call` (un appel par processus) et le worker `serve` (JSON-RPC sur stdio, plusieurs jobs, annulation
+par identifiant) exposent ce contrat à un autre programme. Opérations privilégiées (configuration,
+extensions, NVEncC, mise à jour, nettoyage du dossier de travail) : `call --allow-privileged` ou
+`serve --allow-privileged`, sinon refusées (`forbidden`, code retour 3).
+
+Catalogue complet, événements, lots et erreurs : [api.md](api.md). Référence de toutes les commandes et
+options : [reference.md](reference.md) (générée par `help --format md`).
+
+**Lots** (`media.batch`, `profile.batch`, et `batch` en `--log-format events`) : chaque job est un job
+enfant (`parent` = lot) avec ses propres états ; le résultat donne `status` = `succeeded`, `partial`
+(au moins un succès et un échec ou une annulation), `failed` ou `cancelled`, et la liste des jobs ;
+ce statut est aussi l'état terminal du lot et celui de la réponse de `call` (code retour 7 hors
+`succeeded`). Les autres commandes rejoignent le catalogue au fil des versions (voir [parite-gui.md](parite-gui.md)).
+
+```bash
+Muxiveo-cli operations
+Muxiveo-cli operations --describe media.inspect      # schémas de requête / résultat, erreurs
+Muxiveo-cli schema --version api                      # catalogue complet (base OpenAPI / JSON-RPC)
+echo '{"inputs": ["film.mkv"]}' | Muxiveo-cli call media.inspect --request -
+Muxiveo-cli call media.inspect --request requete.json  # chemins relatifs au dossier du fichier
+Muxiveo-cli call config.set --allow-privileged --request reglage.json
+Muxiveo-cli serve --max-jobs 1 --max-analyses 2       # worker : voir docs/cli/examples/serve_client.py
+Muxiveo-cli version --check --log-format events
+```
+
+**Requête** : objet JSON strict — clé inconnue, type incorrect, champ requis absent ou
+`null` non autorisé sont refusés avec le chemin du champ. Chemins relatifs : résolus depuis
+le dossier du fichier de requête (ou le dossier courant pour stdin ; `base_dir` de la soumission avec
+`serve`, sinon refusés), jamais depuis le dossier courant d'un worker. Paramètres libres de l'encodeur
+limités à ses options ; aucun document ne désigne d'exécutable. Les documents historiques
+(`--config`, `--template`, `--batch`) restent tolérants.
+
+**Réponse** (stdout) :
+
+```json
+{"api_version": 1, "operation": "media.inspect", "job": "…", "status": "succeeded", "result": {"files": [ … ], "template": null}}
+{"api_version": 1, "operation": "media.inspect", "job": "…", "status": "failed",
+ "error": {"code": "invalid_request", "message": "Requête invalide.", "details": [{"path": "inputs", "message": "au moins 1 élément(s) attendu(s)"}]}}
+```
+
+**Événements** (stderr, toujours avec `call`, sur demande ailleurs avec `--log-format events`) :
+une ligne JSON par événement, `{"v": 1, "job", "parent", "seq", "ts", "type", …}` avec
+`type` parmi `state`, `log`, `progress`, `warning`, `artifact`, `result`, `error`. Avec
+`--log-format events`, toute commande publie aussi sa réponse (`{status, result | error}`) sur
+stdout à la place de sa sortie historique.
+
+**Codes d'erreur** et codes retour :
+
+| `error.code` | Code retour |
+|---|---:|
+| `invalid_request`, `unknown_operation` | 2 |
+| `validation`, `forbidden` | 3 |
+| `tool_missing` | 4 |
+| `output_exists` | 5 |
+| `workflow_failed`, `busy`, `cancelled` | 6 |
+| `partial`, lot non entièrement réussi | 7 |
+
+Avec `call`, une opération réussie renvoie 0 (l'état d'une mise à jour, par exemple, est dans
+`result`) ; seul un lot (`media.batch`, `profile.batch`, `hybrid.run`, `hybrid.plan`) non entièrement
+réussi renvoie 7.
+
+**Annulation** : Ctrl+C pendant `remux` / `run` / `profile apply` annule proprement l'opération (processus arrêtés,
+fichier partiel et dossier de travail supprimés, code retour 6, « Opération annulée. »). Une
+annulation arrivée après la publication de la sortie laisse l'opération réussie, avec
+l'avertissement `cancel_too_late`. Pendant un `batch` (ou `profile batch`), Ctrl+C annule le job en
+cours et arrête le lot : les sorties déjà publiées restent, le résumé marque le job `cancelled` et
+`"cancelled": true` (code retour 7).
+
 ## Verbosité
 
 Par défaut, la sortie brute de ffmpeg (lignes `frame=`, `fps=`, `bitrate=`,
@@ -855,6 +1191,41 @@ Muxiveo-cli hybrid \
 
 * Muxiveo analyse les noms de fichiers dans les deux dossiers, apparie automatiquement chaque épisode (`S01E01` avec `S01E01`, `S01E02` avec `S01E02`, etc.), applique l'analyse acoustique individuelle et assemble les fichiers finaux.
 
+#### C. Moteur du Hybrid Studio : rôles, appariement, recette, plan
+
+`hybrid` utilise le moteur du Hybrid Studio (opérations `hybrid.plan` et `hybrid.run`) : mêmes
+appariements, même sélection de pistes (recette), préparations en parallèle, méthodes de cadence
+« auto » tranchées avant l'exécution.
+
+```bash
+# Sources à rôles (fichiers ou dossiers) : --ref/--donor/--ref-dir/--donor-dir en sont des alias
+Muxiveo-cli hybrid --source master=/uhd --source donor-audio=/vf --source donor-sub=/st -o /sorties
+# Appariement par similarité des titres ou par ordre ; paires manuelles
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /bluray --matching fuzzy -o /sorties
+Muxiveo-cli hybrid --pair "/uhd/a.mkv::/vf/x.mkv" --pair "/uhd/b.mkv::/vf/y.mkv" -o /sorties
+# Recette exportée par le Studio (« Exporter la recette… »), complétée par les options
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /vf --recipe saison.json --donor-sub-langs fre,eng -o /sorties
+# Plan sans exécution, exact-jobs finalisés à corriger puis lancer par batch / run
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /vf -o /sorties --plan --export-jobs /jobs --save-recipe r.json
+Muxiveo-cli batch --batch /jobs
+# Encodage de chaque épisode (options d'encodage ou bloc `encode` via `call hybrid.run`)
+Muxiveo-cli hybrid --ref-dir /uhd --donor-dir /vf -o /sorties --video-codec libx265 --crf 18
+```
+
+| Option | Effet |
+|---|---|
+| `--source RÔLE=CHEMIN` | `master`, `donor`, `donor-audio`, `donor-sub` ; répétable |
+| `--matching episode\|fuzzy\|order` | numéros `SxxEyy` (défaut), similarité des titres, ou ordre des fichiers |
+| `--pair MASTER::DONNEUR[::DONNEUR…]` | paires manuelles (exclut `--source`) |
+| `--recipe FICHIER` | recette du Studio (pistes du modèle, langues, synchro) |
+| `--keep-master-audio`, `--donor-audio-langs`, `--donor-sub-langs`, `--exclude-langs` | langues de la recette (listes séparées par des virgules) |
+| `--sync auto\|manual\|none`, `--shift-ms N` | synchro des donneurs : analyse, décalage manuel, aucune |
+| `--plan`, `--export-jobs DOSSIER`, `--save-recipe FICHIER` | plan JSON sans exécution, exact-jobs finalisés, recette effective |
+
+Sélection par défaut (sans recette ni profil) : audio du master en anglais, japonais ou VO, audio et
+sous-titres français des donneurs — comme le Studio (changement par rapport à la v5.1, qui retirait
+seulement les pistes du donneur dans la langue de la référence).
+
 ---
 
 ### Cas 3 : Outils dédiés `sync-scan` et `shift-subs`
@@ -895,11 +1266,43 @@ Mêmes analyses que le HDR Studio de l'interface, sortie JSON (`{"hdr": [...], "
 | `--hdr static` | en-têtes seuls (MDCV, MaxCLL/MaxFALL, enregistrement Dolby Vision), instantané |
 | `--hdr dynamic` | + RPU Dolby Vision et HDR10+ lus en entier (sans décodage), contrôles de cohérence |
 | `--hdr measure` | + mesure de chaque image (extension mvo-fel ≥ 0.4.0) : MaxCLL/MaxFALL réels |
-| `--hdr-track N` | index ffprobe de la piste vidéo (défaut : première) |
+| `--hdr-track N` | index ffprobe de la piste vidéo de A, et de chaque source hors comparaison (défaut : première piste vidéo ; index absent → refus) |
+| `--hdr-compare-track N` | avec `--hdr-compare` : index ffprobe de la piste vidéo de B (défaut : première piste vidéo de B ; index absent → refus) |
 | `--hdr-report fichier` | rapport HTML autonome (`.html`) ou JSON (autre extension) |
 | `--hdr-compare` | compare la seconde source à la première (alignement automatique sur les plans) |
 | `--hdr-offset N` | décalage imposé de B, en images |
 | `--hdr-fail-on warn\|error` | code de sortie 3 si un contrôle atteint ce niveau (contrôle qualité en lot) |
 | `--hdr-fast` | avec `measure` : mesure rapide (images clés, mvo-fel ≥ 0.5.0) ; estimation, MaxFALL souvent sous-estimée |
 | `--hdr-no-cache` | relit les fichiers au lieu des résultats en cache |
+| `--hdr-advice` | ajoute la clé `advice` (et la section « Recommandations » du rapport) : MaxCLL/MaxFALL et écran de mastering proposés, simulation du tone mapping d'une TV sur les valeurs du fichier puis proposées, réalignement d'après la mesure |
+| `--hdr-display-peak NITS` | avec `--hdr-advice` : pic de l'écran simulé (défaut : dernier pic choisi dans HDR Studio, sinon 1000 nits) |
+| `--hdr-tv-model maxcll\|mdcv\|dynamic` | avec `--hdr-advice` : TV suivant la MaxCLL (défaut), le MDCV seul, ou dynamique (référence) |
+| `--hdr-fel-moments DOSSIER` | avec `--hdr-fel` : moments les plus marqués en PNG pleine définition (`<nom>.fel-HHhMMmSSs.sans-fel.png`, `.avec-fel.png`, `.ecart.png`) |
+| `--hdr-fel-exposure EV` | exposition des PNG des moments (−6 à 6) |
+
+### Correction des métadonnées (`hdr-patch`)
+
+Équivalent de l'onglet Édition du HDR Studio (opération `hdr.patch`) : copie corrigée d'un MKV ou
+d'un HEVC brut, sans réencodage (autres pistes, chapitres, pièces jointes et balises conservés).
+
+```bash
+Muxiveo-cli hdr-patch -i film.mkv -o film.hdrfix.mkv --max-cll 1000 --max-fall 400
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --light-levels suggested --mdcv suggested --dry-run
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --mdcv "Display P3:0.0001:1000" --l11 1
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --realign all --measure fast
+Muxiveo-cli hdr-patch -i film.mkv -o fix.mkv --hdr10plus-recompute --measure full
+```
+
+| Option | Effet |
+|---|---|
+| `--max-cll`, `--max-fall` / `--light-levels suggested` | MaxCLL/MaxFALL écrits (SEI et conteneur) ; `suggested` = mesure > HDR10+ > L1 (onglet Luminance), les valeurs saisies remplacent les proposées une à une |
+| `--mdcv suggested\|PRIMAIRES:MIN:MAX` | écran de mastering ; `suggested` = L6 > écran du RPU > écran usuel couvrant le pic |
+| `--l6 MAX:MIN:CLL:FALL`, `--l5 G,D,H,B`, `--l11 TYPE[:POINT_BLANC[:ref]]`, `--rpu-display MIN:MAX`, `--remove-cmv4` | corrections du RPU Dolby Vision (`dovi_tool editor`) ; le L11 n'est écrit que dans un RPU CM v4.0 (avertissement sinon) |
+| `--no-mastering-sync` | Dolby Vision : ne pas recopier le mastering saisi (MDCV, L6, écran du RPU) dans les deux autres (« Garder identiques », actif par défaut) |
+| `--hdr10plus-remove`, `--hdr10plus-target NITS`, `--hdr10plus-profile-a`, `--hdr10plus-cap NITS`, `--hdr10plus-recompute` | corrections HDR10+ ; le recalcul exige une mesure complète |
+| `--realign all\|static,mdcv,l6,hdr10plus` | retient les propositions de réalignement d'après la mesure (valeurs saisies prioritaires) |
+| `--measure cached\|fast\|full` | mesure de l'image : en cache seulement (défaut) ou lancée (extension mvo-fel) |
+| `--dry-run` | plan résolu (valeurs écrites) en JSON, sans écrire ; `--force` remplace une sortie existante |
+
+Requête équivalente pour `call hdr.patch` : `docs/cli/examples/hdr-patch.json`.
 

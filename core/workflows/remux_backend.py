@@ -32,8 +32,11 @@ from core.matroska.assembly import (
 )
 from core.matroska.mux_plan import (
     MatroskaMuxPlan,
+    MatroskaMuxTrack,
     deterministic_source_identity,
 )
+from core.matroska.ids import CHAPTERS_ID
+from core.matroska.reader import MatroskaReader
 from core.matroska.assembly import canonical_attachment_output_name
 from core.matroska.contract import without_expected_attachment
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
@@ -43,7 +46,7 @@ from core.matroska.writer import (
 )
 from core.workflows.remux_mapping import resolve_mapped_tracks, track_order_parts
 from core.workflows.remux_mapping import normalized_language_value, resolved_global_tags
-from core.workflows.remux_models import RemuxConfig, SourceInput
+from core.workflows.remux_models import RemuxConfig, RemuxError, SourceInput
 from core.workflows.remux_plan import (
     MATROSKA_EXTENSIONS,
     MuxBackendDecision,
@@ -57,6 +60,7 @@ from core.workflows.remux_plan import (
     plan_remux,
     select_mux_backend,
 )
+from core.workflows.remux_plan import _metadata_carrier_stream
 from core.subprocess_utils import subprocess_text_kwargs
 from core.workdir import (
     download_tmdb_cover,
@@ -65,6 +69,84 @@ from core.workdir import (
     relocate_tmdb_covers_to_process_dir,
     remove_path,
 )
+from core.workflows.common.ffmpeg_runtime import ffmpeg_progress_args, ffmpeg_version_log_line
+from core.workflows.common.sync_rewrite import SyncRewriteService
+from core.workflows.remux_sync_rewrite import (
+    NativeRewrite,
+    SyncRewriteSettings,
+    ffmpeg_input_origin,
+    finalize_native_rewrite_shifts,
+    prepare_native_sync_rewrites,
+    probe_origin_payload,
+)
+from core.matroska.validation import interleave_warning_lines, mux_track_labels
+from core.workflows.common.native_stream_inputs import (
+    StreamArtifacts,
+    StreamInputs,
+    StreamTrackSpec,
+    is_streamable_source,
+    probe_start_time,
+)
+
+
+def _measured_canonical_origin(
+    original: Path,
+    canonical_source: SourceInput,
+    index_map: dict[int, int],
+    ffprobe_bin: str,
+    *,
+    cancel_cb: Callable[[], bool] | None = None,
+) -> float:
+    """Origine retirée par la canonicalisation, mesurée sur un même paquet (s).
+
+    PTS du premier paquet d'un flux retenu dans la source d'origine moins celui
+    de son premier bloc dans l'artefact canonical : couvre une sélection
+    partielle, le rebasage et ``avoid_negative_ts`` de FFmpeg sans hypothèse.
+    """
+    import json
+
+    from core.bluray import ffprobe_input_args
+    from core.subprocess_utils import run_cancellable_capture
+
+    def _check_cancelled() -> None:
+        if cancel_cb is not None and cancel_cb():
+            raise TaskCancelledError()
+
+    canonical_to_original = {canonical: original_index for original_index, canonical in index_map.items()}
+    reader = MatroskaReader(canonical_source.path)
+    tracks = reader.tracks()
+    # Audio de préférence (paquets tous indépendants), sinon le premier flux retenu.
+    candidates = sorted(
+        canonical_to_original, key=lambda index: (tracks[index].track_type != 2, index),
+    ) if tracks else []
+    for canonical_index in candidates:
+        if not 0 <= canonical_index < len(tracks):
+            continue
+        command = [
+            ffprobe_bin, "-v", "error", "-select_streams", str(canonical_to_original[canonical_index]),
+            "-show_entries", "packet=pts_time", "-read_intervals", "%+#1", "-of", "json",
+            *ffprobe_input_args(original),
+        ]
+        result = run_cancellable_capture(
+            command, cancel_cb=cancel_cb, check_cancelled=_check_cancelled, timeout=30, **subprocess_text_kwargs(),
+        )
+        try:
+            packets = json.loads(result.stdout or "{}").get("packets") or []
+            source_pts = float(packets[0]["pts_time"])
+        except (ValueError, KeyError, IndexError, TypeError):
+            continue
+        blocks = reader.blocks(track_numbers={tracks[canonical_index].number}, first_lace_only=True)
+        try:
+            first = next(blocks, None)
+        finally:
+            close = getattr(blocks, "close", None)
+            if callable(close):
+                close()
+        if first is None:
+            continue
+        canonical_ns = first.timestamp_ns if first.timestamp_ns is not None else first.timestamp_ms * 1_000_000
+        return source_pts - canonical_ns / 1e9
+    raise RemuxError(f"Origine temporelle de {original.name} illisible après canonicalisation.")
 
 
 class RemuxBackend(Protocol):
@@ -87,6 +169,7 @@ class NativeMatroskaBackend:
     plan: MuxExecutionPlan | None = None
     name: str = "native"
     validation_override: ValidationOverride | None = None
+    sync_rewrite: SyncRewriteSettings | None = None
 
     def validate(self, config: RemuxConfig) -> tuple[str, ...]:
         return native_capability_reasons(config)
@@ -105,6 +188,7 @@ class NativeMatroskaBackend:
             ffmpeg_bin=self.ffmpeg_bin, ffprobe_bin=self.ffprobe_bin,
             finalize=self.finalize, plan=self.plan,
             validation_override=self.validation_override,
+            sync_rewrite=self.sync_rewrite,
         )
 
 
@@ -163,6 +247,8 @@ def remux_assembly_plan(config: RemuxConfig) -> MatroskaAssemblyPlan:
             ),
             time_shift_ms=int(track.time_shift_ms or 0),
             remove_closed_captions=bool(track.remove_closed_captions) if track.is_video else False,
+            # Piste réécrite : tags et TrackEntry de la piste d'origine suivent la sortie.
+            origin=track.rewrite_origin,
         ))
 
     attachments = tuple(
@@ -210,18 +296,143 @@ def remux_assembly_plan(config: RemuxConfig) -> MatroskaAssemblyPlan:
     )
 
 
+def stream_assembly_plan(
+    assembly: MatroskaAssemblyPlan,
+    config: RemuxConfig,
+    streams: StreamArtifacts,
+) -> MatroskaAssemblyPlan:
+    """Pistes des sources ISO BMFF lues en flux, contexte sur un en-tête dédié.
+
+    Vidéo et audio d'une source partagent un producteur (pistes dans l'ordre de
+    sortie), chaque sous-titre a le sien (:func:`group_stream_specs`) ;
+    chapitres, tags globaux, Segment Info et ordre des artefacts pointent vers
+    le producteur de contexte de la source ; les tags propres à chaque piste
+    viennent des en-têtes de ses producteurs.
+    """
+    streamed = {Path(source.path): source for source in config.sources if is_streamable_source(source.path)}
+    if not streamed:
+        return assembly
+
+    def spec_for(source: SourceInput, stream_index: int, *, context: bool = False) -> StreamTrackSpec:
+        entry = next((track for track in source.tracks if track.mkv_tid == stream_index), None)
+        kind = entry.track_type if entry is not None else ""
+        codec = (entry.codec if entry is not None else "") or ""
+        return StreamTrackSpec(Path(source.path), stream_index, kind, codec, carry_context=context)
+
+    used: dict[Path, list[int]] = {}
+    for track in assembly.ordered_tracks:
+        if Path(track.artifact) in streamed:
+            used.setdefault(Path(track.artifact), []).append(int(track.artifact_track_index))
+
+    def context_of(path: Path | None) -> Path | None:
+        source = streamed.get(Path(path)) if path is not None else None
+        if source is None:
+            return path
+        # Porteur du contexte : une piste déjà lue de la source, sinon le flux le plus léger.
+        selected = used.get(Path(source.path)) or []
+        carrier = min(selected) if selected else _metadata_carrier_stream(source)
+        if carrier is None:
+            raise RemuxError(f"{source.path.name} : aucun flux pour porter chapitres et tags.")
+        return streams.context(spec_for(source, int(carrier), context=True))
+
+    # Vidéo et audio d'une même source sur un seul producteur, chaque sous-titre sur le sien.
+    streams.declare(
+        spec_for(streamed[Path(track.artifact)], int(track.artifact_track_index))
+        for track in assembly.ordered_tracks if Path(track.artifact) in streamed
+    )
+    tracks = []
+    for track in assembly.ordered_tracks:
+        source = streamed.get(Path(track.artifact))
+        if source is None:
+            tracks.append(track)
+            continue
+        header, position = streams.route(spec_for(source, int(track.artifact_track_index)))
+        tracks.append(replace(track, artifact=header, artifact_track_index=position, origin=None))
+    tag_sources: list[Path] = []
+    track_tag_sources: list[Path] = list(assembly.track_tag_sources)
+    for path in assembly.tag_copy_sources:
+        context = context_of(path)
+        if context is not None:
+            tag_sources.append(context)
+        if Path(path) in streamed:
+            # Tags propres aux pistes ; les tags globaux viennent du contexte.
+            track_tag_sources.extend(streams.route_headers(path))
+    return replace(
+        assembly,
+        ordered_tracks=tuple(tracks),
+        chapter_source=context_of(assembly.chapter_source),
+        tag_copy_sources=tuple(dict.fromkeys(tag_sources)),
+        track_tag_sources=tuple(dict.fromkeys(track_tag_sources)),
+        segment_info_source=context_of(assembly.segment_info_source),
+        artifact_order=tuple(dict.fromkeys(
+            item for item in (context_of(path) for path in assembly.artifact_order) if item is not None
+        )),
+    )
+
+
+def _readable_origins(
+    assembly: MatroskaAssemblyPlan,
+    config: RemuxConfig,
+    streams: StreamArtifacts,
+    origin_tag_sources: frozenset[Path] = frozenset(),
+) -> MatroskaAssemblyPlan:
+    """Origine non Matroska (MP4 en flux, TS…) d'une piste réécrite : en-tête seul de la piste.
+
+    ``origin_tag_sources`` : sources d'origine dont les tags sont copiés ; l'en-tête
+    devient fournisseur de tags (les tags de piste y ciblent l'UID de l'origine,
+    jamais celui d'un artefact canonical où la piste ne figure pas).
+    """
+    entries = {
+        track.rewrite_origin: track
+        for source in config.sources for track in source.tracks
+        if track.rewrite_origin is not None
+    }
+    tracks = []
+    extra_tag_sources: list[Path] = []
+    for track in assembly.ordered_tracks:
+        origin = track.origin
+        if origin is None or Path(origin[0]).suffix.lower() in MATROSKA_EXTENSIONS:
+            tracks.append(track)
+            continue
+        entry = entries.get(origin)
+        header = streams.metadata(StreamTrackSpec(
+            Path(origin[0]), int(origin[1]),
+            entry.track_type if entry is not None else "",
+            (entry.orig_codec or entry.codec) if entry is not None else "",
+        ))
+        tracks.append(replace(track, origin=header))
+        if Path(origin[0]) in origin_tag_sources:
+            extra_tag_sources.append(header[0])
+    return replace(
+        assembly,
+        ordered_tracks=tuple(tracks),
+        track_tag_sources=tuple(dict.fromkeys([*assembly.track_tag_sources, *extra_tag_sources])),
+    )
+
+
 def build_native_plan(
     config: RemuxConfig,
     *,
     output_contract=None,
+    streams: StreamArtifacts | None = None,
+    origin_tag_sources: frozenset[Path] = frozenset(),
 ) -> MatroskaMuxPlan:
-    """Plan bas niveau du writer, compilé via le contrat d'assemblage partagé."""
+    """Plan bas niveau du writer, compilé via le contrat d'assemblage partagé.
+
+    ``streams`` : sources ISO BMFF lues en flux (sinon déjà canonicalisées).
+    """
     assembly = remux_assembly_plan(config)
+    if streams is not None:
+        assembly = _readable_origins(assembly, config, streams, origin_tag_sources)
+        assembly = stream_assembly_plan(assembly, config, streams)
     if output_contract is None:
         from core.matroska.assembly import assembly_output_contract
         output_contract = assembly_output_contract(assembly)
     assembly = replace(assembly, expected_output_contract=output_contract)
-    return compile_assembly_plan(assembly)
+    if streams is None:
+        return compile_assembly_plan(assembly)
+    return compile_assembly_plan(assembly, readers=streams.readers, reopen=streams.reopen,
+                                 stream_keys=streams.stream_keys)
 
 
 def run_native_remux(
@@ -234,8 +445,13 @@ def run_native_remux(
     finalize: Callable[[Path], None] = lambda _path: None,
     plan: MuxExecutionPlan | None = None,
     validation_override: ValidationOverride | None = None,
+    sync_rewrite: SyncRewriteSettings | None = None,
 ) -> TaskSignals:
     """Runner natif : mêmes signaux ``TaskSignals`` que le runner FFmpeg.
+
+    ``sync_rewrite`` : réglages de la réécriture de synchro (mode container),
+    même décision et mêmes artefacts que le backend FFmpeg ; ``None`` = aucune
+    réécriture (appelants historiques).
 
     Toutes les commandes externes sont enregistrées dans les signaux (donc
     annulables), les fichiers temporaires sont nettoyés, et l'écriture native
@@ -252,6 +468,14 @@ def run_native_remux(
 
     def task() -> None:
         canonical_root: Path | None = None
+        # Sources ISO BMFF lues en flux (producteurs FFmpeg sur pipes), fermées en fin de tâche.
+        stream_inputs = StreamInputs(
+            ffmpeg_bin, process_work_dir, ffprobe_bin=ffprobe_bin,
+            cancelled=signals._cancel_event.is_set,
+            register=signals._register_proc, unregister=signals._unregister_proc,
+            log=log,
+        )
+        streams = StreamArtifacts(stream_inputs)
 
         def _check_cancel() -> None:
             if signals._cancel_event.is_set():
@@ -293,16 +517,73 @@ def run_native_remux(
             )
             runtime_config = replace(config, extra_attachments=relocated_attachments)
             prepared_config = runtime_config
+            empty_count = [0]
+
+            def _empty_subtitle(mapped) -> Path:
+                """Sous-titre vidé par le recalage (physique ou réécriture) : piste conservée, TrackEntry
+                de l'origine."""
+                rewrite_root = _ensure_canonical_root() / "sync_rewrite"
+                rewrite_root.mkdir(parents=True, exist_ok=True)
+                origin_path = Path(mapped.source_path)
+                if origin_path.suffix.lower() in MATROSKA_EXTENSIONS:
+                    header, index = origin_path, int(mapped.stream_index)
+                else:
+                    header, index = streams.metadata(StreamTrackSpec(
+                        origin_path, int(mapped.stream_index), "subtitle",
+                        mapped.track.orig_codec or mapped.track.codec,
+                    ))
+                origin_track = MatroskaReader(header).tracks()[index]
+                empty_count[0] += 1
+                target = rewrite_root / f"native_empty_subtitle_{empty_count[0]}.mks"
+                MatroskaWriter().write(MatroskaMuxPlan(
+                    output=target,
+                    tracks=(MatroskaMuxTrack(
+                        header, origin_track, 1, origin_track.uid,
+                        patch_language=False, patch_name=False, patch_flags=False,
+                    ),),
+                    packets=(),
+                ))
+                return target
+
             if config.sync_mode == "physical":
                 from core.workflows.physical_sync import prepare_physical
                 prepared_config = prepare_physical(
                     runtime_config, _ensure_canonical_root(), ffmpeg_bin, _run_external, log=log,
                     ffprobe=ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
+                    # Assemblage natif : un Matroska est lu avec ses horodatages bruts.
+                    restore_matroska_origin=True, empty_subtitle_artifact=_empty_subtitle,
                 )
+            native_rewrites: list[NativeRewrite] = []
+            if sync_rewrite is not None and prepared_config.sync_mode == "container":
+                rewrite_root = _ensure_canonical_root() / "sync_rewrite"
+                rewrite_root.mkdir(parents=True, exist_ok=True)
+
+                prepared_config, native_rewrites = prepare_native_sync_rewrites(
+                    prepared_config, sync_rewrite,
+                    service=SyncRewriteService(
+                        ffmpeg_bin=ffmpeg_bin,
+                        ffprobe_bin=ffprobe_bin,
+                        ffmpeg_progress_args=ffmpeg_progress_args(),
+                        ffmpeg_thread_args=[],
+                        audio_bitrate_per_channel=dict(sync_rewrite.audio_bitrates),
+                        advanced_audio_enabled=sync_rewrite.advanced_audio,
+                        log_cb=lambda message: log("INFO", message),
+                        progress_cb=signals.progress.emit,
+                    ),
+                    ffprobe_bin=ffprobe_bin,
+                    tmp_dir=rewrite_root,
+                    empty_subtitle_artifact=_empty_subtitle,
+                    cancel_cb=signals._cancel_event.is_set,
+                )
+                if native_rewrites:
+                    log_step(2, "Réécriture réelle des décalages audio/sous-titres (assemblage natif)")
+                _check_cancel()
             execution_plan = (plan if prepared_config is runtime_config else None) or plan_remux(
                 prepared_config, ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,
             )
             log("INFO", "Backend Matroska natif multi-pistes sélectionné (plan v1).")
+            # Sondé dans le fil de travail (``-version`` jamais sur le fil de l'interface).
+            log("INFO", ffmpeg_version_log_line(ffmpeg_bin))
             run_config = replace(prepared_config, sources=[
                 replace(
                     source,
@@ -417,6 +698,33 @@ def run_native_remux(
                 run_config = replace(run_config, sources=new_sources, track_order=new_order)
                 _check_cancel()
 
+            if native_rewrites:
+                # Origine native de chaque source d'origine (R(S)) : piste réécrite
+                # placée par rapport à sa source comme le muxage final FFmpeg.
+                # Routes directes restantes : une piste devenue variante n'en est plus une.
+                variant_positions = {variant.order_index for variant in execution_plan.audio_variants}
+                routed_sources = {
+                    track_order_parts(item)[0]
+                    for position, item in enumerate(run_config.track_order)
+                    if position not in variant_positions
+                }
+                current_sources = {source.file_index: source for source in run_config.sources}
+
+                def _native_origin(rewrite: NativeRewrite) -> float | None:
+                    source = current_sources.get(rewrite.origin_source_index)
+                    if source is None or rewrite.origin_source_index not in routed_sources:
+                        return None
+                    if rewrite.origin_path.suffix.lower() in MATROSKA_EXTENSIONS:
+                        return 0.0
+                    if is_streamable_source(rewrite.origin_path):
+                        return probe_start_time(rewrite.origin_path, ffprobe_bin, signals._cancel_event.is_set)
+                    return _measured_canonical_origin(
+                        rewrite.origin_path, source, execution_plan.canonical_index_map(source.file_index),
+                        ffprobe_bin, cancel_cb=signals._cancel_event.is_set,
+                    )
+
+                run_config = finalize_native_rewrite_shifts(run_config, native_rewrites, _native_origin)
+
             # Matérialisation des variantes audio planifiées (preview == exécution) ;
             # le writer natif garde la main sur le document multi-pistes final.
             if execution_plan.audio_variants:
@@ -443,11 +751,23 @@ def run_native_remux(
                             f"Piste de variante introuvable : source={file_index}, stream={mkv_tid}"
                         )
                     target_path = root / variant.target_name
+                    rewritten = track.rewrite_origin is not None
+                    # Variante d'une piste ordinaire : chronologie de sa piste d'origine telle que
+                    # l'assemblage la lit (audio en retard sur la vidéo compris) : horodatages bruts
+                    # d'un Matroska (-copyts), rebasés sur le départ du conteneur pour une source
+                    # lue en flux (MP4/MOV, comme le lecteur en flux).
                     cmd = build_audio_variant_command(
                         variant, source.path, mkv_tid, target_path, ffmpeg_bin,
+                        copyts=not rewritten and not is_streamable_source(source.path),
                     )
                     _run_external(cmd, f"Variante audio {variant.target_codec} impossible")
                     materialized_track = replace(track, mkv_tid=0, orig_codec=track.codec, is_new=False)
+                    if rewritten:
+                        # Variante d'une piste réécrite : V issue de A, placée comme A (Δ(A) − Δ(V)).
+                        materialized_track = replace(materialized_track, time_shift_ms=int(track.time_shift_ms or 0) + round(
+                            (ffmpeg_input_origin(probe_origin_payload(source.path, ffprobe_bin))
+                             - ffmpeg_input_origin(probe_origin_payload(target_path, ffprobe_bin))) * 1000
+                        ))
                     new_source = SourceInput(
                         target_path, next_source_index, [materialized_track],
                         origin_identity=f"{source.origin_identity}:audio:{variant.stream_index}:{variant.target_codec}",
@@ -459,9 +779,24 @@ def run_native_remux(
                 _check_cancel()
 
             log_step(3, "Construction du plan Matroska natif")
+            if any(action.kind == "stream_source" for action in execution_plan.preparation_actions):
+                log("INFO", "Lecture en flux des sources MP4/MOV (sans fichier intermédiaire).")
             plan_matroska = build_native_plan(
-                run_config, output_contract=output_contract,
+                run_config, output_contract=output_contract, streams=streams,
+                origin_tag_sources=frozenset(
+                    rewrite.origin_path for rewrite in native_rewrites
+                    if any(source.file_index == rewrite.origin_source_index and source.copy_tags
+                           for source in config.sources)
+                ),
             )
+            # Contrat des chapitres fixé sur les chapitres réellement écrits (ChapterTrack remappés, chapitres sans
+            # piste ciblée retirés, chapitres d'un MP4 lu en flux) : jamais sur le seul précalcul du plan.
+            if output_contract is not None:
+                output_contract = replace(output_contract, expects_chapters=any(
+                    item.startswith(CHAPTERS_ID) for item in plan_matroska.opaque_top_level))
+            if plan_matroska.chapters_removed:
+                log("WARN", f"{plan_matroska.chapters_removed} chapitre(s) retiré(s) : toutes leurs pistes ciblées "
+                            "(ChapterTrack) sont absentes de la sortie.")
             log_step(4, "Écriture Matroska native multi-pistes")
             if any(track.remove_closed_captions for track in plan_matroska.tracks):
                 log("INFO", "Retrait ciblé des sous-titres embarqués EIA-608/708 (sans réencodage)")
@@ -483,6 +818,10 @@ def run_native_remux(
                     cancelled=signals._cancel_event.is_set,
                     warn=lambda message: log("WARN", message),
                 )
+                for message in interleave_warning_lines(
+                    packet_validation.interleave, lambda: mux_track_labels(plan_matroska.tracks),
+                ):
+                    log("WARN", message)
 
             MatroskaWriter().write(
                 plan_matroska,
@@ -509,6 +848,7 @@ def run_native_remux(
         except Exception as exc:
             signals.failed.emit(str(exc), exc)
         finally:
+            stream_inputs.close()
             if canonical_root is not None:
                 shutil.rmtree(canonical_root, ignore_errors=True)
             remove_path(process_work_dir)
@@ -522,7 +862,7 @@ def run_native_remux(
 __all__ = [
     "FfmpegRemuxBackend", "MuxBackendDecision", "MuxExecutionPlan",
     "NativeMatroskaBackend",
-    "RemuxBackend", "build_native_plan", "mux_backend_report",
+    "RemuxBackend", "build_native_plan", "mux_backend_report", "stream_assembly_plan",
     "build_canonicalization_command",
     "MATROSKA_EXTENSIONS",
     "native_capability_reasons", "native_preparation_commands",

@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import copy
 
-from dataclasses import dataclass, field, replace
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, fields, replace
 from enum import Enum
 from pathlib import Path
 import re
 import time
 from typing import TYPE_CHECKING, Any
 
+from core.i18n import translate_text
 from core.lang_tags import Rfc5646LanguageTags, language_key
 from core.workflows.preparation_cache import PreparationCache, PreparationContext
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
@@ -312,6 +314,11 @@ class HybridRecipe:
     track_choices: tuple[HybridTrackChoice, ...] | None = None
     #: Langue / titre saisis sur le témoin, appliqués aux pistes retenues avant le profil.
     track_overrides: dict[HybridTrackChoice, dict[str, str]] = field(default_factory=dict)
+    #: Variantes audio cochées du témoin (recréées par un profil seulement). Clé JSON facultative.
+    witness_variants: int = field(default=0, repr=False)
+    #: Pistes décochées du témoin dont une variante cochée dérive : candidates du profil (clonage), jamais sorties.
+    #: Clé JSON facultative.
+    variant_source_choices: tuple[HybridTrackChoice, ...] = field(default=(), repr=False)
     sync_mode: str = "physical"  # "physical" ou "container"
     sync_subtitles: str = "mirror"  # "mirror" ou "none"
     sync_strategy: str = "auto"  # "auto", "manual" ou "none"
@@ -320,6 +327,107 @@ class HybridRecipe:
     cadence_auto_apply: bool = True
     cadence_audio_method: str = "auto"
     output_tag: str = "Hybrid"
+
+    #: Version du format JSON de la recette (``to_dict`` / ``from_dict``).
+    FORMAT = "muxiveo-hybrid-recipe"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Recette sérialisable (export du Hybrid Studio, ``hybrid --recipe``)."""
+        data: dict[str, Any] = {"format": self.FORMAT, "version": 1}
+        for name in ("keep_master_video", "keep_master_chapters", "keep_master_audio_langs", "donor_audio_langs",
+                     "donor_sub_langs", "exclude_languages", "sync_mode", "sync_subtitles", "sync_strategy",
+                     "manual_shift_ms", "crossfade_ms", "cadence_auto_apply", "cadence_audio_method", "output_tag"):
+            value = getattr(self, name)
+            data[name] = list(value) if isinstance(value, list) else value
+        data["track_choices"] = (None if self.track_choices is None
+                                 else [asdict(choice) for choice in self.track_choices])
+        data["track_overrides"] = [{"track": asdict(choice), "set": dict(values)}
+                                   for choice, values in self.track_overrides.items()]
+        # Témoin à variantes seulement : recettes sans variante inchangées (une version antérieure refuse ces clés).
+        if self.witness_variants:
+            data["witness_variants"] = self.witness_variants
+        if self.variant_source_choices:
+            data["variant_source_choices"] = [asdict(choice) for choice in self.variant_source_choices]
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> HybridRecipe:
+        """Recette relue ; champ inconnu ou type invalide → ``ValueError``."""
+        if not isinstance(data, Mapping):
+            raise ValueError("Recette : objet JSON attendu.")
+        if data.get("format", cls.FORMAT) != cls.FORMAT:
+            raise ValueError(f"Recette : format {data.get('format')!r} inconnu.")
+        recipe = cls()
+        lists = {"keep_master_audio_langs", "donor_audio_langs", "donor_sub_langs", "exclude_languages"}
+        simple = {"keep_master_video": bool, "keep_master_chapters": bool, "sync_mode": str, "sync_subtitles": str,
+                  "sync_strategy": str, "manual_shift_ms": int, "crossfade_ms": int, "cadence_auto_apply": bool,
+                  "cadence_audio_method": str, "output_tag": str}
+        unknown = sorted(set(data) - lists - set(simple) - {"format", "version", "track_choices", "track_overrides",
+                                                             "witness_variants", "variant_source_choices"})
+        if unknown:
+            raise ValueError("Recette : champ(s) inconnu(s) : " + ", ".join(unknown))
+        for name in lists & set(data):
+            value = data[name]
+            if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                raise ValueError(f"Recette : {name} attendu liste de langues.")
+            setattr(recipe, name, list(value))
+        for name, kind in simple.items():
+            if name in data:
+                value = data[name]
+                if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+                    raise ValueError(f"Recette : {name} de type invalide.")
+                setattr(recipe, name, value)
+        if not 0 <= recipe.crossfade_ms <= 1000:
+            raise ValueError("Recette : crossfade_ms attendu entre 0 et 1000 ms.")
+        if recipe.sync_mode not in ("physical", "container") or recipe.sync_subtitles not in ("mirror", "none") \
+                or recipe.sync_strategy not in ("auto", "manual", "none") \
+                or recipe.cadence_audio_method not in ("auto", "atempo", "asetrate"):
+            raise ValueError("Recette : mode de synchro, stratégie ou méthode de cadence invalide.")
+
+        def choice(raw: Any) -> HybridTrackChoice:
+            if not isinstance(raw, Mapping):
+                raise ValueError("Recette : piste attendue sous forme d'objet.")
+            try:
+                parsed = HybridTrackChoice(**dict(raw))
+            except TypeError as exc:
+                raise ValueError(f"Recette : piste invalide ({exc}).") from exc
+            for item in fields(HybridTrackChoice):  # types réels (le constructeur ne les vérifie pas)
+                value = getattr(parsed, item.name)
+                expected = {"bool": bool, "int": int}.get(str(item.type), str)
+                if (not isinstance(value, expected) or (expected is int and isinstance(value, bool))
+                        or (isinstance(value, int) and not isinstance(value, bool) and value < 0)):
+                    raise ValueError(f"Recette : piste invalide ({item.name} de type ou de valeur invalide).")
+            return parsed
+
+        choices = data.get("track_choices")
+        if choices is not None and not isinstance(choices, list):
+            raise ValueError("Recette : track_choices attendu liste de pistes ou null.")
+        recipe.track_choices = None if choices is None else tuple(choice(item) for item in choices)
+        if not isinstance(data.get("track_overrides", []), (list, type(None))):
+            raise ValueError("Recette : track_overrides attendu liste.")
+        overrides: dict[HybridTrackChoice, dict[str, str]] = {}
+        for item in data.get("track_overrides") or ():
+            values = item.get("set") if isinstance(item, Mapping) else None
+            if not isinstance(values, Mapping) or not set(values) <= {"language", "title"}:
+                raise ValueError("Recette : surcharge de piste attendue {track, set: {language, title}}.")
+            overrides[choice(item.get("track"))] = {key: str(value) for key, value in values.items()}
+        recipe.track_overrides = overrides
+        variants = data.get("witness_variants", 0)
+        if not isinstance(variants, int) or isinstance(variants, bool) or variants < 0:
+            raise ValueError("Recette : witness_variants attendu entier positif ou nul.")
+        sources = data.get("variant_source_choices", [])
+        if not isinstance(sources, list):
+            raise ValueError("Recette : variant_source_choices attendu liste de pistes.")
+        recipe.witness_variants = variants
+        recipe.variant_source_choices = tuple(choice(item) for item in sources)
+        if recipe.variant_source_choices and not recipe.witness_variants:
+            raise ValueError("Recette : pistes sources de variantes sans variante (witness_variants).")
+        if recipe.witness_variants and not recipe.variant_source_choices:
+            # Variantes sans provenance (export d'une version de développement) : la variante serait perdue en
+            # silence dès que sa piste d'origine est décochée.
+            raise ValueError("Recette : variantes du témoin sans pistes sources (variant_source_choices) ; "
+                             "réexporter la recette depuis le Hybrid Studio.")
+        return recipe
 
     @classmethod
     def from_witness_config(cls, remux_config: RemuxConfig, master_index: int = 0) -> HybridRecipe:
@@ -335,11 +443,31 @@ class HybridRecipe:
         recipe.sync_subtitles = getattr(remux_config, "sync_subtitles", "mirror") or "mirror"
         recipe.crossfade_ms = remux_config.crossfade_ms
         recipe.keep_master_chapters = remux_config.keep_chapters
+        # Variantes (clones) : jamais des pistes physiques ; filtrées avant le décompte des pistes identiques.
         recipe.track_choices = tuple(
             choice
             for index, source in enumerate(remux_config.sources)
-            for choice in witness_track_choices("master" if index == master_index else f"src_{index + 1}", source.tracks)
+            for choice in witness_track_choices(
+                "master" if index == master_index else f"src_{index + 1}",
+                [track for track in source.tracks if not track.is_new],
+            )
         )
+        recipe.witness_variants = sum(
+            1 for source in remux_config.sources for track in source.tracks if track.is_new and track.enabled)
+        variant_sources: list[HybridTrackChoice] = []
+        for index, source in enumerate(remux_config.sources):
+            originals = [track for track in source.tracks if not track.is_new]
+            wanted = {track.source_entry_id for track in source.tracks if track.is_new and track.enabled}
+            choices = witness_track_choices(
+                "master" if index == master_index else f"src_{index + 1}",
+                [replace(track, enabled=True) for track in originals],
+            )
+            # Toute piste d'origine d'une variante cochée, cochée ou non : décochée plus tard dans le Studio, elle
+            # reste candidate de clonage (cochée, la sélection la retient simplement).
+            variant_sources.extend(
+                choice for choice, track in zip(choices, originals) if track.entry_id in wanted
+            )
+        recipe.variant_source_choices = tuple(variant_sources)
         recipe.cadence_auto_apply = getattr(remux_config, "cadence_auto_apply", True)
         recipe.cadence_audio_method = getattr(remux_config, "cadence_audio_method", "auto") or "auto"
 
@@ -695,6 +823,25 @@ def resolve_plan_cadence_methods(config: RemuxConfig, ffmpeg_bin, ffprobe_bin, c
     return resolved
 
 
+def store_plan_calibration(config: RemuxConfig, source_index: int, calibration: SyncCalibration) -> None:
+    """Synchro d'une source donneuse du plan : réécriture physique (calibration de la source et de ses pistes)
+    ou décalage conteneur de ses pistes audio (et sous-titres en miroir)."""
+    # Coupures, conversion de cadence ou de hauteur : seule la réécriture physique les applique.
+    if calibration.changes_timeline or calibration.converts_audio:
+        config.sync_mode = "physical"
+    offset = round(calibration.segments[0].shift_ms)
+    payload = calibration.to_dict()
+    physical = config.sync_mode == "physical"
+    if physical:
+        config.sync_calibrations[str(source_index)] = payload
+    else:
+        config.sync_calibrations.pop(str(source_index), None)
+    for track in config.sources[source_index].tracks:
+        if track.is_audio or (track.is_subtitle and config.sync_subtitles == "mirror"):
+            track.time_shift_ms = 0 if physical else offset
+            track.sync_calibration = payload if physical else None
+
+
 def _language_key(language: str | None) -> str:
     """Ramène les codes ISO et BCP 47 à leur langue de base."""
     return language_key(language)
@@ -716,9 +863,19 @@ def _language_selected(language: str | None, expected: list[str]) -> bool:
     return False
 
 
-def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, recipe: HybridRecipe, *, has_profile: bool) -> None:
+def _select_matrix_tracks(
+    sources: list[SourceInput], episode: MatrixEpisode, recipe: HybridRecipe, *, has_profile: bool,
+) -> set[str]:
+    """Coche les pistes retenues ; renvoie les pistes candidates seulement pour cloner une variante du témoin."""
+    if recipe.witness_variants and not has_profile:
+        raise ValueError(
+            f"Le modèle témoin contient {recipe.witness_variants} variante(s) audio : seul un profil décisionnel "
+            "peut les recréer sur chaque épisode (le modèle ne retient que les pistes du fichier)."
+        )
+    variant_only: set[str] = set()
     if recipe.track_choices is not None:
         remaining = set(recipe.track_choices)
+        variant_sources = set(recipe.variant_source_choices)
         source_ids = ["master", *(source.source_id for source, _ in episode.donor_files)]
         for source_id, source in zip(source_ids, sources):
             # Utiliser les métadonnées d'origine : un profil peut renommer une piste.
@@ -728,13 +885,21 @@ def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, re
                 choice = next(originals) if not track.is_new else None
                 track.enabled = choice in remaining
                 if choice is not None and track.enabled:
+                    variant_sources.discard(choice)  # recochée dans le modèle : piste retenue, plus seulement source
+                if choice is not None and not track.enabled and choice in variant_sources:
+                    track.enabled = True  # candidate du profil pour cloner la variante, décochée ensuite
+                    variant_sources.remove(choice)
+                    variant_only.add(track.entry_id)
+                    continue
+                if choice is not None and track.enabled:
                     remaining.remove(choice)
                     for name, value in recipe.track_overrides.get(choice, {}).items():
                         setattr(track, name, value)
+        remaining |= variant_sources
         if remaining:
             descriptions = ", ".join(f"{c.source_id}/{c.track_type}/{c.language}/{c.title}" for c in sorted(remaining, key=repr))
             raise ValueError(f"Pistes du modèle témoin introuvables pour {episode.display_name} : {descriptions}")
-        return
+        return variant_only
 
     master_source = sources[0]
     master_has_preferred_audio = any(
@@ -770,6 +935,31 @@ def _select_matrix_tracks(sources: list[SourceInput], episode: MatrixEpisode, re
                 track.enabled = _language_selected(track.language, recipe.donor_sub_langs)
             elif has_profile and track.track_type in {"audio", "subtitle"}:
                 track.enabled = True
+    return variant_only
+
+
+class SyncUnavailableError(ValueError):
+    """Synchro automatique impossible pour un ou plusieurs donneurs (aucune paire de référence entre master et
+    donneur, quels que soient les analyseurs) : épisode refusé, jamais traité avec un décalage nul (décision DB)."""
+
+    def __init__(self, episode: str, donors: list[tuple[int, str]]) -> None:
+        self.episode = episode
+        self.donors = tuple(donors)
+        detail = " ; ".join(translate_text("donneur n° {index} : {reason}", index=index, reason=reason)
+                            for index, reason in self.donors)
+        super().__init__(translate_text("Synchro impossible ({detail}) : épisode non traité.", detail=detail))
+
+
+def _sync_unavailable_reason(ref_audio: Any, ref_sub: Any, sync_audio: Any, target_sub: Any) -> str | None:
+    """Motif structurel d'une synchro automatique impossible, ``None`` si une paire de référence existe : audio
+    master ↔ audio donneur, sinon sous-titre ou audio master ↔ sous-titre donneur."""
+    if sync_audio is not None and ref_audio is not None:
+        return None
+    if target_sub is not None and (ref_sub is not None or ref_audio is not None):
+        return None
+    if sync_audio is not None:
+        return translate_text("aucune piste audio du master pour caler l'audio du donneur")
+    return translate_text("ni sous-titre ni audio du master pour caler les sous-titres du donneur")
 
 
 def prepare_matrix_episode(
@@ -791,8 +981,8 @@ def prepare_matrix_episode(
     ``cache`` (session) évite de relire inspections, sous-titres et réponses
     TMDB déjà obtenus ; la durée de chaque étape est consignée au journal.
     """
-    from cli.remux_config import build_remux_config
-    from cli.options import CommonOptions
+    from core.jobs.remux_config import build_remux_config
+    from core.jobs.options import CommonOptions
     from core.workflows.audio_sync import AudioSyncTrack
     from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
     from core.workflows.subtitle_sync_scan import SubtitleSyncScanner
@@ -838,16 +1028,19 @@ def prepare_matrix_episode(
     profile_name = getattr(options, "profile", None)
 
     selected_ids: set[str] = set()
+    variant_only_ids: set[str] = set()
 
     def select_tracks(sources):
-        _select_matrix_tracks(sources, episode, recipe, has_profile=bool(profile_name))
-        selected_ids.update(t.entry_id for source in sources for t in source.tracks if t.enabled)
+        variant_only_ids.update(_select_matrix_tracks(sources, episode, recipe, has_profile=bool(profile_name)))
+        selected_ids.update(t.entry_id for source in sources for t in source.tracks
+                            if t.enabled and t.entry_id not in variant_only_ids)
 
     profile = None
     if profile_name:
-        from cli.profile import build_profile_remux_config, load_decision_profile
+        from core.jobs.profile import build_profile_remux_config, load_decision_profile
         snapshot = getattr(options, "profile_snapshot", None)
-        profile = copy.deepcopy(snapshot if snapshot is not None else load_decision_profile(profile_name, config))
+        profile = copy.deepcopy(snapshot if snapshot is not None else load_decision_profile(
+            profile_name, config, base_dir=getattr(options, "base_dir", Path())))
         profile.pop("auto_sync", None)
         profile.pop("sync", None)
         remux_config, report = build_profile_remux_config(
@@ -855,6 +1048,14 @@ def prepare_matrix_episode(
             config=config, options=build_options, logger=logger, preview=True,
             metadata_job=job_payload, select_tracks=select_tracks, context=context,
         )
+        if variant_only_ids:
+            # Pistes décochées du témoin, candidates pour cloner leur variante : jamais sorties.
+            for source in remux_config.sources:
+                for track in source.tracks:
+                    if track.entry_id in variant_only_ids:
+                        track.enabled = False
+            remux_config.track_order = [
+                item for item in remux_config.track_order if len(item) < 3 or item[2] not in variant_only_ids]
         logger.emit("info", f"{episode.display_name} : profil {profile.get('name') or profile_name} appliqué "
                     f"sur les pistes candidates ({report.get('applied_rules', 0)} règles, "
                     f"{len(remux_config.track_order)} pistes finales).")
@@ -903,6 +1104,7 @@ def prepare_matrix_episode(
     ) if calibrate and recipe.sync_strategy == "auto" else None
     sub_scanner = SubtitleSyncScanner(ffmpeg_bin, ffprobe_bin, cancel_event=cancel_event) if calibrate and recipe.sync_strategy == "auto" else None
 
+    unavailable: list[tuple[int, str]] = []
     for donor_idx, donor_source in enumerate(remux_config.sources[1:], start=1):
         donor_calib: SyncCalibration | None = None
         # Détection de cadence A (métadonnées vidéo entre master et donneur)
@@ -962,6 +1164,12 @@ def prepare_matrix_episode(
             donor_calib = supplied_calibration
         elif not (target_audio or target_sub):
             continue
+        elif calibrate and recipe.sync_strategy == "auto" and (
+                reason := _sync_unavailable_reason(ref_audio, ref_sub, sync_audio, target_sub)) is not None:
+            # Aucune paire de référence : jamais de décalage nul en silence (préparation sans calibration : vérifiée
+            # plus tard, jamais signalée ici).
+            unavailable.append((donor_idx, reason))
+            continue
         elif sync_audio and ref_audio and audio_scanner is not None:
             logger.emit(
                 "info",
@@ -978,7 +1186,7 @@ def prepare_matrix_episode(
                     cadence_mismatch=cadence_mismatch if cadence_auto_apply else None,
                     cadence_audio_method=cadence_audio_method,
                     log=lambda msg: logger.emit("info", f"[{episode.display_name}] {msg}"),
-                    warn=lambda msg: logger.emit("warning", f"[{episode.display_name}] {msg}"),
+                    warn=lambda msg, **fields: logger.emit("warning", f"[{episode.display_name}] {msg}", **fields),
                 )
         elif target_sub and sub_scanner is not None:
             logger.emit("info", f"[{episode.display_name}] Synchronisation sous-titre donneur #{donor_idx}…")
@@ -1009,6 +1217,9 @@ def prepare_matrix_episode(
                 # « Conversion automatique » ne porte que sur la cadence détectée, jamais sur une calibration fournie.
                 if donor_calib.converts_audio:
                     remux_config.sync_mode = "physical"
+
+    if unavailable:
+        raise SyncUnavailableError(episode.display_name, unavailable)
 
     # Décider après tous les donneurs : une conversion de cadence peut imposer
     # le mode physique à l'ensemble du plan. En mode conteneur, seuls les
@@ -1090,7 +1301,7 @@ def matrix_output_context(
     variables: dict[str, Any] | None = None, group: str = "", output_all: bool = False,
 ) -> dict[str, Any]:
     """Même contexte pour l'aperçu UI et le nom réel du fichier assemblé."""
-    from cli.output_template import build_output_context
+    from core.jobs.output_template import build_output_context
 
     output_variables = dict(variables or {})
     if group:
@@ -1116,8 +1327,8 @@ def _finalize_matrix_metadata(
     final_order: list[tuple[int, int, str]], preparation: PreparationContext | None = None,
 ) -> None:
     """Nommer après la sélection finale, avec une seule résolution TMDB par épisode."""
-    from cli.output_template import render_output_filename
-    from cli.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
+    from core.jobs.output_template import render_output_filename
+    from core.jobs.remux_config import merge_tmdb_tag_overrides, resolve_tmdb_metadata
     from core.profiles.decision import profile_output_template, profile_variables
 
     details = None

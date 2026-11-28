@@ -9,6 +9,7 @@ Authentification TMDB via :
 from __future__ import annotations
 
 import datetime
+import http.client
 import json
 import mimetypes
 import os
@@ -179,6 +180,24 @@ class MediaSearchResult:
     year:     str   # "2010" ou ""
     kind:     str   # "movie" | "tv"
     overview: str = ""
+
+
+# Genre TMDB n° 16 (Animation), nom traduit selon la langue de la fiche : la plupart des langues à alphabet latin
+# commencent par « anim » (Animación, Animazione, Animatie, Animacja, Animovaný…), les autres sont listées ici.
+_ANIMATION_GENRE_NAMES = frozenset({
+    "мультфильм", "мультфільм", "анимация", "анимирани", "アニメーション", "アニメ", "动画", "動畫", "动画片",
+    "애니메이션", "κινούμενα σχέδια", "אנימציה", "رسوم متحركة", "انیمیشن", "แอนนิเมชั่น", "แอนิเมชัน",
+    "phim hoạt hình", "hoạt hình", "animasi",
+})
+
+
+def is_animation_genre(genre: str) -> bool:
+    """Vrai si la liste de genres (balise GENRE « A, B, … ») contient l'animation, quelle que soit la langue."""
+    for name in str(genre or "").replace(";", ",").replace("/", ",").split(","):
+        name = name.strip().casefold()
+        if name.startswith("anim") or name in _ANIMATION_GENRE_NAMES:
+            return True
+    return False
 
 
 @dataclass
@@ -388,6 +407,11 @@ class TmdbFetcher:
     ) -> None:
         self._key = api_key.strip()
         self._bearer_token = bearer_token.strip()
+        if self._key and self._key.startswith("eyJ") and not self._bearer_token:
+            self._bearer_token = self._key
+            self._key = ""
+        if not self._key and not self._bearer_token:
+            self._bearer_token = default_tmdb_bearer_token()
         if not self._key and not self._bearer_token:
             raise TmdbError("Authentification TMDB manquante (clé API ou token Bearer).")
         self._lang = language or "en-US"
@@ -472,6 +496,10 @@ class TmdbFetcher:
             raise TmdbError(f"Impossible de contacter TMDB : {exc.reason}") from exc
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError, OSError, zlib.error) as exc:
             raise TmdbError(f"Réponse TMDB invalide : {exc}") from exc
+        except (ValueError, http.client.HTTPException) as exc:
+            # En-tête ou adresse refusés avant l'envoi (token contenant un saut de ligne…) : le message d'origine
+            # recopie la valeur, donc le secret ; jamais publié.
+            raise TmdbError("Requête TMDB refusée : clé ou token TMDB contenant des caractères non admis.") from exc
 
     def _decode_http_body(self, body: bytes, content_encoding: str) -> bytes:
         """

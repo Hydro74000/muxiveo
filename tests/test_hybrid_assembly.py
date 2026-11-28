@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,8 +70,8 @@ def assembly(tmp_path, monkeypatch):
         infos = [FileInfo(s.path, "matroska", 1, 100, None) for s in inspected]
         return inspected, infos, [t for s in inspected for t in s.tracks]
 
-    monkeypatch.setattr("cli.remux_config.inspect_sources", inspect)
-    monkeypatch.setattr("cli.profile.inspect_sources", inspect)
+    monkeypatch.setattr("core.jobs.remux_config.inspect_sources", inspect)
+    monkeypatch.setattr("core.jobs.profile.inspect_sources", inspect)
     return episode, recipe, sources
 
 
@@ -262,10 +263,19 @@ def test_profile_has_last_word_after_subtitle_detection(assembly, tmp_path, monk
     subtitle_ids = {t.entry_id for t in active_subs}
     subtitle_order = [item[2] for item in result.track_order if item[2] in subtitle_ids]
     assert subtitle_order[-1] == forced.entry_id  # L'ordre du profil prime sur forced_first.
+    forced.flag_enabled = False  # drapeau Matroska désactivé, piste gardée (sélection)
     path = tmp_path / "detected.exact-job.json"
     save_workflow(path, remux_config_to_exact_job(result))
     restored = build_remux_config(load_workflow(path), AppConfig(), CommonOptions(), Logger())
     assert remux_config_to_exact_job(restored) == remux_config_to_exact_job(result)
+
+    def states(config):  # état des pistes reconstruites, pas seulement deux exports
+        return sorted((s.file_index, t.track_type, int(t.mkv_tid), t.is_new, t.title, t.language, t.enabled,
+                       t.flag_enabled, t.flag_default, t.flag_forced, t.flag_hearing_impaired)
+                      for s in config.sources for t in s.tracks)
+
+    assert states(restored) == states(result)
+    assert not next(t for s in restored.sources for t in s.tracks if t.orig_title == "Forcés").flag_enabled
 
 
 def test_no_implicit_fallback_for_unchecked_tracks(assembly, tmp_path):
@@ -304,7 +314,7 @@ def test_metadata_template_and_advanced_options_use_final_tracks(assembly, tmp_p
     def classify(sources, infos, **kwargs):
         classified.append(([(s.file_index, t.orig_title) for s in sources for t in s.tracks if t.enabled], kwargs))
 
-    monkeypatch.setattr("cli.remux_config.resolve_tmdb_metadata", metadata)
+    monkeypatch.setattr("core.jobs.remux_config.resolve_tmdb_metadata", metadata)
     monkeypatch.setattr("core.workflows.subtitle_heuristics.classify_subtitles", classify)
     options = SimpleNamespace(**vars(CommonOptions(ffmpeg="ffmpeg", clean_nfo=False, crossfade_ms=137, auto_forced_subs=True, auto_sdh=True, forced_threshold=17)),
                               auto_tmdb=213562, no_cover=not cover, tag="MVO",
@@ -339,7 +349,7 @@ def test_live_name_preview_matches_prepared_jobs_and_preserves_metadata_and_alia
         details = MediaDetails(title="Crystal Lake", year="2026", season="1", episode=number, episode_title=f"Épisode {number}")
         return details.formatted_container_title(), details.to_mkv_tags(), None, details
 
-    monkeypatch.setattr("cli.remux_config.resolve_tmdb_metadata", metadata)
+    monkeypatch.setattr("core.jobs.remux_config.resolve_tmdb_metadata", metadata)
     monkeypatch.setattr(SyncStudioDialog, "_load_segment_audio_async", lambda *_a: None)
     template = "{title:release}.{season_episode}.{episode_title:release}.{audio-multi}.{audio-codec:best}.{release_group}"
     options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile), auto_tmdb=213562,
@@ -638,3 +648,262 @@ def test_export_reprepares_changed_settings_before_writing(assembly, tmp_path, m
         assert panel._prepared_signature == panel._settings_signature()
     finally:
         panel.close()
+
+
+def test_captured_profile_with_a_cleared_variant_survives_hybrid_and_exact_job(assembly, tmp_path):
+    """Audit 19 : capture réelle d'un épisode préparé (VF vidée, variante AC3 vidée et FlagEnabled=0), appliquée
+    par Hybrid à l'épisode, puis exact-job reconstruit : pistes identiques."""
+    from core.profiles.decision import remux_config_to_decision_profile
+    from core.workflows.remux_models import clone_track_entry
+
+    episode, recipe, _sources = assembly
+    base, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), CommonOptions(), Logger())
+    vf = next(t for s in base.sources for t in s.tracks if t.enabled and t.is_audio and t.language == "fr-FR")
+    vf.title = vf.language = ""
+    variant = clone_track_entry(vf)
+    variant.codec, variant.flag_enabled = "AC3", False
+    source = next(s for s in base.sources if vf in s.tracks)
+    source.tracks.append(variant)
+    base.track_order = [*base.track_order, (source.file_index, variant.mkv_tid, variant.entry_id)]
+    path = tmp_path / "capture.json"
+    path.write_text(json.dumps(remux_config_to_decision_profile(base, name="Capture")))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(path))
+
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+
+    donor_audio = sorted((t.title, t.language, t.flag_enabled, t.is_new, t.codec)
+                         for s in result.sources for t in s.tracks if t.is_audio and t.enabled and t.file_id == vf.file_id)
+    assert donor_audio == [("", "", False, True, "AC3"), ("", "", True, False, "EAC3")]
+    restored = build_remux_config(json.loads(json.dumps(remux_config_to_exact_job(result))), AppConfig(),
+                                  CommonOptions(), Logger())
+
+    def states(config):
+        return sorted((s.file_index, t.track_type, int(t.mkv_tid), t.is_new, t.codec, t.title, t.language, t.enabled,
+                       t.flag_enabled, t.flag_default, t.flag_forced)
+                      for s in config.sources for t in s.tracks)
+
+    assert states(restored) == states(result)
+
+
+def _variant_witness(sources, tmp_path, *, original_checked, extra_variant=False):
+    from core.workflows.remux_models import clone_track_entry
+
+    witness_sources = copy.deepcopy(sources)
+    donor = witness_sources[1]
+    vf = next(t for t in donor.tracks if t.is_audio and t.title == "VF")
+    vf.enabled = original_checked
+    variant = clone_track_entry(vf)
+    variant.codec, variant.enabled, variant.flag_enabled = "AC3", True, False
+    donor.tracks.append(variant)
+    if extra_variant:
+        second = clone_track_entry(vf)
+        second.codec, second.enabled = "EAC3", True
+        donor.tracks.append(second)
+    return RemuxConfig(witness_sources, tmp_path / "out.mkv", [], crossfade_ms=0)
+
+
+@pytest.mark.parametrize("path", ["object", "json", "overrides"])
+@pytest.mark.parametrize("original_checked", [True, False])
+def test_witness_with_an_audio_variant_builds_an_applicable_recipe(assembly, tmp_path, original_checked, path):
+    """Audits 20–21 : variante du témoin jamais comptée comme piste physique ; recréée par le profil (capture du
+    témoin), y compris quand seule la variante est cochée, après export / relecture JSON ou surcharge d'option ;
+    sans profil : refus explicite ; original servant seulement au clonage décoché en sortie."""
+    from core.jobs.hybrid_studio import recipe_with_overrides
+    from core.profiles.decision import remux_config_to_decision_profile
+
+    episode, _recipe, sources = assembly
+    witness = _variant_witness(sources, tmp_path, original_checked=original_checked)
+    recipe = HybridRecipe.from_witness_config(witness)
+    recipe.sync_strategy = "none"
+    assert recipe.witness_variants == 1
+    assert all(choice.codec != "AC3" for choice in recipe.track_choices or ())
+    assert len(recipe.variant_source_choices) == 1  # provenance gardée, original coché ou non
+    if path == "json":
+        recipe = HybridRecipe.from_dict(json.loads(json.dumps(recipe.to_dict())))
+    elif path == "overrides":
+        recipe = recipe_with_overrides(recipe, crossfade_ms=20)
+    assert recipe.witness_variants == 1
+    assert len(recipe.variant_source_choices) == 1
+
+    with pytest.raises(ValueError, match="variante"):
+        prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), CommonOptions(), Logger())
+
+    profile_path = tmp_path / "capture.json"
+    profile_path.write_text(json.dumps(remux_config_to_decision_profile(witness, name="Témoin")))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile_path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    vf_tracks = [(t.codec, t.is_new, t.enabled, t.flag_enabled)
+                 for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF"]
+    assert ("AC3", True, True, False) in vf_tracks
+    assert ("EAC3", False, original_checked, True) in vf_tracks  # original de clonage seul : décoché
+    order_ids = {item[2] for item in result.track_order if len(item) > 2}
+    original = next(t for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF" and not t.is_new)
+    assert (original.entry_id in order_ids) is original_checked
+    restored = build_remux_config(json.loads(json.dumps(remux_config_to_exact_job(result))), AppConfig(),
+                                  CommonOptions(), Logger())
+
+    def states(config):
+        return sorted((s.file_index, t.track_type, int(t.mkv_tid), t.is_new, t.codec, t.title, t.language, t.enabled,
+                       t.flag_enabled) for s in config.sources for t in s.tracks)
+
+    assert states(restored) == states(result)
+
+
+def test_witness_with_several_variants_of_one_source(assembly, tmp_path):
+    from core.profiles.decision import remux_config_to_decision_profile
+
+    episode, _recipe, sources = assembly
+    witness = _variant_witness(sources, tmp_path, original_checked=False, extra_variant=True)
+    recipe = HybridRecipe.from_witness_config(witness)
+    recipe.sync_strategy = "none"
+    assert recipe.witness_variants == 2 and len(recipe.variant_source_choices) == 1
+    profile_path = tmp_path / "capture.json"
+    profile_path.write_text(json.dumps(remux_config_to_decision_profile(witness, name="Témoin")))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile_path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    assert sorted(t.codec for s in result.sources for t in s.tracks if t.is_new and t.enabled) == ["AC3", "EAC3"]
+
+
+@pytest.mark.parametrize("payload, message", [
+    ({"witness_variants": True}, "witness_variants"),
+    ({"witness_variants": -1}, "witness_variants"),
+    ({"variant_source_choices": {}}, "variant_source_choices"),
+    ({"witness_variants": 1, "variant_source_choices": [{"source_id": "src_2"}]}, "piste invalide"),
+    ("choix-valide", "sans variante"),
+])
+def test_recipe_variant_fields_are_validated(payload, message):
+    from dataclasses import asdict
+
+    from core.workflows.hybrid_matrix import HybridTrackChoice
+
+    if payload == "choix-valide":  # pistes sources sans variante : incohérent
+        track = TrackEntry(1, "audio", "EAC3", "", "fr-FR", "VF")
+        payload = {"variant_source_choices": [asdict(HybridTrackChoice.from_track("src_2", track))]}
+    with pytest.raises(ValueError, match=message):
+        HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, **payload})
+
+
+def test_recipe_without_variants_keeps_its_json():
+    assert not {"witness_variants", "variant_source_choices"} & set(HybridRecipe().to_dict())
+
+
+def test_missing_variant_source_track_is_reported(assembly, tmp_path):
+    episode, _recipe, sources = assembly
+    witness = _variant_witness(sources, tmp_path, original_checked=False)
+    recipe = HybridRecipe.from_witness_config(witness)
+    recipe.variant_source_choices = (replace(recipe.variant_source_choices[0], title="Absente"),)
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(tmp_path / "p.json"))
+    (tmp_path / "p.json").write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "p", "rules": []}))
+    with pytest.raises(ValueError, match="introuvables"):
+        prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+
+
+def test_rechecked_variant_source_is_selected_not_reported_missing(assembly, tmp_path):
+    """Audit 22 : source de variante recochée après relecture de la recette (présente dans les deux listes) →
+    retenue, jamais « introuvable »."""
+    episode, _recipe, sources = assembly
+    recipe = HybridRecipe.from_witness_config(_variant_witness(sources, tmp_path, original_checked=False))
+    recipe = HybridRecipe.from_dict(json.loads(json.dumps(recipe.to_dict())))
+    recipe.sync_strategy = "none"
+    recipe.track_choices = (*recipe.track_choices, *recipe.variant_source_choices)  # recochée, liste non élaguée
+    profile_path = tmp_path / "variante.json"
+    profile_path.write_text(json.dumps({"version": 1, "kind": "decision-profile", "name": "v", "rules": [{
+        "id": "v", "scope": "all", "match": {"all": [{"field": "codec", "op": "is", "value": "EAC3"},
+                                                     {"field": "language", "op": "is", "value": "fr-FR"}]},
+        "actions": [{"type": "create_audio_variant", "codec": "ac3"}]}]}))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile_path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    vf = [(t.codec, t.is_new, t.enabled) for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF"]
+    assert ("EAC3", False, True) in vf and ("AC3", True, True) in vf
+
+
+def test_studio_keeps_variant_sources_across_recheck_and_uncheck(assembly, qt_app):
+    from core.inspector import AudioTrack, SubtitleTrack, VideoTrack
+    from ui.panels.hybrid_studio import HybridStudio
+
+    _, _, sources = assembly
+    panel = HybridStudio(AppConfig())
+    try:
+        inspected = []
+        for source_index, source in enumerate(sources):
+            info = FileInfo(source.path, "matroska", 1, 100, None, track_enabled={})
+            for track in source.tracks:
+                if track.is_video:
+                    stream = VideoTrack(track.mkv_tid, track.codec, "", 64, 64, None, None, None, None, None, None,
+                                        language=track.language, title=track.title)
+                elif track.is_audio:
+                    stream = AudioTrack(track.mkv_tid, track.codec, "", 6, "5.1", 48000, None, track.language,
+                                        track.title)
+                else:
+                    stream = SubtitleTrack(track.mkv_tid, track.codec, track.language, track.title,
+                                           forced=track.orig_flag_forced)
+                getattr(info, f"{track.track_type}_tracks").append(stream)
+            inspected.append((f"Source {source_index}", "master" if source_index == 0 else "donor", info))
+        panel._populate_witness_table(inspected)
+        vf_item = next(item for item in panel.witness_track_items
+                       if item["role"] == "donor" and item["type"] == "audio" and item["choice"].title.lower() == "vf")
+        other = next(item for item in panel.witness_track_items if item is not vf_item and item["type"] == "audio")
+        panel.recipe = replace(panel.recipe, witness_variants=1,
+                               variant_source_choices=(vf_item["choice"], other["choice"]))
+        vf_item["checkbox"].setChecked(True)
+        other["checkbox"].setChecked(False)
+        panel.apply_witness_recipe()
+        # Audit 23 : provenance gardée (une source recochée est retenue par la sélection, et redevient candidate
+        # de clonage une fois décochée).
+        assert panel.recipe.variant_source_choices == (vf_item["choice"], other["choice"])
+        assert vf_item["choice"] in panel.recipe.track_choices
+        vf_item["checkbox"].setChecked(False)
+        panel.apply_witness_recipe()
+        assert panel.recipe.variant_source_choices == (vf_item["choice"], other["choice"])
+        assert vf_item["choice"] not in panel.recipe.track_choices and panel.recipe.witness_variants == 1
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("field, value", [("source_id", []), ("occurrence", -1), ("forced", "true"),
+                                          ("occurrence", True), ("title", 3)])
+def test_recipe_choices_are_type_checked(field, value):
+    from dataclasses import asdict
+
+    from core.workflows.hybrid_matrix import HybridTrackChoice
+
+    raw = asdict(HybridTrackChoice.from_track("src_2", TrackEntry(1, "audio", "EAC3", "", "fr-FR", "VF")))
+    raw[field] = value
+    for payload in ({"witness_variants": 1, "variant_source_choices": [raw]}, {"track_choices": [raw]}):
+        with pytest.raises(ValueError, match="piste invalide"):
+            HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, **payload})
+
+
+@pytest.mark.parametrize("value", [2, False, {}, "", "x"])
+def test_recipe_containers_are_validated(value):
+    for key in ("track_choices", "track_overrides"):
+        with pytest.raises(ValueError, match=key):
+            HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, key: value})
+
+
+def test_original_checked_at_capture_then_unchecked_still_recreates_its_variant(assembly, tmp_path):
+    """Audit 24 : original coché au moment de la capture, décoché ensuite (Studio) → toujours candidat de clonage,
+    variante recréée, original écarté de la sortie."""
+    from core.profiles.decision import remux_config_to_decision_profile
+
+    episode, _recipe, sources = assembly
+    witness = _variant_witness(sources, tmp_path, original_checked=True)
+    recipe = HybridRecipe.from_witness_config(witness)
+    recipe.sync_strategy = "none"
+    source_choice = recipe.variant_source_choices[0]
+    assert source_choice in recipe.track_choices
+    recipe.track_choices = tuple(choice for choice in recipe.track_choices if choice != source_choice)  # décochée
+    recipe = HybridRecipe.from_dict(json.loads(json.dumps(recipe.to_dict())))
+    profile_path = tmp_path / "capture.json"
+    profile_path.write_text(json.dumps(remux_config_to_decision_profile(witness, name="Témoin")))
+    options = SimpleNamespace(**vars(CommonOptions()), profile=str(profile_path))
+    result, _ = prepare_matrix_episode(episode, recipe, tmp_path, AppConfig(), options, Logger())
+    vf = [(t.codec, t.is_new, t.enabled) for s in result.sources for t in s.tracks if t.is_audio and t.title == "VF"]
+    assert ("AC3", True, True) in vf and ("EAC3", False, False) in vf
+
+
+def test_recipe_with_variants_but_no_sources_is_refused_explicitly():
+    """Audit 25 : recette à variantes sans provenance (export d'une version de développement) → refus explicite, au
+    lieu d'une variante perdue en silence."""
+    with pytest.raises(ValueError, match="réexporter"):
+        HybridRecipe.from_dict({"format": HybridRecipe.FORMAT, "version": 1, "witness_variants": 1})

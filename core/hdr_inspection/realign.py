@@ -9,6 +9,7 @@ diagnostic seulement.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -57,6 +58,36 @@ class Realignment:
 
     def applicable(self) -> tuple[Proposal, ...]:
         return tuple(p for p in self.proposals if p.applicable)
+
+
+#: Propositions corrigeables, dans l'ordre de l'onglet Édition (« l1 » : diagnostic seulement).
+REALIGN_KEYS = ("static", "mdcv", "l6", "hdr10plus")
+
+
+@dataclass(frozen=True, eq=False)
+class RealignEdits:
+    """Corrections retenues d'un réalignement (``None`` : non retenue ou sans proposition)."""
+
+    light_levels: tuple[int, int] | None = None
+    mastering: MasteringEdit | None = None
+    l6: tuple[int, float, int, int] | None = None
+    #: HDR10+ recalculé depuis la mesure, sur ces débuts de plans.
+    hdr10plus_scenes: np.ndarray | None = None
+
+    def is_empty(self) -> bool:
+        return (self.light_levels is None and self.mastering is None and self.l6 is None
+                and self.hdr10plus_scenes is None)
+
+
+def chosen_edits(realignment: Realignment, keys: Iterable[str]) -> RealignEdits:
+    """Corrections des propositions retenues parmi ``keys`` (« Reporter les propositions cochées »)."""
+    retained = set(keys) & {proposal.key for proposal in realignment.applicable()}
+    return RealignEdits(
+        light_levels=realignment.light_levels if "static" in retained else None,
+        mastering=realignment.mastering if "mdcv" in retained else None,
+        l6=realignment.l6 if "l6" in retained else None,
+        hdr10plus_scenes=realignment.hdr10plus_scenes if "hdr10plus" in retained else None,
+    )
 
 
 def _score(risk: ToneMapRisk) -> float:
@@ -201,11 +232,16 @@ def realign(report: InspectionReport, measurement: ImageMeasurement, display_pea
     scenes: np.ndarray | None = None
     if hdr10plus is not None and hdr10plus.frames and not estimate:
         count = min(hdr10plus.frames, measurement.frames)
-        # Par plan du HDR10+ (MaxScl constant sur le plan = maximum du plan).
+        # Par plan du HDR10+ (MaxScl constant sur le plan = maximum du plan). Écrêtage : face au pic hors pixels isolés
+        # (règle du MaxScl calculé par Muxiveo, ``maxscl_peaks``) ; assombrissement : face au pic absolu.
+        from core.fel.hdr10plus import maxscl_peaks
+
+        capped = _per_scene(maxscl_peaks(measurement.max_rgb[:count], measurement.percentiles[:count, -1],
+                                         measurement.y9999[:count]), hdr10plus.scene_starts, np.fmax)
         measured = _per_scene(measurement.peaks()[:count], hdr10plus.scene_starts, np.fmax)
         declared = _per_scene(hdr10plus.max_scl[:count], hdr10plus.scene_starts, np.fmax)
         valid = measured > 50
-        under = valid & (measured > 1.25 * declared)
+        under = valid & (capped > 1.25 * declared)
         over = valid & (declared > 2 * measured) & (declared > 400)
         saturated = int(hdr10plus.saturated().size)
         mismatch = hdr10plus.frames != measurement.frames
@@ -310,3 +346,15 @@ def scene_cuts(measurement: ImageMeasurement, threshold_ev: float = 1.0) -> np.n
         if start - kept[-1] >= 12:
             kept.append(int(start))
     return np.asarray(kept, dtype=np.int64)
+
+
+def recompute_scenes(report: InspectionReport, measurement: ImageMeasurement,
+                     realignment: Realignment | None = None) -> np.ndarray:
+    """Débuts de plans du HDR10+ recalculé : ceux du réalignement, sinon du HDR10+ actuel s'il couvre la
+    mesure, sinon les coupes détectées dans la mesure."""
+    if realignment is not None and realignment.hdr10plus_scenes is not None:
+        return realignment.hdr10plus_scenes
+    hdr10plus = report.hdr10plus
+    if hdr10plus is not None and hdr10plus.scenes >= 2 and hdr10plus.frames == measurement.frames:
+        return hdr10plus.scene_starts
+    return scene_cuts(measurement)

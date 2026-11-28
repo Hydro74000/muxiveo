@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 from core.command_preview import format_preview_command, preview_comment
-from core.output_commit import OutputBusyError, OutputReservation
+from core.output_commit import ExistingPolicy, OutputBusyError, OutputReservation
 from core.runner import TaskSignals, ToolRunner
 from core.version import APP_VERSION_LABEL
 from core.workflows.common.matroska_finalize import MatroskaMuxingAppPostAction
@@ -43,10 +43,12 @@ from core.workflows.remux_mapping import (
 from core.workflows.remux_models import (
     RemuxConfig,
     RemuxError,
+    RemuxValidationError,
 )
 from core.workflows.remux_backend import (
     FfmpegRemuxBackend, NativeMatroskaBackend,
 )
+from core.workflows.remux_sync_rewrite import SyncRewriteSettings
 from core.workflows.remux_plan import (
     MuxExecutionPlan,
     mux_backend_report_from_plan,
@@ -61,6 +63,7 @@ from core.workflows.remux_runtime import (
     RemuxRuntimeRunner,
     RemuxRuntimeRunnerCallbacks,
 )
+from core.workflows.common.metadata import duplicate_default_track_warnings, output_track_label
 
 def write_mediainfo_nfo(
     output_path: Path,
@@ -210,10 +213,21 @@ class RemuxWorkflow(QObject):
             extra_attachments=[_abs(Path(item)) for item in config.extra_attachments],
         )
 
+    def sync_rewrite_settings(self) -> SyncRewriteSettings:
+        """Réglages de la réécriture de synchro, transmis au plan et aux deux backends."""
+        return SyncRewriteSettings(
+            enabled=self._sync_rewrite_enabled,
+            advanced_audio=self._sync_advanced_audio_rewrite_enabled,
+            audio_bitrates=dict(self._sync_rewrite_audio_bitrates),
+        )
+
     def compile_plan(self, config: RemuxConfig) -> MuxExecutionPlan:
         """Compile le plan d'exécution unique consommé par validation/preview/run."""
         config = self._absolute_paths_config(config)
-        return _plan_remux(config, ffmpeg_bin=self._ffmpeg, ffprobe_bin=self._ffprobe)
+        return _plan_remux(
+            config, ffmpeg_bin=self._ffmpeg, ffprobe_bin=self._ffprobe,
+            sync_rewrite=self.sync_rewrite_settings(),
+        )
 
     def validate(self, config: RemuxConfig, *, plan: MuxExecutionPlan | None = None) -> list[str]:
         return _validate_remux_config(
@@ -305,7 +319,9 @@ class RemuxWorkflow(QObject):
     def _log_step(self, step_index: int, step_name: str) -> None:
         self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
 
-    def run(self, config: RemuxConfig) -> TaskSignals:
+    def run(self, config: RemuxConfig, *, existing: ExistingPolicy | None = None) -> TaskSignals:
+        """Lance le remuxage. ``existing`` : sort d'une destination présente, décidé sous la réservation
+        (défaut : remplacement admis) ; refus → :class:`~core.output_commit.OutputRefusedError` levée telle quelle."""
         self._clean_nfo = config.clean_nfo
         # Chemins absolus AVANT tout : le plan, la validation et le backend
         # doivent consommer exactement les mêmes chemins que l'exécution.
@@ -321,8 +337,24 @@ class RemuxWorkflow(QObject):
             f"MUX_BACKEND requested={plan.requested_backend} selected={plan.selected_backend} plan_version=1",
         )
         errors = self.validate(config, plan=plan)
+        if self._generate_nfo:
+            # NFO écrit après le job : jamais sur un fichier qu'il lit (pièce jointe externe, source).
+            from core.sidecar_output import nfo_input_conflict, remux_input_paths
+
+            conflict = nfo_input_conflict(config.output, remux_input_paths(config))
+            if conflict:
+                errors = [*errors, conflict]
         if errors:
-            raise RemuxError("\n".join(errors))
+            raise RemuxValidationError(errors)
+        for message in duplicate_default_track_warnings(
+            (
+                item.track.track_type,
+                bool(item.track.flag_default),
+                output_track_label(position, item.track.language, item.track.title),
+            )
+            for position, item in enumerate(plan.mapped_tracks, start=1)
+        ):
+            self.log_message.emit("WARN", message)
         if plan.fallback:
             self.log_message.emit(
                 "WARN",
@@ -333,6 +365,7 @@ class RemuxWorkflow(QObject):
             ffmpeg_bin=self._ffmpeg, ffprobe_bin=self._ffprobe,
             finalize=self._write_nfo, plan=plan,
             validation_override=self._validation_override,
+            sync_rewrite=self.sync_rewrite_settings(),
         )
         ffmpeg_backend = FfmpegRemuxBackend(
             execute_callback=lambda item: self._run_ffmpeg(item, plan),
@@ -343,7 +376,7 @@ class RemuxWorkflow(QObject):
         # Destination réservée pour toute la durée du job : un second job vers
         # la même sortie échoue ici, avant toute préparation.
         try:
-            reservation = OutputReservation.acquire(config.output)
+            reservation = OutputReservation.acquire(config.output, existing=existing)
         except OutputBusyError as exc:
             raise RemuxError(str(exc)) from exc
         try:

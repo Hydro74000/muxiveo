@@ -38,7 +38,7 @@ def build(tmp_path, monkeypatch):
     audio_en = TrackEntry(2, "audio", "EAC3", "5.1", "eng", "VO", file_id="src0")
     sources = [SourceInput(path=source, file_index=0, tracks=[video, audio_fr, audio_en])]
     monkeypatch.setattr(
-        "cli.profile.inspect_sources",
+        "core.jobs.profile.inspect_sources",
         lambda job, conf, opts, log, cli_inputs=None, **_kwargs: (sources, [MagicMock()], [video, audio_fr, audio_en]),
     )
     monkeypatch.chdir(tmp_path)

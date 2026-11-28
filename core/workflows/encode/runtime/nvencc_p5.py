@@ -21,6 +21,7 @@ from pathlib import Path
 from core.subprocess_utils import subprocess_text_kwargs, subprocess_windows_no_window_kwargs
 from core.workflows.encode.domain.codecs import P5_TO_HDR10_FILTER
 from core.workflows.encode.models import VideoEncodeSettings
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 _FEATURE_RE = re.compile(r"^\s*([\w.+-]+)\s*:\s*(yes|no)\s*$", re.IGNORECASE | re.MULTILINE)
 _PROBE_FRAMES = 8
@@ -159,7 +160,8 @@ def run_nvencc_p5_probe(
             ("dovi_tool inject-rpu", [dovi_tool_bin, "inject-rpu", "-i", str(base), "-r", str(rpu), "-o", str(p5_hevc)]),
             ("conteneur", [
                 ffmpeg_bin, "-hide_banner", "-nostdin", "-loglevel", "error", "-y", "-fflags", "+genpts",
-                "-r", "24", "-i", str(p5_hevc), "-c", "copy", str(p5_mkv),
+                "-r", "24", "-i", str(p5_hevc), "-c", "copy",
+                *matroska_output_args(ffmpeg_bin, p5_mkv), str(p5_mkv),
             ]),
         ]
         for label, cmd in steps:

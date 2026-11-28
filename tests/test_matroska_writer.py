@@ -15,6 +15,7 @@ from core.matroska.reader import MatroskaBlock, MatroskaReader, MatroskaTrack
 from core.matroska.contract import ExpectedMatroskaTrack, MatroskaOutputContract
 from core.matroska.validation import MatroskaPacketValidation, validate_matroska_output
 from core.matroska.writer import (
+    MatroskaWriteCancelled,
     MatroskaWriteProgress,
     MatroskaWriter,
     build_track_statistics_tags_element,
@@ -112,11 +113,12 @@ def test_writer_validation_reuses_written_packet_summary(tmp_path: Path, monkeyp
 
     MatroskaWriter().write(plan, external_validator=validate_without_block_scan)
 
-    assert received == [MatroskaPacketValidation(
-        track_numbers=frozenset({1, 2}),
-        max_packet_timestamp_ns=25_000_000,
-        last_delta_by_track={},
-    )]
+    assert len(received) == 1
+    assert received[0].track_numbers == frozenset({1, 2})
+    assert received[0].max_packet_timestamp_ns == 25_000_000
+    assert received[0].last_delta_by_track == {}
+    # Entrelacement mesuré pendant l'écriture : aucun retard.
+    assert received[0].interleave is not None and not received[0].interleave.lagged_packets
 
 
 def test_streaming_packets_match_tuple_output_and_patch_duration(tmp_path: Path) -> None:
@@ -383,3 +385,182 @@ def test_writer_progress_reports_percent(tmp_path: Path) -> None:
         if p.percent is not None:
             assert 0 <= p.percent <= 100
 
+
+
+def _many_packets(count: int, size: int) -> tuple[MatroskaMuxTrack, list[MatroskaMuxPacket]]:
+    video = source_track(1, 10, "V_MPEG4/ISO/AVC", 1)
+    track = MatroskaMuxTrack(Path("v.mkv"), video, 1, deterministic_uid("v"))
+    packets = [MatroskaMuxPacket(1, MatroskaBlock(1, index * 40, 0x80, bytes([index % 251]) * size), index)
+               for index in range(count)]
+    return track, packets
+
+
+def test_background_cluster_writes_keep_cluster_offsets_and_cues(tmp_path: Path, monkeypatch) -> None:
+    """Clusters écrits par le fil d'écriture : file bornée minuscule, positions des Cues exactes."""
+    import core.matroska.writer as module
+
+    monkeypatch.setattr(module, "_BACKGROUND_WRITE_BYTES", 1)
+    monkeypatch.setattr(module, "_MAX_CLUSTER_PAYLOAD_BYTES", 64 * 1024)
+    track, packets = _many_packets(200, 5000)
+    output = tmp_path / "out.mkv"
+    MatroskaWriter().write(MatroskaMuxPlan(output, (track,), tuple(packets)))
+    reader = MatroskaReader(output)
+    assert [block.payload for block in reader.blocks()] == [packet.block.payload for packet in packets]
+    clusters = reader.cluster_elements()
+    assert len(clusters) > 10
+    # Chaque Cue désigne le début d'un Cluster réel.
+    segment = reader.segment()
+    cluster_positions = {cluster.offset - segment.payload_offset for cluster in clusters}
+    cue_positions = reader.cue_block_positions({1})
+    assert cue_positions and {cluster for cluster, _relative in cue_positions[1]} <= cluster_positions
+
+
+def test_background_write_error_fails_the_write_and_removes_partial(tmp_path: Path, monkeypatch) -> None:
+    import core.matroska.writer as module
+
+    real_init = module._BackgroundWriter.__init__
+
+    class Failing:
+        def __init__(self, fh):
+            self._fh = fh
+            self._count = 0
+
+        def write(self, data):
+            self._count += 1
+            if self._count > 3:
+                raise OSError(28, "No space left on device")
+            return self._fh.write(data)
+
+        def tell(self):
+            return self._fh.tell()
+
+    def failing_init(self, fh, **kwargs):
+        real_init(self, Failing(fh), **kwargs)
+
+    monkeypatch.setattr(module._BackgroundWriter, "__init__", failing_init)
+    monkeypatch.setattr(module, "_MAX_CLUSTER_PAYLOAD_BYTES", 16 * 1024)
+    track, packets = _many_packets(100, 5000)
+    output = tmp_path / "out.mkv"
+    with pytest.raises(OSError, match="No space left"):
+        MatroskaWriter().write(MatroskaMuxPlan(output, (track,), tuple(packets)))
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.partial"))
+
+
+def test_cancel_during_clusters_abandons_background_writes(tmp_path: Path, monkeypatch) -> None:
+    import threading
+
+    import core.matroska.writer as module
+
+    monkeypatch.setattr(module, "_MAX_CLUSTER_PAYLOAD_BYTES", 16 * 1024)
+    track, packets = _many_packets(200, 5000)
+    calls = {"count": 0}
+
+    def cancel() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 20
+
+    output = tmp_path / "out.mkv"
+    with pytest.raises(MatroskaWriteCancelled):
+        MatroskaWriter().write(MatroskaMuxPlan(output, (track,), tuple(packets)), cancel_cb=cancel)
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.partial"))
+    assert not [thread for thread in threading.enumerate() if thread.name == "matroska-writer"]
+
+
+class _SlowFile:
+    """Fichier dont chaque écriture attend ``release`` (fil d'écriture bloqué à volonté)."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.data: list[bytes] = []
+        self.closed = False
+
+    def tell(self) -> int:
+        return 0
+
+    def write(self, data: bytes) -> int:
+        self.started.set()
+        assert self.release.wait(5)
+        assert not self.closed, "écriture sur un fichier fermé"
+        self.data.append(bytes(data))
+        return len(data)
+
+
+def test_background_writer_abandon_during_a_write_keeps_its_accounting(monkeypatch) -> None:
+    import threading
+
+    from core.matroska.writer import _BackgroundWriter
+
+    failures: list[BaseException | None] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: failures.append(args.exc_value))
+    fh = _SlowFile()
+    sink = _BackgroundWriter(fh, limit=100)  # type: ignore[arg-type]
+    sink.write(b"a")
+    assert fh.started.wait(5)
+    sink.write([b"b", b"c"], 2)
+    threading.Timer(0.1, fh.release.set).start()
+    sink.close(abandon=True)
+    assert fh.data == [b"a"]
+    assert sink._error is None and sink._pending == 0
+    assert not sink._thread.is_alive()
+    assert failures == []
+
+
+def test_background_writer_blocks_the_producer_when_the_queue_is_full(monkeypatch) -> None:
+    """Borne du module lue à l'instanciation ; le producteur entre réellement en attente."""
+    import threading
+
+    import core.matroska.writer as module
+
+    monkeypatch.setattr(module, "_BACKGROUND_WRITE_BYTES", 1)
+    fh = _SlowFile()
+    sink = module._BackgroundWriter(fh)  # type: ignore[arg-type]
+    sink.write(b"a")
+    assert fh.started.wait(5)
+    waiting = threading.Event()
+    real_wait = sink._cond.wait
+
+    def observed_wait(timeout=None):
+        if threading.current_thread().name == "producteur":
+            waiting.set()
+        return real_wait(timeout)
+
+    sink._cond.wait = observed_wait  # type: ignore[method-assign]
+    done = threading.Event()
+    producer = threading.Thread(target=lambda: (sink.write(b"b"), done.set()), name="producteur", daemon=True)
+    producer.start()
+    assert waiting.wait(5)  # file pleine : le producteur attend la fin de l'écriture en cours
+    assert not done.is_set()
+    fh.release.set()
+    assert done.wait(5)
+    sink.close()
+    assert fh.data == [b"a", b"b"]
+    assert sink.position == 2
+
+
+def test_cancelled_write_abandons_the_writer_before_closing_the_file(tmp_path: Path, monkeypatch) -> None:
+    import core.matroska.writer as module
+
+    order: list[str] = []
+    real_close = module._BackgroundWriter.close
+
+    def close(self, *, abandon=False):
+        order.append(f"abandon fichier_fermé={self._fh.closed}" if abandon else "fin")
+        return real_close(self, abandon=abandon)
+
+    monkeypatch.setattr(module._BackgroundWriter, "close", close)
+    monkeypatch.setattr(module, "_MAX_CLUSTER_PAYLOAD_BYTES", 16 * 1024)
+    track, packets = _many_packets(200, 5000)
+    calls = {"count": 0}
+
+    def cancel() -> bool:
+        calls["count"] += 1
+        return calls["count"] > 20
+
+    with pytest.raises(MatroskaWriteCancelled):
+        MatroskaWriter().write(MatroskaMuxPlan(tmp_path / "out.mkv", (track,), tuple(packets)), cancel_cb=cancel)
+    assert order == ["abandon fichier_fermé=False"]

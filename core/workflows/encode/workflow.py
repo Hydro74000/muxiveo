@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
+import random
 import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from fractions import Fraction
@@ -24,17 +27,21 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from PySide6.QtCore import QObject, Qt, Signal
-from core.bluray import append_ffmpeg_input_args
+from core.bluray import append_ffmpeg_input_args, ffprobe_input_args
 from core.workflows.common.audio_timestamps import adjust_input_timestamp, preroll_input_offset, probe_timestamp_payload
 from core.runner import CommandError, TaskCancelledError, TaskSignals, ToolRunner
 from core.subprocess_utils import (
+    run_cancellable_capture,
     subprocess_text_kwargs,
 )
 from core.subtitle_codec import plan_subtitle_codec
 from core.version import APP_VERSION_LABEL
 from core.workdir import (
+    FailedWorkDirRetention,
+    RetainedProcessWorkDir,
     download_tmdb_cover,
     prepare_process_work_dir,
+    process_dir_payload_bytes,
     relocate_tmdb_covers_to_process_dir,
     remove_path,
 )
@@ -47,6 +54,7 @@ from core.workflows.common.ffmpeg_runtime import (
     ffmpeg_thread_args as _common_ffmpeg_thread_args,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
+    normalize_x265_frame_threads as _normalize_x265_frame_threads,
 )
 from core.workflows.common.metadata import (
     resolve_global_tags as _common_resolve_global_tags,
@@ -124,11 +132,16 @@ from core.workflows.encode.interpolation import (
     interpolation_preset as _interpolation_preset,
     rife_capabilities as _rife_capabilities,
     rife_support_errors as _rife_support_errors,
+    rife_supports as _rife_supports,
+    restore_support_errors as _restore_support_errors,
     InterpolationSource as _InterpolationSource,
     build_rife_stage as _build_rife_stage,
     decode_normalization_rate as _decode_normalization_rate,
+    restore_args_for as _restore_args_for,
+    RESTORE_DECODE_FORMAT as _RESTORE_DECODE_FORMAT,
     parse_rife_progress as _parse_rife_progress,
     interpolation_source_from_probe as _interpolation_source_from_probe,
+    stream_start_time as _stream_start_time,
 )
 from core.workflows.encode.runtime.metadata_inject import (
     _build_dovi_record_from_rpu as _build_dovi_record_from_rpu_runtime,
@@ -140,7 +153,6 @@ from core.workflows.encode.runtime.mux_assembly import (
     EncodeStreamMappingService as _EncodeStreamMappingService,
     TrackMetadataArgsBuilder as _TrackMetadataArgsBuilder,
     TrackMetadataArgsBuilderCallbacks as _TrackMetadataArgsBuilderCallbacks,
-    build_injected_hevc_wrap_command as _build_injected_hevc_wrap_command_runtime,
     disposition_value_from_edit as _disposition_value_from_edit_runtime,
     normalized_track_language_value as _normalized_track_language_value_runtime,
     track_spec_for_track_order as _track_spec_for_track_order_runtime,
@@ -257,6 +269,8 @@ from core.workflows.encode.planning.subtitles import (
     resolve_subtitle_tracks_for_encode as _resolve_subtitle_tracks_for_encode_plan,
 )
 from core.workflows.encode.hdr_policy import hdr_warnings as _hdr_warnings
+from core.workflows.encode.hdr10plus_output import generates_hdr10plus as _generates_hdr10plus
+from core.workflows.encode.hdr10plus_output import outputs_dynamic_hdr as _outputs_dynamic_hdr
 from core.dovi_profile_detector import DoviProfileDetector as _DoviProfileDetector
 from core.dovi_profile_detector import DoviSubProfile as _DoviSubProfile
 from core.workflows.encode.dovi_policy import (
@@ -268,6 +282,7 @@ from core.workflows.encode.dovi_policy import (
 )
 from core.workflows.encode.domain.codecs import output_hdr_transfer as _output_hdr_transfer
 from core.workflows.encode.domain.codecs import preset_problem as _preset_problem
+from core.workflows.encode.domain.codecs import resolve_output_bit_depth as _resolve_output_bit_depth
 from core.workflows.encode.domain.codecs import vulkan_filters_compatible as _vulkan_filters_compatible
 from core.workflows.encode.vulkan import VulkanCapability as _VulkanCapability
 from core.workflows.encode.vulkan import detect_vulkan as _detect_vulkan
@@ -297,10 +312,10 @@ from core.workflows.encode.planning.validation import (
     validate_encode_config as _validate_encode_config_plan,
     video_settings_errors as _video_settings_errors_plan,
 )
-from core.output_commit import OutputBusyError, OutputReservation
+from core.output_commit import ExistingPolicy, OutputBusyError, OutputReservation
 from core.workflows.encode.models import (
     EncodeConfig, EncodeError, EncodePreviewCapture, EncodePreviewMode, EncodePreviewRequest, EncodePreviewResult,
-    PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S, PREVIEW_IMAGE_CAPTURE_COUNT,
+    PREVIEW_FRAME_MIN_OFFSET_S, PREVIEW_FRAME_TAIL_OFFSET_S,
     PREVIEW_VIDEO_THUMBNAIL_COUNT, QualityMode,
     VideoEncodeSettings,
 )
@@ -313,6 +328,18 @@ from core.workflows.encode.planning.plan_models import (
     MaterializedContainerMetadataPlan as _MaterializedContainerMetadataPlan,
     ResolvedTrackAssembly as _ResolvedTrackAssembly,
 )
+from core.workflows.common.ffmpeg_runtime import ffmpeg_version_log_line, matroska_output_args
+from core.workflows.common.native_stream_inputs import is_streamable_source
+from core.workflows.remux_models import normalize_mux_backend as _normalize_mux_backend
+from core.workflows.common.timeline_sync import SyncInput
+
+#: Aperçu image : durée encodée au-delà de l'instant demandé (au moins deux images, tampon des encodeurs).
+_PREVIEW_IMAGE_MARGIN_S = 0.5
+#: Aperçu image : l'image clé de découpe est cherchée d'abord dans cette durée avant l'instant demandé (sinon depuis
+#: le début de la source) ; la première lecture de paquets s'étend d'autant après l'instant.
+_PREVIEW_PROBE_WINDOW_S = 30
+#: Tolérance d'arrondi des horodatages (Matroska : milliseconde) entre l'instant demandé et celui d'une image.
+_PREVIEW_PTS_TOLERANCE_S = 0.0005
 
 # Points d'injection historiques utilisés par les tests et extensions internes.
 _VideoTrackPreparationOrchestrator = _runtime_helpers.VideoTrackPreparationOrchestrator
@@ -336,6 +363,27 @@ def _connect_direct(signal, slot) -> None:
     signal.connect(slot, direct)
 
 
+def _is_prepared_attachment_entry(entry: Path) -> bool:
+    """Pièces jointes préparées dans le dossier de travail (covers TMDB, extraites des sources)."""
+    return entry.name == "attachments" or entry.name.startswith("enc_attachments_")
+
+
+def _restore_measures_light_levels(video: VideoEncodeSettings) -> bool:
+    """Restauration d'une source PQ avec HDR10 écrit, valeurs non saisies, sortie HEVC : MaxCLL/MaxFALL mesurés
+    pendant l'encodage (``_prepare_restore_statistics``)."""
+    from core.fel.preparation import measures_light_levels
+
+    pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
+    return video.restores() and pq and measures_light_levels(video)
+
+
+def _restore_checks_dynamic_metadata(video: VideoEncodeSettings) -> bool:
+    """Restauration d'une source PQ avec copie Dolby Vision / HDR10+ : métadonnées copiées contrôlées après
+    l'encodage (``dynamic_metadata_adequacy``)."""
+    pq = video.p5_to_hdr10 or str(video.source_color_transfer or "").strip().lower() == "smpte2084"
+    return video.restores() and pq and _outputs_dynamic_hdr(video)
+
+
 def _interpolation_decode_cmd(
     decode_cmd: list[str],
     info: _InterpolationSource,
@@ -350,18 +398,21 @@ def _interpolation_decode_cmd(
     """
     cmd = list(decode_cmd)
     rate = _decode_normalization_rate(info, video) if video is not None else info.cfr_rate
+    restore_format = f"format={_RESTORE_DECODE_FORMAT}" if video is not None and video.restores() else ""
 
     def insert_before_output(args: list[str]) -> None:
         # options de sortie : avant ``-f yuv4mpegpipe`` (sinon avant la sortie)
         at = cmd.index("-f") if "-f" in cmd else max(1, len(cmd) - 1)
         cmd[at:at] = args
 
-    if rate:
+    # un seul fps= (source VFR, YADIF par champ), puis 10 bits sous Restauration (précision de sortie du réseau)
+    extra = ",".join(part for part in (f"fps={rate}" if rate else "", restore_format) if part)
+    if extra:
         if "-vf" in cmd:
             index = cmd.index("-vf") + 1
-            cmd[index] = f"{cmd[index]},fps={rate}"
+            cmd[index] = f"{cmd[index]},{extra}"
         else:
-            insert_before_output(["-vf", f"fps={rate}"])
+            insert_before_output(["-vf", extra])
     if "-fps_mode" not in cmd:
         insert_before_output(["-fps_mode", "passthrough"])
     return cmd
@@ -409,6 +460,9 @@ class EncodeWorkflow(QObject):
     log_message = Signal(str, str)
     static_hdr_estimate_ready = Signal(str, object)
     static_hdr_estimate_failed = Signal(str, str)
+    #: Encodage en échec lancé avec ``retain_failed_work_dir`` : dossier de travail gardé
+    #: (RetainedProcessWorkDir), l'utilisateur choisit de le conserver ou de le supprimer.
+    failed_work_dir_retained = Signal(object)
 
     def __init__(
         self,
@@ -416,10 +470,10 @@ class EncodeWorkflow(QObject):
         dovi_tool_bin:             str  = "dovi_tool",
         hdr10plus_bin:             str  = "hdr10plus_tool",
         mediainfo_bin:             str  = "mediainfo",
-        ram_buffer_enabled:        bool = True,
         ram_buffer_threshold_pct:  int  = 15,
         ffmpeg_threads:            int | None = None,
         max_parallel_video_encodes: int | None = 1,
+        x265_frame_threads:        int | None = 0,
         parent: QObject | None         = None,
         *,
         writing_application:       str  = "",
@@ -431,9 +485,12 @@ class EncodeWorkflow(QObject):
         eac3_bitrate_per_channel_kbps: int = 96,
         regenerate_statistics: bool = True,
         ffprobe_bin:               str | None = None,
+        measurement_cache_dir:     Path | None = None,
     ) -> None:
         super().__init__(parent)
         self._ffmpeg = ffmpeg_bin
+        # Cache des mesures de l'image du HDR Studio (``app_data_dir/hdr_inspection``) : HDR10+ généré.
+        self._measurement_cache_dir: Path | None = Path(measurement_cache_dir) if measurement_cache_dir else None
         # FFprobe configuré (réglage tools/ffprobe) ; sans valeur explicite, celui
         # placé à côté de FFmpeg. Un FFmpeg système choisi pour le matériel ne
         # remplace jamais un FFprobe explicite.
@@ -452,6 +509,8 @@ class EncodeWorkflow(QObject):
         self._rife_bin: str | None = rife_bin
         self._rife_trt_plugin = ""
         self._rife_trt_cache = ""
+        #: Jeton des sondes internes posé par une opération headless (``set_probe_cancel_event``).
+        self._probe_cancel_event: threading.Event | None = None
         # Cache mémoire : évite de ré-exécuter ffprobe/mediainfo à chaque
         # reconstruction d'aperçu (preview_command peut être appelé des dizaines
         # de fois pour le même fichier lors de changements UI).
@@ -475,10 +534,10 @@ class EncodeWorkflow(QObject):
             "eac3": int(eac3_bitrate_per_channel_kbps or 96),
         }
         self._runner = ToolRunner(max_workers=1, parent=self)
-        self._ram_buffer_enabled       = ram_buffer_enabled
         self._ram_buffer_threshold_pct = max(0, min(ram_buffer_threshold_pct, 90))
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
+        self._x265_frame_threads = _normalize_x265_frame_threads(x265_frame_threads)
         self._writing_application = writing_application.strip()
         self._postprocess_service = RemuxPostprocessService(
             ffprobe_bin=self._ffprobe_path(),
@@ -502,6 +561,7 @@ class EncodeWorkflow(QObject):
             log_cb=self.log_message.emit,
             enabled=regenerate_statistics,
         )
+        self._failed_work_dir_retention = FailedWorkDirRetention()
         self._signal_binding_service = _SignalBindingService(
             _SignalBindingServiceCallbacks(
                 write_nfo=lambda output: write_mediainfo_nfo(
@@ -510,12 +570,20 @@ class EncodeWorkflow(QObject):
                     mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
                 ),
                 remove_path=remove_path,
+                retain_failed=self._retain_failed_work_dir,
             )
         )
+
+    def _forget_dovi_detection(self) -> None:
+        """Sous-profils DV et replis dovi_tool déjà tentés : à refaire avec les nouveaux outils."""
+        self.__dict__.pop("_dovi_sub_profile_cache", None)
+        self.__dict__.pop("_dovi_tool_fallback_done", None)
 
     def set_ffmpeg(self, ffmpeg_bin: str) -> None:
         """Met à jour le binaire ffmpeg utilisé pour l'encodage (ex: ffmpeg système pour HW)."""
         previous_ffprobe = self._ffprobe_path()
+        if ffmpeg_bin != self._ffmpeg:
+            self._forget_dovi_detection()
         self._ffmpeg = ffmpeg_bin
         self._bins["ffprobe"] = self._ffprobe_path()
         self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
@@ -535,6 +603,14 @@ class EncodeWorkflow(QObject):
         """Met à jour le nombre de threads passé à FFmpeg via `-threads`."""
         self._ffmpeg_threads = _normalize_ffmpeg_thread_count(ffmpeg_threads)
 
+    def set_x265_frame_threads(self, x265_frame_threads: int | None) -> None:
+        """Met à jour le nombre d'images encodées en parallèle par libx265 (0 = automatique)."""
+        self._x265_frame_threads = _normalize_x265_frame_threads(x265_frame_threads)
+
+    def set_ram_buffer_threshold_pct(self, threshold_pct: int) -> None:
+        """Réserve de RAM libre (%) exigée pour lancer un encodage vidéo de plus en parallèle."""
+        self._ram_buffer_threshold_pct = max(0, min(int(threshold_pct), 90))
+
     def set_max_parallel_video_encodes(self, max_parallel_video_encodes: int | None) -> None:
         """Met à jour le niveau max de parallélisme pour la préparation multi-pistes vidéo."""
         self._max_parallel_video_encodes = _normalize_max_parallel_video_encodes(max_parallel_video_encodes)
@@ -544,6 +620,7 @@ class EncodeWorkflow(QObject):
         self._bins["mediainfo"] = mediainfo_bin
         if previous != mediainfo_bin:
             self._hdr_metadata_service.clear_probe_caches()
+            self._forget_dovi_detection()
 
     def set_ffprobe_bin(self, ffprobe_bin: str | None) -> None:
         """Applique le FFprobe configuré et oublie les sondes de l'ancien outil."""
@@ -553,6 +630,20 @@ class EncodeWorkflow(QObject):
         self._postprocess_service.set_ffprobe_bin(self._bins["ffprobe"])
         if previous != self._bins["ffprobe"]:
             self._hdr_metadata_service.clear_probe_caches()
+            self._forget_dovi_detection()
+
+    def set_metadata_tools(self, dovi_tool_bin: str, hdr10plus_bin: str) -> None:
+        """Applique dovi_tool / hdr10plus_tool configurés (réglages enregistrés) au prochain traitement."""
+        if (self._bins.get("dovi_tool"), self._bins.get("hdr10plus_tool")) == (dovi_tool_bin, hdr10plus_bin):
+            return
+        self._bins["dovi_tool"] = dovi_tool_bin
+        self._bins["hdr10plus_tool"] = hdr10plus_bin
+        self._hdr_metadata_service.clear_probe_caches()
+        self._forget_dovi_detection()
+        self._static_hdr_estimator = _StaticHdrEstimateService(
+            ffmpeg_bin=self._ffmpeg,
+            dovi_tool_bin=dovi_tool_bin,
+        )
 
     def set_nvencc_bin(self, nvencc_bin: str | None) -> None:
         """Met à jour le chemin vers NVEncC (None = pipeline NVEncC indisponible)."""
@@ -576,7 +667,7 @@ class EncodeWorkflow(QObject):
         plugin = self._rife_trt_plugin
         if not plugin or not self._rife_bin:
             return "", ""
-        capabilities = _rife_capabilities(str(shutil.which(self._rife_bin) or self._rife_bin))
+        capabilities = _rife_capabilities(str(shutil.which(self._rife_bin) or self._rife_bin), self._probe_cancel_event)
         if capabilities is None or not capabilities.supports("trt-plugin"):
             return "", ""
         return plugin, self._rife_trt_cache
@@ -672,8 +763,8 @@ class EncodeWorkflow(QObject):
 
     @staticmethod
     def _wants_dynamic_hdr_copy(config: EncodeConfig) -> bool:
-        video = EncodeWorkflow._primary_video_settings(config)
-        return bool(video.copy_dv or video.copy_hdr10plus)
+        """Métadonnées dynamiques en sortie : Dolby Vision copié, HDR10+ copié ou généré."""
+        return _outputs_dynamic_hdr(EncodeWorkflow._primary_video_settings(config))
 
     @staticmethod
     def _wants_dovi_profile_normalization(config: EncodeConfig) -> bool:
@@ -683,7 +774,9 @@ class EncodeWorkflow(QObject):
     @classmethod
     def _needs_metadata_inject(cls, config: EncodeConfig) -> bool:
         if cls._is_video_passthrough(config):
-            return cls._wants_dovi_profile_normalization(config)
+            # Copie : flux patché (RPU normalisé et / ou HDR10+ généré), horodatage de la piste d'origine.
+            return cls._wants_dovi_profile_normalization(config) or _generates_hdr10plus(
+                cls._primary_video_settings(config))
         video = EncodeWorkflow._primary_video_settings(config)
         if _is_nvencc_codec_runtime(video.codec):
             return False
@@ -746,7 +839,7 @@ class EncodeWorkflow(QObject):
             errors.append(f"{video.codec} ne supporte pas les métadonnées HDR statiques.")
         if video.copy_dv and not supports_dovi(video.codec):
             errors.append(f"{video.codec} ne supporte pas Dolby Vision. Seul 'nvencc_hevc' gère Dolby Vision.")
-        if (video.copy_dv or video.copy_hdr10plus) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
+        if _outputs_dynamic_hdr(video) and not _nvencc_supports_dynamic_hdr_runtime(video.codec):
             errors.append("Le codec NVEncC sélectionné ne supporte pas DoVi/HDR10+.")
         _ = plan
         return errors
@@ -1061,10 +1154,10 @@ class EncodeWorkflow(QObject):
         source: Path,
     ) -> list[str]:
         """Ajoute l'étage muxiveo-rife derrière un décodage y4m (pipeline NVEncC)."""
-        if not video.interpolates():
+        if not video.uses_engine():
             return decode_cmd
         if not self._rife_bin:
-            raise EncodeError("Interpolation d'images : outil muxiveo-rife introuvable.")
+            raise EncodeError("Moteur muxiveo-rife introuvable (interpolation d'images, débruitage MVO-R2).")
         settings = video.interpolation
         info = self._interpolation_source(video, source)
         trt_plugin, trt_cache = self._rife_trt_args()
@@ -1080,6 +1173,10 @@ class EncodeWorkflow(QObject):
             tta=settings.tta_passes(),
             trt_plugin=trt_plugin,
             trt_cache=trt_cache,
+            interpolate=video.interpolates(),
+            restore_args=_restore_args_for(video, info, rife_bin=self._rife_bin or "",
+                                           cancel_event=self._probe_cancel_event),
+            cancel_event=self._probe_cancel_event,
         )
         return _PipelineCommand(rife, [_interpolation_decode_cmd(decode_cmd, info, video)])
 
@@ -1100,6 +1197,7 @@ class EncodeWorkflow(QObject):
                 check_cancelled=self._check_cancelled,
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
+                log_warn=lambda message: self.log_message.emit("WARN", message),
                 primary_video_settings=self._primary_video_settings,
                 video_source_path=self._video_source_path,
                 video_stream_index=self._video_stream_index,
@@ -1120,7 +1218,10 @@ class EncodeWorkflow(QObject):
                 wrap_decode_with_interpolation=self._wrap_decode_with_interpolation,
                 check_external_rpu=self._check_external_rpu,
                 validation_override=self._validation_override_for(config),
-                count_video_frames=lambda path: self._frame_count_guard().source_frame_count(path),
+                count_video_frames=lambda path, signals=None: self._frame_count_guard(signals).source_frame_count(path),
+                regenerate_hdr10plus=self._regenerate_hdr10plus,
+                source_frame_count=lambda path, stream, exact=False, signals=None: self._frame_count_guard(
+                    signals).source_frame_count(path, stream, exact=exact),
             )
         ).run(
             config,
@@ -1187,7 +1288,14 @@ class EncodeWorkflow(QObject):
         """Adaptateur : assemble les artefacts multi-vidéo via le contrat partagé."""
         refs: list[_NativeVideoArtifactRef] = []
         for spec, prepared in zip(track_specs, prepared_inputs):
-            if str(spec.video.codec or "").strip().lower() == "copy":
+            if str(spec.video.codec or "").strip().lower() == "copy" and _generates_hdr10plus(spec.video):
+                # Copie patchée (HDR10+ généré) : départ de l'intermédiaire ramené à celui de la piste source.
+                shift_s = (_stream_start_time(self._ffprobe_path(), Path(spec.source), int(spec.stream_index))
+                           - _stream_start_time(self._ffprobe_path(), Path(prepared.path), 0))
+                refs.append(_NativeVideoArtifactRef(
+                    Path(prepared.path), 0, int(spec.offset_ms or 0) + round(1000 * shift_s),
+                ))
+            elif str(spec.video.codec or "").strip().lower() == "copy":
                 refs.append(_NativeVideoArtifactRef(
                     Path(prepared.path), int(spec.stream_index), int(spec.offset_ms or 0),
                 ))
@@ -1341,7 +1449,7 @@ class EncodeWorkflow(QObject):
         signals: TaskSignals | None = None,
         allow_live: bool = True,
         plan: _EncodePlan | None = None,
-    ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]:
+    ) -> tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]:
         return _EncodeMultisourceSyncService(
             _EncodeMultisourceSyncCallbacks(
                 ffmpeg_bin=self._ffmpeg,
@@ -1349,8 +1457,6 @@ class EncodeWorkflow(QObject):
                 log=self.log_message.emit,
                 build_encode_plan=self._build_encode_plan,
                 decide_strict_interleave_with_prescan=self._postprocess_service.decide_strict_interleave_with_prescan,
-                ram_buffer_enabled=self._ram_buffer_enabled,
-                ram_buffer_dir=EncodeWorkflow._ram_buffer_dir,
                 syncer_factory=FfmpegTimelineSync,
                 fallback_helper_factory=TimelineSyncFallbackHelper,
             )
@@ -1369,7 +1475,7 @@ class EncodeWorkflow(QObject):
         _append_strict_interleave_mux_flags_runtime(cmd)
 
     @staticmethod
-    def _append_sync_inputs(cmd: list[str], sync_inputs: list[Path | str]) -> None:
+    def _append_sync_inputs(cmd: list[str], sync_inputs: list[SyncInput]) -> None:
         _append_sync_inputs_runtime(cmd, sync_inputs)
 
     def _append_stream_maps_and_attachments(
@@ -1685,12 +1791,16 @@ class EncodeWorkflow(QObject):
         offset_remap: dict[tuple[Path, int, str], tuple[int, int]],
         sync_remap: dict[tuple[Path, int, str], tuple[int, int]] | None = None,
         strict_interleave: bool = False,
+        subtitle_copy_input_indices: list[int] | None = None,
     ) -> None:
         self._append_stream_maps_and_attachments(
             cmd,
             config,
             source_idx=source_idx,
-            subtitle_copy_input_indices=list(range(all_sources_count)),
+            subtitle_copy_input_indices=(
+                list(range(all_sources_count)) if subtitle_copy_input_indices is None
+                else subtitle_copy_input_indices
+            ),
             sync_remap=sync_remap,
             offset_remap=offset_remap,
             subtitle_tracks_override=list(plan.resolved_subtitle_tracks),
@@ -1800,6 +1910,7 @@ class EncodeWorkflow(QObject):
             amf_device=self._amf_device(),
             nvenc_device=self._nvenc_device(),
             depth_conversion_filters=self.__dict__.get("_depth_filters_cache", {}).get(self._ffmpeg, frozenset()),
+            x265_frame_threads=self.__dict__.get("_x265_frame_threads", 0),
         )
 
     def set_vulkan_capability(self, ffmpeg_bin: str, capability: _VulkanCapability) -> None:
@@ -1934,6 +2045,7 @@ class EncodeWorkflow(QObject):
                 rife_bin=self._rife_bin,
                 interpolation_source=self._interpolation_source,
                 rife_trt_args=self._rife_trt_args,
+                probe_cancel_event=lambda: self._probe_cancel_event,
             )
         )
 
@@ -1959,7 +2071,7 @@ class EncodeWorkflow(QObject):
             # Les écarts r/avg ffprobe ne voient pas toujours le VFR des smartphones.
             rate = str(stream.get("r_frame_rate") or stream.get("avg_frame_rate") or "")
             info = dataclasses.replace(info, is_vfr=True, cfr_rate=rate)
-        if info.cfr_rate and (video.copy_dv or video.copy_hdr10plus):
+        if info.cfr_rate and _outputs_dynamic_hdr(video):
             # DoVi / HDR10+ sont indexés par trame décodée : aucune trame ne doit
             # être ajoutée ou retirée, la normalisation CFR est désactivée.
             info = dataclasses.replace(info, cfr_rate="")
@@ -2164,17 +2276,6 @@ class EncodeWorkflow(QObject):
     _total_ram_bytes      = staticmethod(_ram_buffer_module.total_ram_bytes)
     _available_ram_bytes  = staticmethod(_ram_buffer_module.available_ram_bytes)
     _macos_available_ram  = staticmethod(_ram_buffer_module.macos_available_ram)
-    _ram_buffer_dir       = staticmethod(_ram_buffer_module.ram_buffer_dir)
-
-    def _shm_path(self, tmp: Path, name: str, file_size: int) -> Path:
-        """Wrapper de `runtime.ram_buffer.shm_path` lié à la config de l'instance."""
-        return _ram_buffer_module.shm_path(
-            tmp,
-            name,
-            file_size,
-            enabled=self._ram_buffer_enabled,
-            threshold_pct=self._ram_buffer_threshold_pct,
-        )
 
     # ------------------------------------------------------------------
     # Aperçu lisible
@@ -2231,6 +2332,22 @@ class EncodeWorkflow(QObject):
                     f"Piste vidéo #{index} : HDR10 statique estimé au lancement depuis le RPU "
                     "Dolby Vision (P5), absent de cet aperçu."
                 )
+            if _generates_hdr10plus(video):
+                header.append(
+                    f"Piste vidéo #{index} : HDR10+ généré au lancement depuis le Dolby Vision ("
+                    + ("image FEL reconstruite" if fel_requested(video) else
+                       "mesure de chaque image par mvo-fel, sinon estimation depuis le L1 du RPU")
+                    + ", plans du RPU) puis "
+                    + ("transmis à NVEncC (--dhdr10-info)" if _is_nvencc_codec_runtime(video.codec)
+                       else "injecté par hdr10plus_tool")
+                    + " ; remplace le HDR10+ de la source ; absent de cet aperçu."
+                )
+            if video.restores() and _restore_measures_light_levels(video):
+                header.append(
+                    f"Piste vidéo #{index} : MaxCLL/MaxFALL mesurés pendant l'encodage sur l'image débruitée "
+                    "(statistiques du moteur) puis écrits après ; ceux de la source restent si l'écart se limite "
+                    "à des pixels isolés ; absent de cet aperçu."
+                )
         # Commentaires du shell cible (REM sous cmd.exe) : l'aperçu se colle tel quel.
         return "\n".join((*(_preview_comment(line) for line in header), command_text))
 
@@ -2276,7 +2393,7 @@ class EncodeWorkflow(QObject):
         active_inner: dict[str, TaskSignals | None] | None = None,
     ) -> EncodePreviewResult:
         if request.normalized_mode() == EncodePreviewMode.IMAGE:
-            return self._run_image_preview_sync(config, request, signals)
+            return self._run_image_preview_sync(config, request, signals, active_inner=active_inner)
         return self._run_video_preview_sync(
             config,
             request,
@@ -2294,102 +2411,87 @@ class EncodeWorkflow(QObject):
         config: EncodeConfig,
         request: EncodePreviewRequest,
         signals: TaskSignals,
+        *,
+        active_inner: dict[str, TaskSignals | None] | None = None,
     ) -> EncodePreviewResult:
-        from core.fel.preparation import requested
-        resolved = self.resolve_dovi_sources(config)
-        if not requested(self._primary_video_settings(resolved)):
-            return self._run_image_preview_prepared(config, request, signals)
-        directory = self._preview_output_dir(config)
-        directory.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="fel_preview_", dir=directory) as work:
-            prepared = self.prepare_dovi_sources(resolved, work_dir=Path(work), signals=signals)
-            return self._run_image_preview_prepared(prepared, request, signals)
+        """Image de la sortie : court extrait encodé avec les réglages du job, image livrée à l'instant demandé.
 
-    def _run_image_preview_prepared(
-        self,
-        config: EncodeConfig,
-        request: EncodePreviewRequest,
-        signals: TaskSignals,
-    ) -> EncodePreviewResult:
+        ``t_req`` est relatif au début de la source (sémantique de ``-ss``), tiré au hasard sur demande. Le segment
+        est copié depuis l'image clé décodable ≤ ``t_req`` (préambule RASL retiré avec ses RPU / EL), encodé comme
+        la sortie (filtres, redimensionnement, DV / HDR10+, FEL, MVO-R2, interpolation) ; l'image livrée est la
+        première du clip dont l'instant réel est ≥ ``t_req`` (PTS mesurés, jamais un rang déduit d'une cadence).
+        """
         preview_dir = self._preview_output_dir(config)
         preview_dir.mkdir(parents=True, exist_ok=True)
-
         source_video = self._primary_video_settings(config)
         source_path = self._video_source_from_settings(config, source_video)
         source_stream = self._video_stream_from_settings(source_video)
-        prefer_dv, prefer_hdr10plus = self._preview_dynamic_hdr_preferences(
-            source_path,
-            source_video,
-        )
+        duration = max(0.0, float(config.duration_s or 0.0))
         signals.progress_pct.emit(0)
-        scenes = self._hdr_metadata_service.select_preview_scenes_random(
-            source_path,
-            count=PREVIEW_IMAGE_CAPTURE_COUNT,
-            stream_index=source_stream,
-            source_duration_s=config.duration_s,
-            skip_lead_s=PREVIEW_FRAME_MIN_OFFSET_S,
-            skip_tail_s=PREVIEW_FRAME_TAIL_OFFSET_S,
-            prefer_dovi=prefer_dv,
-            prefer_hdr10plus=prefer_hdr10plus,
-            progress_cb=lambda line: signals.progress.emit(line),
-            progress_pct_cb=lambda pct: signals.progress_pct.emit(self._scale_pct(0, 25, pct)),
-        )
-        if not scenes:
-            raise EncodeError(
-                "Impossible de sélectionner des scènes preview : aucune I-frame exploitable."
-            )
-        signals.progress_pct.emit(25)
-
-        hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
-        token = self._preview_token(config)
-        captures: list[EncodePreviewCapture] = []
+        if request.random_scene:
+            low = min(PREVIEW_FRAME_MIN_OFFSET_S, duration / 2) if duration else 0.0
+            high = max(low, duration - PREVIEW_FRAME_TAIL_OFFSET_S) if duration else low
+            t_req = random.uniform(low, high)
+        else:
+            t_req = max(0.0, float(request.timecode_s or 0.0))
         warning = ""
-        n = len(scenes)
-
-        for idx, scene in enumerate(scenes, start=1):
-            self._check_cancelled(signals)
-            image_path = preview_dir / f"{token}_{idx:02d}.png"
-            signals.progress.emit(
-                f"Capture {idx}/{n} à {self._seconds_label(scene.scene_time_s)}"
-                f"{' (' + scene.reason + ')' if scene.reason else ''}…"
+        if duration and t_req > duration:
+            warning = f"Instant {self._seconds_label(t_req)} au-delà de la durée de la source : dernière image livrée."
+            t_req = duration
+        # Image clé de découpe et première image réelle ≥ t_req : l'extrait va jusqu'à elle, quelle que soit la
+        # cadence (1 i/s, VFR).
+        keyframe, target_frame, next_key = self._preview_cut_points(source_path, source_stream, t_req, signals)
+        reach = float(target_frame) if target_frame is not None else t_req
+        signals.progress.emit(
+            f"Aperçu image à {self._seconds_label(t_req)} (image clé à {self._seconds_label(float(keyframe))})…")
+        token = self._preview_token(config)
+        source_segment = preview_dir / f"{token}_source.mkv"
+        encoded_clip = preview_dir / f"{token}.mkv"
+        image_path = preview_dir / f"{token}_01.png"
+        margin = _PREVIEW_IMAGE_MARGIN_S
+        try:
+            # Jusqu'à l'image clé suivante (incluse, ses RASL éventuelles avec elle) : toutes les images du GOP de la
+            # cible, quel que soit l'ordre de décodage ; sinon (fin de la source) marge après la cible.
+            span = (float(next_key) - float(keyframe)) + margin if next_key is not None else (reach - float(keyframe)) + margin
+            segment_start = self._cut_preview_segment(
+                source_path, source_segment, stream_index=source_stream, keyframe_s=keyframe,
+                duration_s=span, signals=signals,
             )
-            extract_cmd = self._build_preview_image_extract_from_source_cmd(
-                source_path,
-                image_path,
-                scene_time_s=scene.scene_time_s,
-                stream_index=source_stream,
-                hdr_kind=hdr_kind,
-            )
-            from core.fel.pipeline import with_fel_input
-            from core.fel.engine import FelError
-            command = with_fel_input(extract_cmd, source_video)
-            try:
-                self._runner._run_cmd(command, cwd=preview_dir, label=f"ffmpeg-preview-image-{idx:02d}",
-                    progress_cb=signals.progress.emit, progress_pct_cb=lambda _pct: None, signals=signals)
-            except FelError as exc:
-                warning = f"Reconstruction FEL indisponible ({exc}) : aperçu BL."
-                signals.progress.emit(f"[WARN] {warning}")
-                self._runner._run_cmd(extract_cmd, cwd=preview_dir, label="ffmpeg-preview-bl", signals=signals)
+            signals.progress_pct.emit(15)
+            self._encode_preview_segment(config, source_segment, encoded_clip,
+                                         max(_PREVIEW_IMAGE_MARGIN_S, (reach - segment_start) + margin),
+                                         signals, active_inner=active_inner)
+            signals.progress_pct.emit(80)
+            frames = self._preview_clip_frame_times(encoded_clip, signals)
+            if not frames:
+                raise EncodeError("Aperçu : aucune image dans l'extrait encodé.")
+            target = t_req - segment_start
+            rank = next((index for index, time_s in enumerate(frames) if time_s >= target - _PREVIEW_PTS_TOLERANCE_S),
+                        None)
+            if rank is None:
+                rank = len(frames) - 1
+                warning = warning or "Instant au-delà de la dernière image de l'extrait encodé : dernière image livrée."
+            hdr_kind = self._encoded_preview_hdr_kind(encoded_clip, source_video, source_path, source_stream)
             self._check_cancelled(signals)
-            if image_path.exists():
-                captures.append(EncodePreviewCapture(
-                    image_path=image_path,
-                    scene_time_s=scene.scene_time_s,
-                    label=scene.reason or "",
-                ))
-            if scene.warning and not warning:
-                warning = scene.warning
-            signals.progress_pct.emit(self._scale_pct(25, 100, int(idx * 100 / n)))
-
-        if not captures:
-            raise EncodeError("Aucune image preview n'a pu être générée.")
-
+            self._runner._run_cmd(
+                self._build_preview_frame_by_rank_cmd(encoded_clip, image_path, rank, hdr_kind),
+                cwd=preview_dir, label="ffmpeg-preview-image", progress_cb=lambda line: signals.progress.emit(line),
+                progress_pct_cb=lambda _pct: None, signals=signals,
+            )
+            self._check_cancelled(signals)
+            if not image_path.exists():
+                raise EncodeError("Aucune image preview n'a pu être générée.")
+        except BaseException:
+            self._remove_preview_temp(image_path)
+            raise
+        finally:
+            self._remove_preview_temp(source_segment)
+            self._remove_preview_temp(encoded_clip)
         signals.progress_pct.emit(100)
-        return EncodePreviewResult(
-            mode=EncodePreviewMode.IMAGE.value,
-            captures=tuple(captures),
-            warning=warning,
-        )
+        scene_time_s = segment_start + frames[rank]
+        capture = EncodePreviewCapture(image_path=image_path, scene_time_s=scene_time_s,
+                                       label=self._seconds_label(scene_time_s))
+        return EncodePreviewResult(mode=EncodePreviewMode.IMAGE.value, captures=(capture,), warning=warning)
 
     def _run_video_preview_sync(
         self,
@@ -2438,78 +2540,29 @@ class EncodeWorkflow(QObject):
         token = self._preview_token(config)
         source_segment = preview_dir / f"{token}_source.mkv"
         encoded_clip = preview_dir / f"{token}.mkv"
-        trim_cmd = self._build_preview_source_segment_cmd(
-            source_path,
-            source_segment,
-            stream_index=source_stream,
-            start_s=scene.scene_time_s,
-            duration_s=clip_duration,
-        )
-        self._check_cancelled(signals)
+        # Segment copié depuis l'image clé décodable ≤ scène (son instant exact est le début réel du segment,
+        # vignettes datées depuis lui) ; préambule RASL retiré avec ses métadonnées.
+        keyframe = self._preview_keyframe_at_or_before(source_path, source_stream, scene.scene_time_s, signals)
+        if abs(float(keyframe) - scene.scene_time_s) > 0.0005:
+            signals.progress.emit(
+                f"Début réel du segment preview : {self._seconds_label(float(keyframe))} "
+                f"(image clé avant {self._seconds_label(scene.scene_time_s)})"
+            )
         signals.progress.emit("Préparation du segment source preview…")
-        self._runner._run_cmd(
-            trim_cmd,
-            cwd=preview_dir,
-            label="ffmpeg-preview-source",
-            progress_cb=lambda line: signals.progress.emit(line),
-            progress_pct_cb=lambda _pct: None,
-            signals=signals,
-        )
-        self._check_cancelled(signals)
-        signals.progress_pct.emit(15)
-
-        preview_config = self._preview_encode_config(
-            config,
-            source_segment=source_segment,
-            output=encoded_clip,
-            clip_duration_s=clip_duration,
-        )
-        errors = self.validate(preview_config)
-        if errors:
-            raise EncodeError("\n".join(errors))
-
-        signals.progress.emit("Encodage du segment preview avec les paramètres courants…")
-        encode_signals = TaskSignals()
-        encode_failed: list[tuple[str, object]] = []
-        encode_cancelled: list[bool] = []
-        _connect_direct(encode_signals.progress, signals.progress.emit)
-        _connect_direct(
-            encode_signals.progress_pct,
-            lambda pct: signals.progress_pct.emit(self._scale_pct(15, 80, pct)),
-        )
-        _connect_direct(
-            encode_signals.failed,
-            lambda message, exc: encode_failed.append((str(message), exc)),
-        )
-        _connect_direct(
-            encode_signals.cancelled,
-            lambda: encode_cancelled.append(True),
-        )
-        if active_inner is not None:
-            active_inner["signals"] = encode_signals
-        signals.link_workers(encode_signals)
         try:
-            self._run_with_preparation(preview_config, validate=False, prep_signals=encode_signals)
+            segment_start = self._cut_preview_segment(source_path, source_segment, stream_index=source_stream,
+                                                      keyframe_s=keyframe, duration_s=clip_duration, signals=signals)
+            signals.progress_pct.emit(15)
+            self._encode_preview_segment(config, source_segment, encoded_clip, clip_duration, signals,
+                                         active_inner=active_inner)
+        except BaseException:
+            self._remove_preview_temp(encoded_clip)
+            raise
         finally:
-            if active_inner is not None:
-                active_inner["signals"] = None
-        self._check_cancelled(signals)
-        if encode_cancelled:
-            raise TaskCancelledError()
-        if encode_failed:
-            message, exc = encode_failed[-1]
-            if isinstance(exc, Exception):
-                raise EncodeError(message) from exc
-            raise EncodeError(message)
-        if not encoded_clip.exists():
-            raise EncodeError("La génération du segment preview a échoué.")
+            self._remove_preview_temp(source_segment)
 
         signals.progress_pct.emit(80)
-        encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(encoded_clip)
-        if not encoded_hdr_kind and not bool(getattr(source_video, "tonemap_to_sdr", False)):
-            # Probe may miss the bitstream metadata when container lacks it; fall back
-            # to the source's HDR signature since the encoder preserved the dynamic range.
-            encoded_hdr_kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
+        encoded_hdr_kind = self._encoded_preview_hdr_kind(encoded_clip, source_video, source_path, source_stream)
         thumbnails: list[EncodePreviewCapture] = []
         thumb_count = PREVIEW_VIDEO_THUMBNAIL_COUNT
         for idx in range(thumb_count):
@@ -2535,12 +2588,11 @@ class EncodeWorkflow(QObject):
             if thumb_path.exists():
                 thumbnails.append(EncodePreviewCapture(
                     image_path=thumb_path,
-                    scene_time_s=scene.scene_time_s + thumb_time,
+                    scene_time_s=segment_start + thumb_time,
                     label=f"+{thumb_time:.1f}s",
                 ))
             signals.progress_pct.emit(self._scale_pct(80, 100, int((idx + 1) * 100 / thumb_count)))
 
-        self._remove_preview_temp(source_segment)
         signals.progress_pct.emit(100)
 
         return EncodePreviewResult(
@@ -2549,6 +2601,219 @@ class EncodeWorkflow(QObject):
             video_path=encoded_clip,
             warning=scene.warning,
         )
+
+    def _encode_preview_segment(
+        self,
+        config: EncodeConfig,
+        source_segment: Path,
+        encoded_clip: Path,
+        clip_duration_s: float,
+        signals: TaskSignals,
+        *,
+        active_inner: dict[str, TaskSignals | None] | None = None,
+    ) -> None:
+        """Encode le segment source avec les réglages du job (aperçus image et vidéo) ; annulable via ``active_inner``."""
+        preview_config = self._preview_encode_config(
+            config,
+            source_segment=source_segment,
+            output=encoded_clip,
+            clip_duration_s=clip_duration_s,
+        )
+        errors = self.validate(preview_config)
+        if errors:
+            raise EncodeError("\n".join(errors))
+
+        signals.progress.emit("Encodage du segment preview avec les paramètres courants…")
+        encode_signals = TaskSignals()
+        encode_failed: list[tuple[str, object]] = []
+        encode_cancelled: list[bool] = []
+        _connect_direct(encode_signals.progress, signals.progress.emit)
+        _connect_direct(
+            encode_signals.progress_pct,
+            lambda pct: signals.progress_pct.emit(self._scale_pct(15, 80, pct)),
+        )
+        _connect_direct(
+            encode_signals.failed,
+            lambda message, exc: encode_failed.append((str(message), exc)),
+        )
+        _connect_direct(
+            encode_signals.cancelled,
+            lambda: encode_cancelled.append(True),
+        )
+        if active_inner is not None:
+            active_inner["signals"] = encode_signals
+        signals.link_workers(encode_signals)
+        leases = self._engine_leases(preview_config)  # moteur loué pendant l'aperçu réel, comme à l'encodage
+        try:
+            self._run_with_preparation(preview_config, validate=False, prep_signals=encode_signals)
+        finally:
+            for lease in leases:
+                lease.release()
+            if active_inner is not None:
+                active_inner["signals"] = None
+        self._check_cancelled(signals)
+        if encode_cancelled:
+            raise TaskCancelledError()
+        if encode_failed:
+            message, exc = encode_failed[-1]
+            if isinstance(exc, Exception):
+                raise EncodeError(message) from exc
+            raise EncodeError(message)
+        if not encoded_clip.exists():
+            raise EncodeError("La génération du segment preview a échoué.")
+
+    def _encoded_preview_hdr_kind(self, encoded_clip: Path, source_video: VideoEncodeSettings, source_path: Path,
+                                  source_stream: int) -> str:
+        """Transfert HDR du clip encodé (tone mapping de l'affichage), sinon celui de la source s'il est conservé."""
+        kind = self._hdr_metadata_service.source_hdr_transfer(encoded_clip)
+        if not kind and not bool(getattr(source_video, "tonemap_to_sdr", False)):
+            # Probe may miss the bitstream metadata when container lacks it; fall back
+            # to the source's HDR signature since the encoder preserved the dynamic range.
+            kind = self._hdr_metadata_service.source_hdr_transfer(source_path, source_stream)
+        return kind
+
+    def _preview_probe(self, cmd: list[str], signals: TaskSignals | None, *, timeout: float = 120.0) -> str:
+        """Sonde de l'aperçu, bornée et tuée par l'annulation de l'aperçu."""
+        from core.subprocess_utils import ProbeCancelledError, run_probe
+
+        try:
+            result = run_probe(cmd, timeout=timeout, cancel_event=getattr(signals, "_cancel_event", None))
+        except ProbeCancelledError:
+            raise TaskCancelledError() from None
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise EncodeError(f"Sonde de l'aperçu impossible : {exc}") from exc
+        if result.returncode != 0:
+            raise EncodeError(f"Sonde de l'aperçu en échec : {(result.stderr or '').strip()[-300:]}")
+        return result.stdout or ""
+
+    def _preview_keyframe_at_or_before(self, source: Path, stream_index: int, time_s: float,
+                                       signals: TaskSignals | None) -> Fraction:
+        """Instant exact (relatif au début de la source, base de temps du flux) de l'image clé ≤ ``time_s``."""
+        return self._preview_cut_points(source, stream_index, time_s, signals)[0]
+
+    def _preview_cut_points(self, source: Path, stream_index: int, time_s: float,
+                            signals: TaskSignals | None) -> tuple[Fraction, Fraction | None, Fraction | None]:
+        """(image clé de découpe ≤ ``time_s``, première image ≥ ``time_s``, image clé suivante), instants relatifs au
+        début de la source, dans la base de temps du flux.
+
+        Les paquets sont lus dans l'ordre de décodage, par nombre (``début%+#N``), jusqu'à l'image clé qui suit la
+        cible : toute image décodée avant une image clé est affichée avant ses images de tête, la cible est alors
+        définitive quelle que soit la cadence (basse, VFR, images B). Le nombre lu double tant qu'elle manque ; moins
+        de paquets rendus que demandés = fin du flux constatée (image clé suivante : None). Jamais d'intervalle sans
+        fin (« début% ») : FFprobe y lit des champs de fin non initialisés et rend parfois zéro paquet, code 0.
+        """
+        payload = json.loads(self._preview_probe(
+            [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-show_entries",
+             "format=start_time:stream=avg_frame_rate,r_frame_rate", "-of", "json", *ffprobe_input_args(source)],
+            signals, timeout=30.0) or "{}")
+        origin = self._fraction_or_none((payload.get("format") or {}).get("start_time")) or Fraction(0)
+        stream = (payload.get("streams") or [{}])[0]
+        # Cadence déclarée : estimation du nombre de paquets de la première lecture (corrigée ensuite par doublement).
+        rate = next((value for value in (self._fraction_or_none(stream.get(key))
+                                         for key in ("avg_frame_rate", "r_frame_rate")) if value), Fraction(1))
+        limit = Fraction(time_s).limit_denominator(10**6)
+        tolerance = Fraction(1, 10**6)
+        low = max(Fraction(0), limit - _PREVIEW_PROBE_WINDOW_S)
+
+        def covering_count() -> int:
+            """Paquets attendus de ``low`` à la fenêtre après l'instant demandé."""
+            return max(1, math.ceil(rate * (limit - low + _PREVIEW_PROBE_WINDOW_S)))
+
+        count = covering_count()
+        while True:
+            payload = json.loads(self._preview_probe(
+                [self._ffprobe_path(), "-v", "error", "-select_streams", str(int(stream_index)), "-read_intervals",
+                 f"{float(origin + low):.6f}%+#{count}", "-show_entries", "packet=pts,flags:stream=time_base",
+                 "-of", "json", *ffprobe_input_args(source)], signals, timeout=600.0) or "{}")
+            raw = payload.get("packets") or []
+            exhausted = len(raw) < count
+            base = self._fraction_or_none((payload.get("streams") or [{}])[0].get("time_base")) or Fraction(1, 1000)
+            packets = [(Fraction(int(packet["pts"])) * base - origin, "K" in str(packet.get("flags") or ""))
+                       for packet in raw if str(packet.get("pts", "")).lstrip("-").isdigit()]
+            keys = [time for time, key in packets if key]
+            before = [time for time in keys if time <= limit + tolerance]
+            if not before and low > 0:
+                low = Fraction(0)  # aucune image clé dans la fenêtre précédant l'instant : depuis le début
+                count = max(count, covering_count())
+                continue
+            if not before:
+                before = [min(keys)] if keys else [Fraction(0)]
+            after = [time for time, _key in packets if time >= limit - tolerance]
+            target = max(Fraction(0), min(after)) if after else None
+            reach = target if target is not None else limit
+            following = [time for time in keys if time > reach + tolerance]
+            if following or exhausted:
+                return max(Fraction(0), max(before)), target, min(following) if following else None
+            count *= 2
+
+    @staticmethod
+    def _fraction_or_none(value: object) -> Fraction | None:
+        """Valeur FFprobe (« 24000/1001 », « 0.000000 ») en fraction ; None si absente, nulle (« 0/0 ») ou illisible."""
+        try:
+            fraction = Fraction(str(value))
+        except (ValueError, ZeroDivisionError):
+            return None
+        return fraction or None
+
+    @staticmethod
+    def _seek_arg_at_or_after(seconds: Fraction) -> str:
+        """``-ss`` au microseconde supérieur (FFmpeg lit ``-ss`` en µs) : jamais avant l'image clé visée, sinon la
+        recherche reculerait jusqu'à l'image clé précédente ; jamais plus d'1 µs après."""
+        micros = max(0, -((-seconds.numerator * 1_000_000) // seconds.denominator))
+        return f"{micros // 1_000_000}.{micros % 1_000_000:06d}"
+
+    def _cut_preview_segment(self, source: Path, output: Path, *, stream_index: int, keyframe_s: Fraction,
+                             duration_s: float, signals: TaskSignals) -> float:
+        """Segment source copié depuis l'image clé ``keyframe_s`` ; renvoie son instant source (début réel).
+
+        Les images de tête non décodables (RASL d'un GOP ouvert, PTS négatifs après la découpe) sont retirées avec
+        leurs RPU / EL ; la première image du segment est vérifiée : l'image clé visée, à l'instant 0.
+        """
+        self._check_cancelled(signals)
+        cmd = self._build_preview_source_segment_cmd(source, output, stream_index=stream_index, start_s=keyframe_s,
+                                                     duration_s=max(0.5, duration_s))
+        self._runner._run_cmd(cmd, cwd=output.parent, label="ffmpeg-preview-source",
+                              progress_cb=lambda line: signals.progress.emit(line),
+                              progress_pct_cb=lambda _pct: None, signals=signals)
+        self._check_cancelled(signals)
+        payload = json.loads(self._preview_probe(
+            [self._ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1",
+             "-show_entries", "packet=pts_time,flags", "-of", "json", *ffprobe_input_args(output)], signals) or "{}")
+        first = (payload.get("packets") or [{}])[0]
+        try:
+            first_time = float(first.get("pts_time"))
+        except (TypeError, ValueError):
+            first_time = None
+        if "K" not in str(first.get("flags") or "") or first_time is None or abs(first_time) > 0.0005:
+            raise EncodeError("Aperçu : le segment source ne commence pas par l'image clé attendue "
+                              f"({self._seconds_label(float(keyframe_s))}).")
+        return float(keyframe_s)
+
+    def _preview_clip_frame_times(self, clip: Path, signals: TaskSignals) -> list[float]:
+        """Instants des images décodées du clip (ordre d'affichage), relatifs à sa première image."""
+        output = self._preview_probe(
+            [self._ffprobe_path(), "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "frame=best_effort_timestamp_time", "-of", "csv=p=0", *ffprobe_input_args(clip)], signals, timeout=300.0)
+        times = []
+        for line in output.splitlines():
+            value = line.strip().split(",", 1)[0]
+            try:
+                times.append(float(value))
+            except ValueError:
+                continue
+        return [time_s - times[0] for time_s in times] if times else []
+
+    def _build_preview_frame_by_rank_cmd(self, clip: Path, output: Path, rank: int, hdr_kind: str) -> list[str]:
+        """Extraction de l'image de rang ``rank`` (ordre d'affichage) du clip, tone-mappée pour l'affichage."""
+        cmd = [self._ffmpeg, "-hide_banner", "-y"]
+        append_ffmpeg_input_args(cmd, clip)
+        chain = f"select=eq(n\\,{int(rank)})"
+        tonemap = self._preview_image_tonemap_filter(hdr_kind)
+        if tonemap:
+            chain += "," + tonemap
+        cmd.extend(["-map", "0:v:0", "-vf", chain, "-frames:v", "1", "-fps_mode", "passthrough", "-update", "1",
+                    "-an", "-sn", "-dn", str(output)])
+        return cmd
 
     @staticmethod
     def _remove_preview_temp(path: Path) -> None:
@@ -2629,24 +2894,28 @@ class EncodeWorkflow(QObject):
         output: Path,
         *,
         stream_index: int,
-        start_s: float,
+        start_s: Fraction | float,
         duration_s: float,
     ) -> list[str]:
+        """Copie du segment depuis l'image clé ``start_s`` (instant exact) : ``-ss`` au µs supérieur, images de tête
+        de PTS négatif (RASL d'un GOP ouvert, non décodables) retirées avec leurs RPU / EL."""
         cmd = [
             self._ffmpeg,
             "-hide_banner",
             "-y",
-            "-ss", self._seconds_arg(start_s),
+            "-ss", self._seek_arg_at_or_after(Fraction(start_s)),
             "-t", self._seconds_arg(duration_s),
         ]
         append_ffmpeg_input_args(cmd, source)
         cmd.extend([
             "-map", f"0:{int(stream_index)}",
             "-c:v", "copy",
+            "-bsf:v", "noise=drop=lt(pts\\,0)",
             "-an",
             "-sn",
             "-dn",
             "-map_metadata", "-1",
+            *matroska_output_args(self._ffmpeg, output),
             str(output),
         ])
         return cmd
@@ -2760,10 +3029,19 @@ class EncodeWorkflow(QObject):
         clip_duration_s: float,
     ) -> EncodeConfig:
         original_video = self._primary_video_settings(config)
+        if original_video.restores() and original_video.restoration.animation == "auto":
+            # Genre lu sur la configuration d'origine (balise de sortie, sinon source) : le segment n'en porte plus.
+            animated = self._is_animation(config, original_video)
+            original_video = replace(original_video, restoration=replace(original_video.restoration,
+                                                                         animation="on" if animated else "off"))
         video = replace(
             original_video,
             source_path=source_segment,
             stream_index=0,
+            # HDR10+ généré : préparé sur le segment lui-même (mesure jamais gardée dans le cache du HDR Studio).
+            generated_hdr10plus_json=None,
+            hdr10plus_generation_method="",
+            hdr10plus_generation_cache_write=False,
         )
         if video.codec != "copy" and video.quality_mode == QualityMode.SIZE:
             video = replace(
@@ -2830,8 +3108,10 @@ class EncodeWorkflow(QObject):
                     errors.append(error)
         errors.extend(self._dovi_multi_track_errors(config))
         errors.extend(error for error in self._dovi_policy_errors(config) if error not in errors)
+        errors.extend(error for error in self._hdr10plus_generation_errors(config) if error not in errors)
         errors.extend(self.size_target_errors(config))
         errors.extend(self._interpolation_validation_errors(config))
+        errors.extend(self._restoration_validation_errors(config))
         # Backend natif strict : toute incompatibilité est signalée avant
         # l'encodage lourd, aucun repli FFmpeg n'est autorisé.
         mux_decision = self.select_mux_backend(config)
@@ -2913,7 +3193,8 @@ class EncodeWorkflow(QObject):
         changed = False
         for video in tracks:
             normalize = video.copy_dv and str(video.dovi_profile or "0").strip() == _NORMALIZE_P81
-            if video.codec == "copy" and not normalize:
+            # Copy + HDR10+ généré : sous-profil seul (refus P5 / image de base non PQ), flux jamais transformé.
+            if video.codec == "copy" and not normalize and not _generates_hdr10plus(video):
                 resolved.append(video)
                 continue
             sub_profile = self._dovi_sub_profile(
@@ -2991,6 +3272,26 @@ class EncodeWorkflow(QObject):
                         else "."
                     )
                 )
+        return errors
+
+    def _hdr10plus_generation_errors(self, config: EncodeConfig) -> list[str]:
+        """HDR10+ généré : image de base PQ requise (P8.2 SDR, P8.4 HLG refusés), jamais Copy d'une P5 (IPT)."""
+        errors: list[str] = []
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if not _generates_hdr10plus(video):
+                continue
+            sub_profile = _sub_profile_from_value(video.dovi_source_profile)
+            if sub_profile in {_DoviSubProfile.P8_2, _DoviSubProfile.P8_4}:
+                errors.append(f"Piste vidéo #{index} — HDR10+ généré : image de base {sub_profile.label} non PQ "
+                              "(SDR ou HLG), aucun HDR10+ possible.")
+            elif sub_profile is _DoviSubProfile.P5 and video.codec == "copy":
+                errors.append(f"Piste vidéo #{index} — HDR10+ généré : en copie, l'image de base d'une source "
+                              "Dolby Vision P5 (IPT) ne peut pas porter de HDR10+ ; réencoder la piste.")
+            elif video.codec == "copy" and self._video_source_from_settings(config, video).suffix.lower() in {
+                    ".hevc", ".h265", ".265", ".x265"}:
+                # Flux brut sans horodatage (images B réordonnées) : aucune piste Matroska à patcher.
+                errors.append(f"Piste vidéo #{index} — HDR10+ généré : en copie, un flux HEVC brut n'a pas "
+                              "d'horodatage à conserver ; le remuxer d'abord en MKV (Conteneur) ou réencoder.")
         return errors
 
     def _p5_conversion_available(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
@@ -3087,6 +3388,7 @@ class EncodeWorkflow(QObject):
         *,
         work_dir: Path,
         signals: TaskSignals | None = None,
+        complete_rpu: bool = True,
     ) -> EncodeConfig:
         """Préparation Dolby Vision au lancement (thread de travail).
 
@@ -3094,7 +3396,9 @@ class EncodeWorkflow(QObject):
         puis revalidation complète de la configuration et du routage effectifs
         (une découverte tardive ou un repli pipe peut rendre le job invalide :
         multipiste P5, cadence variable…) avant toute écriture lourde ; enfin RPU
-        P5 converti en P8.1 extrait une fois (copie DV, HDR10 statique estimé).
+        de la source extrait une fois (copie DV : mode 0 ; P5 : converti en P8.1,
+        HDR10 statique estimé) et complété des images qui n'en portent pas
+        (``complete_rpu``, sans objet pour les aperçus image).
         """
         config = self.resolve_dovi_sources(config, allow_tool_fallback=True)
         primary = self._primary_video_settings(config)
@@ -3138,6 +3442,11 @@ class EncodeWorkflow(QObject):
             return fel_engine
 
         for index, video in enumerate(tracks, start=1):
+            if complete_rpu:
+                prepared_rpu = self._prepare_source_rpu(config, video, index=index, work_dir=work_dir, run=run,
+                                                        signals=signals)
+                changed = changed or prepared_rpu is not video
+                video = prepared_rpu
             needs_static = bool(
                 video.inject_hdr_meta
                 and not video.tonemap_to_sdr
@@ -3152,11 +3461,25 @@ class EncodeWorkflow(QObject):
                 cancelled=(signals._cancel_event.is_set if signals is not None else lambda: False),
                 log=self.log_message.emit,
                 engine_loader=load_fel_engine,
+                source_rpu=video.source_rpu_path,
             )
             changed = changed or prepared_fel is not video
             video = prepared_fel
+            prepared_restore = self._prepare_restore_statistics(video, work_dir=work_dir, index=index)
+            changed = changed or prepared_restore is not video
+            video = prepared_restore
+
+            def with_generated_hdr10plus(video: VideoEncodeSettings, index: int = index) -> VideoEncodeSettings:
+                """HDR10+ généré préparé en dernier (méthode selon le FEL retenu, RPU P5 réutilisé)."""
+                if not complete_rpu:
+                    return video
+                return self.prepare_generated_hdr10plus(config, video, index=index, work_dir=work_dir, run=run,
+                                                        signals=signals, engine_loader=load_fel_engine)
+
             if not video.p5_to_hdr10 or not (video.copy_dv or needs_static):
-                resolved.append(video)
+                generated = with_generated_hdr10plus(video)
+                changed = changed or generated is not video
+                resolved.append(generated)
                 continue
             from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
 
@@ -3173,6 +3496,11 @@ class EncodeWorkflow(QObject):
                 cleanup_paths=[],
                 mode="3",
             )
+            if complete_rpu and video.copy_dv:
+                rpu = self._complete_source_rpu(
+                    config, video, rpu, index=index, run=run, signals=signals,
+                    source=self._video_source_from_settings(config, video),
+                )
             updates: dict[str, Any] = {"p5_rpu_path": rpu if video.copy_dv else None}
             if needs_static:
                 # Seuls les champs vides sont complétés ; une saisie n'est jamais écrasée.
@@ -3198,7 +3526,7 @@ class EncodeWorkflow(QObject):
                     )
                 for warning in estimate.warnings:
                     self.log_message.emit("WARN", f"Piste vidéo #{index} — {warning}")
-            resolved.append(dataclasses.replace(video, **updates))
+            resolved.append(with_generated_hdr10plus(dataclasses.replace(video, **updates)))
             changed = True
         if changed:
             config = dataclasses.replace(config, video=resolved[0], video_tracks=resolved)
@@ -3206,6 +3534,247 @@ class EncodeWorkflow(QObject):
         if errors:
             raise EncodeError("\n".join(errors))
         return config
+
+    def prepare_generated_hdr10plus(
+        self, config: EncodeConfig, video: VideoEncodeSettings, *, index: int, work_dir: Path,
+        run: Callable[[list[str]], object], signals: TaskSignals | None,
+        engine_loader: Callable[[], Any] | None = None,
+    ) -> VideoEncodeSettings:
+        """HDR10+ généré depuis le Dolby Vision : méthode (``resolve_generation_method``), puis JSON indexé sur les
+        images de la source (mesure de l'image, sinon L1 du RPU) ; statistiques FEL : JSON écrit après l'encodage.
+
+        Appelé à la préparation et par les reprises sur le BL après un échec FEL (méthode réévaluée).
+        Annulation : ``TaskCancelledError`` (jamais de repli L1) ; ni mesure ni L1 : ``EncodeError``.
+        """
+        if not _generates_hdr10plus(video):
+            return video
+        from core.fel.engine import FelCancelled, FelError, measure_supported
+        from core.hdr10plus_generation import (
+            METHOD_FEL_STATISTICS,
+            METHOD_L1,
+            METHOD_MEASURE_RECONSTRUCTED,
+            GenerationError,
+            l1_statistics,
+            measured_statistics,
+            resolve_generation_method,
+            write_generated,
+        )
+        from core.hdr_inspection.cache import InspectionCache
+        from core.hdr_inspection.measure import MeasurementError
+        from core.workflows.encode.hdr10plus_output import hevc_output
+
+        prefix = f"Piste vidéo #{index} — "
+        cancel_event = signals._cancel_event if signals is not None else threading.Event()
+        engine: Any = None
+        try:
+            from core.fel.engine import FelEngine
+
+            engine = engine_loader() if engine_loader is not None else FelEngine.installed()
+        except Exception:  # noqa: BLE001 — extension absente ou illisible : repli L1 annoncé
+            engine = None
+        layers = frozenset(layer for layer in ("base", "reconstructed")
+                           if engine is not None and measure_supported(engine, layer))
+        fel = video.fel_context
+        choice = resolve_generation_method(
+            sub_profile=_sub_profile_from_value(video.dovi_source_profile), fel_bake=fel is not None,
+            fel_statistics=fel is not None and fel.statistics is not None, hevc_output=hevc_output(video),
+            measure_layers=layers)
+        self.log_message.emit("WARN" if choice.approximate else "INFO",
+                              prefix + f"HDR10+ généré depuis le Dolby Vision : {choice.reason}.")
+        if choice.method == METHOD_FEL_STATISTICS:
+            return dataclasses.replace(video, generated_hdr10plus_json=None, hdr10plus_generation_method=choice.method)
+        source = self._video_source_from_settings(config, video)
+        stream = self._video_stream_from_settings(video)
+        # Dossier propre à cette génération : reprises de pistes en parallèle sans fichier commun.
+        own_dir = Path(tempfile.mkdtemp(prefix=f"hdr10plus_{index}_", dir=str(work_dir)))
+        output = own_dir / f"generated_hdr10plus_{index}.json"
+        method = choice.method
+        statistics = None
+        try:
+            if method != METHOD_L1:
+                layer = "reconstructed" if method == METHOD_MEASURE_RECONSTRUCTED else "base"
+                guard = self._frame_count_guard(signals)
+                counts: dict[bool, int | None] = {}
+
+                def source_frames(exact: bool) -> int | None:
+                    """Images de la source (compte rapide, sinon exact), lues une fois chacune."""
+                    if exact not in counts:
+                        counts[exact] = guard.source_frame_count(source, stream, exact=exact)
+                        if signals is not None and signals._cancel_event.is_set():
+                            raise TaskCancelledError()
+                    return counts[exact]
+
+                total = source_frames(False) or 0
+                step = max(1, total // 20) if total else 10000
+
+                def progress(frames: int) -> None:
+                    if frames % step < 1 or frames == total:
+                        self.log_message.emit("INFO", prefix + "Mesure de l'image pour le HDR10+ : "
+                                              + (f"{frames}/{total} images" if total else f"{frames} images"))
+
+                cache = (InspectionCache(self._measurement_cache_dir)
+                         if self._measurement_cache_dir is not None else None)
+                try:
+                    statistics, origin = measured_statistics(
+                        engine, source, stream, own_dir, layer=layer, threads=max(2, self._ffmpeg_threads),
+                        progress=progress, cancel=cancel_event, cache=cache,
+                        cache_write=video.hdr10plus_generation_cache_write,
+                        device=video.fel_device if layer == "reconstructed" else "auto",
+                        precision=video.fel_precision if layer == "reconstructed" else "fast",
+                        source_frames=source_frames)
+                    self.log_message.emit("INFO", prefix + f"Mesure de l'image pour le HDR10+ : {origin}.")
+                except FelCancelled as exc:
+                    raise TaskCancelledError() from exc  # annulation du plugin : jamais de repli L1
+                except (FelError, MeasurementError, GenerationError, OSError, RuntimeError) as exc:
+                    if cancel_event.is_set() or isinstance(exc, (InterruptedError, TaskCancelledError)):
+                        raise TaskCancelledError() from exc
+                    self.log_message.emit("WARN", prefix + f"Mesure de l'image impossible ({exc}) : HDR10+ estimé "
+                                          "depuis le L1 du RPU (approximatif).")
+                    method = METHOD_L1
+            if method == METHOD_L1:
+                statistics = l1_statistics(
+                    self._generation_rpu(config, video, index=index, work_dir=own_dir, run=run, signals=signals),
+                    dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", run_cmd=run, work_dir=own_dir,
+                    cancelled=cancel_event.is_set)
+            assert statistics is not None
+            generated = write_generated(statistics, output, method, cancelled=cancel_event.is_set)
+        except (FelCancelled, InterruptedError) as exc:
+            raise TaskCancelledError() from exc
+        except GenerationError as exc:
+            self._check_cancelled(signals)
+            raise EncodeError(prefix + str(exc)) from exc
+        self.log_message.emit("INFO", prefix + f"HDR10+ généré : {generated.summary}.")
+        return dataclasses.replace(video, generated_hdr10plus_json=output, hdr10plus_generation_method=method)
+
+    def _regenerate_hdr10plus(self, config: EncodeConfig, video: VideoEncodeSettings, index: int, work_dir: Path,
+                              signals: TaskSignals | None) -> VideoEncodeSettings:
+        """HDR10+ généré refait pour une reprise sur le BL (méthode FEL caduque) : mesure de la BL ou L1."""
+        def run(cmd: list[str]) -> object:
+            self._check_cancelled(signals)
+            return self._runner._run_cmd(cmd, cwd=work_dir, label="hdr10plus-generation",
+                                         progress_cb=(signals.progress.emit if signals is not None else None),
+                                         signals=signals)
+
+        return self.prepare_generated_hdr10plus(config, video, index=index, work_dir=work_dir, run=run,
+                                                signals=signals)
+
+    def _generation_rpu(
+        self, config: EncodeConfig, video: VideoEncodeSettings, *, index: int, work_dir: Path,
+        run: Callable[[list[str]], object], signals: TaskSignals | None,
+    ) -> Path:
+        """RPU d'origine (mode 0) complété aux rangs des images sans RPU, pour le L1 : celui de la préparation s'il
+        existe (copie DV réencodée), sinon extrait ici, sans réinjection."""
+        # RPU P5 converti en P8.1 (mode 3) : L1 inchangé, déjà complété à la préparation.
+        for prepared in (video.source_rpu_path, video.p5_rpu_path):
+            if prepared is not None and Path(prepared).is_file():
+                return Path(prepared)
+        from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+
+        source = self._video_source_from_settings(config, video)
+        rpu = work_dir / f"hdr10plus_rpu_{index}.bin"
+        self.log_message.emit("INFO", f"Piste vidéo #{index} — extraction du RPU Dolby Vision (L1 du HDR10+)…")
+        extract_dovi_rpu(
+            source=source, stream_index=self._video_stream_from_settings(video), ffmpeg_bin=self._ffmpeg,
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", output_rpu=rpu, work_dir=work_dir,
+            run_cmd=run, cleanup_paths=[], mode="0",
+        )
+        return self._complete_source_rpu(config, video, rpu, index=index, run=run, signals=signals, source=source)
+
+    def _prepare_source_rpu(
+        self, config: EncodeConfig, video: VideoEncodeSettings, *, index: int, work_dir: Path,
+        run: Callable[[list[str]], object], signals: TaskSignals | None,
+    ) -> VideoEncodeSettings:
+        """RPU de la source (mode 0) extrait une fois pour toute copie Dolby Vision réencodée, puis complété.
+
+        P5 : RPU converti à part (``p5_rpu_path``). Copie vidéo : RPU d'origine conservé dans le flux.
+        """
+        if (not video.copy_dv or str(video.codec or "copy").strip().lower() == "copy" or video.p5_to_hdr10
+                or not str(video.dovi_source_profile or "").strip()):
+            return video
+        from core.workflows.encode.runtime.dovi_geometry import extract_dovi_rpu
+
+        source = self._video_source_from_settings(config, video)
+        rpu = work_dir / f"source_rpu_{index}.bin"
+        self.log_message.emit("INFO", f"Piste vidéo #{index} — extraction du RPU Dolby Vision de la source…")
+        extract_dovi_rpu(
+            source=source, stream_index=self._video_stream_from_settings(video), ffmpeg_bin=self._ffmpeg,
+            dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", output_rpu=rpu, work_dir=work_dir,
+            run_cmd=run, cleanup_paths=[], mode="0",
+        )
+        rpu = self._complete_source_rpu(config, video, rpu, index=index, run=run, signals=signals, source=source)
+        return dataclasses.replace(video, source_rpu_path=rpu)
+
+    def _complete_source_rpu(
+        self, config: EncodeConfig, video: VideoEncodeSettings, rpu: Path, *, index: int,
+        run: Callable[[list[str]], object], signals: TaskSignals | None, source: Path,
+    ) -> Path:
+        """Images sans RPU : RPU précédent répété (image unique ou fin de flux), sinon refus avant l'encodage.
+
+        Le refus passe par la dérogation de l'audit (``accept_validation_override``) : acceptée, le RPU
+        reste incomplet et les contrôles de fin d'encodage appliquent la même décision.
+        """
+        from core.fel.preparation import requested as fel_requested
+        from core.i18n import translate_text
+        from core.workflows.common.validation_override import accept_validation_override
+        from core.workflows.encode.runtime.dovi_rpu_gaps import fill_rpu_gaps, gap_refusal, scan_rpu_gaps
+
+        guard = self._frame_count_guard()
+        stream = self._video_stream_from_settings(video)
+        rpu_frames = guard.rpu_frame_count(rpu)
+        if rpu_frames is None:
+            return rpu
+        # Compte rapide (index, statistiques) ; le compte exact n'est cherché qu'en cas d'écart.
+        video_frames = guard.source_frame_count(source, stream)
+        if video_frames is None or rpu_frames >= video_frames:
+            return rpu
+        prefix = f"Piste vidéo #{index} — "
+        if source.suffix.lower() == ".mkv":
+            self.log_message.emit(
+                "INFO", prefix + f"RPU Dolby Vision : {rpu_frames} trames pour {video_frames} images annoncées par le "
+                "conteneur : recherche des images sans RPU (lecture complète de la piste)…")
+            try:
+                gaps = scan_rpu_gaps(source, stream,
+                                     cancelled=(signals._cancel_event.is_set if signals is not None else None))
+            except InterruptedError:
+                raise TaskCancelledError() from None
+            self._check_cancelled(signals)
+            video_frames = gaps.frames  # compte exact : un bloc par image
+            if rpu_frames >= video_frames:
+                self.log_message.emit("INFO", prefix + f"RPU Dolby Vision complet : {video_frames} images relevées.")
+                return rpu
+            missing = video_frames - rpu_frames
+            if len(gaps.missing) != missing:
+                reason = f"{len(gaps.missing)} image(s) sans RPU relevée(s), {missing} attendue(s)"
+            else:
+                reason = gap_refusal(gaps, fel=fel_requested(video))
+            if not reason:
+                completed = rpu.with_name(f"{rpu.stem}.complete.bin")
+                fill_rpu_gaps(dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool", rpu_input=rpu,
+                              output_rpu=completed, positions=gaps.missing, run_cmd=run)
+                if guard.rpu_frame_count(completed) == video_frames:
+                    ranks = ", ".join(str(rank) for rank in gaps.missing[:8])
+                    self.log_message.emit(
+                        "WARN", prefix + f"{missing} image(s) de la source sans RPU (rang d'affichage {ranks}"
+                        f"{', fin du flux' if gaps.trailing else ''}) : RPU de l'image précédente répété, comme "
+                        "le garde un lecteur Dolby Vision.")
+                    return completed
+                reason = "complément du RPU incohérent"
+        else:
+            video_frames = guard.source_frame_count(source, stream, exact=True) or video_frames
+            if rpu_frames >= video_frames:
+                return rpu
+            missing = video_frames - rpu_frames
+            reason = "images sans RPU localisables seulement dans un MKV"
+        message = (f"RPU Dolby Vision plus court que la vidéo ({rpu_frames} trames de RPU pour {video_frames} "
+                   f"images, {missing} manquante(s)) : {reason}.")
+        if accept_validation_override(
+            self._validation_override_for(config), rpu, translate_text("Audit trames : {detail}", detail=message),
+            (signals._cancel_event.is_set if signals is not None else lambda: False),
+            lambda text: self.log_message.emit("WARN", prefix + text),
+        ):
+            return rpu
+        self._check_cancelled(signals)
+        raise EncodeError(prefix + message)
 
     def _stream_is_vfr(self, source: Path, stream_index: int) -> bool:
         """Cadence variable du flux ``stream_index`` : ffprobe (r ≠ avg) ou mediainfo (FrameRate_Mode)."""
@@ -3223,11 +3792,23 @@ class EncodeWorkflow(QObject):
         mode = str(track.get("FrameRate_Mode") or track.get("FrameRate_Mode_Original") or "").strip().lower()
         return mode in {"vfr", "variable"}
 
-    def _frame_count_guard(self) -> _FrameCountGuard:
+    def _frame_count_guard(self, signals: TaskSignals | None = None) -> _FrameCountGuard:
+        """Garde de comptage ; ``signals`` : sondes enregistrées auprès du job, arrêtées par « Annuler »."""
+        run_command = None
+        if signals is not None:
+            def check() -> None:
+                if signals._cancel_event.is_set():
+                    raise TaskCancelledError()
+
+            def run_command(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                return run_cancellable_capture(
+                    cmd, cancel_cb=signals._cancel_event.is_set, check_cancelled=check,
+                    on_start=signals._register_proc, on_end=signals._unregister_proc, **kwargs)
         return _FrameCountGuard(
             mediainfo_bin=self._bins.get("mediainfo") or "mediainfo",
             ffprobe_bin=self._ffprobe_path(),
             dovi_tool_bin=self._bins.get("dovi_tool") or "dovi_tool",
+            run_command=run_command,
         )
 
     def _check_external_rpu(self, source: Path, stream_index: int, rpu_bin: Path) -> int:
@@ -3290,8 +3871,30 @@ class EncodeWorkflow(QObject):
                     f"{video.source_bit_depth} bits réduite à 8 bits avant le débruitage "
                     "(risque de banding, surtout en HDR)."
                 )
+            if video.restores() and _resolve_output_bit_depth(video) == 8:
+                # Grain retiré : les dégradés ne sont plus tramés par la source (D-h).
+                messages.append(
+                    f"Piste vidéo #{index} — MVO-R2 avec une sortie 8 bits : tramage à la précision "
+                    "8 bits appliqué par le moteur ; une sortie 10 bits limite le banding des dégradés."
+                )
         messages.extend(self.size_target_warnings(config))
         return messages
+
+    def _is_animation(self, config: EncodeConfig, video: VideoEncodeSettings) -> bool:
+        """Genre « Animation » : balise GENRE écrite en sortie (TMDB), sinon celle de la source de la piste."""
+        from core.media_info_fetcher import is_animation_genre
+
+        tags = config.tag_overrides if isinstance(config.tag_overrides, dict) else None
+        if tags is not None:
+            genre = next((str(v) for k, v in tags.items() if str(k).upper() == "GENRE"), None)
+            if genre is not None:
+                return is_animation_genre(genre)
+        payload = self._ffprobe_streams_payload(self._video_source_from_settings(config, video)) or {}
+        fmt = payload.get("format")
+        source_tags = fmt.get("tags") if isinstance(fmt, dict) else None
+        if isinstance(source_tags, dict):
+            return any(str(k).upper() == "GENRE" and is_animation_genre(str(v)) for k, v in source_tags.items())
+        return False
 
     def resolve_source_color_transfer(self, config: EncodeConfig) -> EncodeConfig:
         """Renseigne transfert, profondeur et capacité matérielle depuis les sondes en cache."""
@@ -3342,6 +3945,10 @@ class EncodeWorkflow(QObject):
                 updates.update({
                     key: value for key, value in vulkan_updates.items() if getattr(video, key) != value
                 })
+                if video.restores() and video.restoration.animation == "auto":
+                    # Restauration Auto : contenu animé d'après le genre (fiche TMDB de la sortie, sinon la source).
+                    animated = self._is_animation(config, video)
+                    updates["restoration"] = dataclasses.replace(video.restoration, animation="on" if animated else "off")
                 if updates:
                     video = dataclasses.replace(video, **updates)
                     changed = True
@@ -3352,7 +3959,7 @@ class EncodeWorkflow(QObject):
         if any(
             v.codec in (NVENC_VIDEO_CODECS | VAAPI_VIDEO_CODECS)
             and v.source_bit_depth and v.source_bit_depth != resolve_output_bit_depth(v)
-            and not has_cpu_video_filter(v) and not v.interpolates()
+            and not has_cpu_video_filter(v) and not v.uses_engine()
             for v in resolved
         ):
             self._depth_conversion_filters()
@@ -3398,7 +4005,7 @@ class EncodeWorkflow(QObject):
                 continue
             source = self._video_source_from_settings(config, video)
             info = self._interpolation_source(video, source)
-            if info.is_vfr and (video.copy_dv or video.copy_hdr10plus):
+            if info.is_vfr and _outputs_dynamic_hdr(video):
                 errors.append(
                     f"Interpolation d'images : {source.name} est à cadence variable (VFR). La copie "
                     "Dolby Vision / HDR10+ impose de conserver chaque trame, ce qui fausserait la durée : "
@@ -3446,12 +4053,12 @@ class EncodeWorkflow(QObject):
             if not rife_bin or not (Path(rife_bin).is_file() or shutil.which(rife_bin)):
                 errors.append(
                     "Interpolation d'images : moteur muxiveo-rife introuvable "
-                    "(installer l'extension Interpolation depuis la page Extensions)."
+                    "(installer le moteur vidéo MVO depuis la page Extensions)."
                 )
             else:
                 resolved = str(shutil.which(rife_bin) or rife_bin)
                 errors.extend(_rife_support_errors(
-                    _rife_capabilities(resolved), _interpolation_preset(settings.quality, resolved),
+                    _rife_capabilities(resolved, self._probe_cancel_event), _interpolation_preset(settings.quality, resolved),
                     tta=settings.tta_passes(), rife_bin=resolved,
                 ))
             if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
@@ -3460,6 +4067,76 @@ class EncodeWorkflow(QObject):
                 errors.append(
                     f"Interpolation d'images : {source.name} est entrelacée ; "
                     "activez le désentrelacement (appliqué avant l'interpolation)."
+                )
+        return errors
+
+    def _prepare_restore_statistics(self, video: VideoEncodeSettings, *, work_dir: Path, index: int) -> VideoEncodeSettings:
+        """Restauration d'une source PQ : statistiques de la source et de l'image débruitée mesurées par le moteur
+        pendant l'encodage (D-e), pour MaxCLL/MaxFALL (écrits après l'encodage, SEI CLL et élément Colour ; ceux de
+        la source restent si l'écart est invisible, ``written_light_levels`` ; rien de provisoire n'est transmis à
+        l'encodeur) et pour le contrôle des métadonnées Dolby Vision / HDR10+ copiées (``dynamic_metadata_adequacy``)."""
+        measure = _restore_measures_light_levels(video)
+        check = _restore_checks_dynamic_metadata(video)
+        if not (measure or check):
+            return video
+        prefix = f"Piste vidéo #{index} — "
+        resolved = str(shutil.which(self._rife_bin) or self._rife_bin) if self._rife_bin else ""
+        if not resolved or not all(_rife_supports(resolved, option, self._probe_cancel_event)
+                                   for option in ("frame-statistics", "source-statistics")):
+            self.log_message.emit("WARN", prefix + "muxiveo-rife sans statistiques des trames : "
+                                  + ("MaxCLL/MaxFALL de la source conservés, " if measure else "")
+                                  + ("métadonnées dynamiques copiées sans contrôle, " if check else "")
+                                  + "mettre à jour le moteur vidéo MVO.")
+            return video
+        video = dataclasses.replace(video, restore_statistics=work_dir / f"restore_statistics_{index}.jsonl",
+                                    restore_source_statistics=work_dir / f"restore_source_statistics_{index}.jsonl")
+        if not measure:
+            return video
+        self.log_message.emit("INFO", prefix + "MaxCLL/MaxFALL mesurés sur l'image débruitée (statistiques du moteur).")
+        return dataclasses.replace(video, restore_source_light_levels=video.max_cll, max_cll="",
+                                   static_hdr_light_level_source="restore_frame_statistics")
+
+    def _restoration_validation_errors(self, config: EncodeConfig) -> list[str]:
+        """Contrôles propres à la Restauration (outil, graphes livrés, cadence, entrelacement).
+
+        Avec l'interpolation, outil, cadence et entrelacement sont déjà contrôlés par
+        ``_interpolation_validation_errors`` (même pipe y4m) : seules les capacités de Restauration s'ajoutent.
+        """
+        errors: list[str] = []
+        for video in self._video_tracks(config):
+            if not video.restoration.is_active():
+                continue
+            if video.codec == "copy":
+                errors.append("MVO-R2 : impossible avec le codec vidéo COPY (réencodage requis).")
+                continue
+            rife_bin = self._rife_bin
+            available = bool(rife_bin) and (Path(str(rife_bin)).is_file() or bool(shutil.which(str(rife_bin))))
+            if available:
+                resolved = str(shutil.which(str(rife_bin)) or rife_bin)
+                errors.extend(_restore_support_errors(_rife_capabilities(resolved, self._probe_cancel_event),
+                                                      video.restoration))
+            if video.interpolates():
+                continue
+            if not available:
+                errors.append(
+                    "MVO-R2 : moteur muxiveo-rife introuvable "
+                    "(installer le moteur vidéo MVO depuis la page Extensions)."
+                )
+            source = self._video_source_from_settings(config, video)
+            # Le y4m ne porte pas d'horodatage : source VFR normalisée CFR, ce qui fausserait les métadonnées
+            # dynamiques indexées par trame.
+            if _outputs_dynamic_hdr(video) and self._interpolation_source(video, source).is_vfr:
+                errors.append(
+                    f"MVO-R2 : {source.name} est à cadence variable (VFR). La copie Dolby Vision / HDR10+ "
+                    "impose de conserver chaque trame, ce qui fausserait la durée : désactiver la copie DoVi / "
+                    "HDR10+ (la cadence sera alors normalisée) ou le débruitage MVO-R2."
+                )
+            if self._video_stream_is_interlaced(source, self._video_stream_from_settings(video)) and not (
+                video.filters.yadif_enabled
+            ):
+                errors.append(
+                    f"MVO-R2 : {source.name} est entrelacée ; "
+                    "activez le désentrelacement (appliqué avant MVO-R2)."
                 )
         return errors
 
@@ -3488,7 +4165,7 @@ class EncodeWorkflow(QObject):
         if self._is_multi_video(config) or self._needs_metadata_inject(config):
             return False
         video = self._primary_video_settings(config)
-        if not (video.interpolates() or _needs_static_hdr_sei_reinjection_domain(video)):
+        if not (video.uses_engine() or _needs_static_hdr_sei_reinjection_domain(video)):
             return False
         return getattr(self._backend_for_config(config), "backend_id", "ffmpeg") == "ffmpeg"
 
@@ -3529,7 +4206,7 @@ class EncodeWorkflow(QObject):
             decision.selected == "native" and decision.pipeline == _PIPELINE_FFMPEG_DIRECT
         ):
             for index, video in enumerate(self._video_tracks(config)):
-                if str(video.codec or "").strip().lower() != "copy":
+                if str(video.codec or "").strip().lower() != "copy" or _generates_hdr10plus(video):
                     artifacts.append(f"<work>/video_{index}.mkv")
                     estimated_bytes += source_size
         if decision.pipeline == _PIPELINE_METADATA_INJECT:
@@ -3540,6 +4217,9 @@ class EncodeWorkflow(QObject):
             # Pic simultané : au plus deux copies vidéo (le squelette de
             # timing, payloads vides, est négligeable).
             estimated_bytes += 2 * source_size
+        for index, video in enumerate(self._video_tracks(config), start=1):
+            if _generates_hdr10plus(video):
+                artifacts.append(f"<work>/generated_hdr10plus_{index}.json")
         if decision.selected == "native":
             for index, audio in enumerate(config.audio_tracks):
                 codec = str(audio.codec or "copy").strip().lower()
@@ -3605,6 +4285,8 @@ class EncodeWorkflow(QObject):
 
     def _log_workflow_type(self, workflow_kind: str) -> None:
         self.log_message.emit("INFO", f"WORKFLOW TYPE - {workflow_kind}")
+        # Build exacte de l'outil (diagnostic : FFmpeg master change chaque jour).
+        self.log_message.emit("INFO", ffmpeg_version_log_line(self._ffmpeg))
 
     def _log_step(self, step_index: int, step_name: str) -> None:
         self.log_message.emit("INFO", f"STEP {step_index} - {step_name}")
@@ -3646,40 +4328,90 @@ class EncodeWorkflow(QObject):
             ],
         )
 
-    def run(self, config: EncodeConfig, *, validate: bool = True) -> TaskSignals:
+    def run(
+        self,
+        config: EncodeConfig,
+        *,
+        validate: bool = True,
+        retain_failed_work_dir: bool = False,
+        existing: ExistingPolicy | None = None,
+    ) -> TaskSignals:
         """
         Lance l'encodage dans un thread secondaire.
 
+        ``existing`` : sort d'une destination présente, décidé sous la réservation (défaut : remplacement
+        admis) ; refus → :class:`~core.output_commit.OutputRefusedError` levée telle quelle.
+
         Le mode taille cible exécute deux passes séquentiellement
         dans le même thread et retourne un unique TaskSignals.
+
+        ``retain_failed_work_dir`` (GUI) : en cas d'échec, un dossier de travail
+        contenant déjà des fichiers produits (hors pièces jointes) n'est pas
+        supprimé ; ``failed_work_dir_retained`` le remet à l'interface.
         """
+        retain_kwargs: dict[str, Any] = {"retain_failed_work_dir": True} if retain_failed_work_dir else {}
         # Chemins absolus AVANT tout : plan, contrat, commande et transaction
         # doivent consommer exactement les mêmes chemins que l'exécution.
         config = self._absolute_paths_config(config)
+        if self._generate_nfo:
+            # NFO écrit après le job : jamais sur un fichier qu'il lit (pièce jointe externe, source).
+            from core.sidecar_output import encode_input_paths, nfo_input_conflict
+
+            conflict = nfo_input_conflict(config.output, encode_input_paths(config))
+            if conflict:
+                raise EncodeError(conflict)
         # Destination réservée pour toute la durée du job : un second job vers
         # la même sortie échoue ici, avant toute préparation.
         try:
-            reservation = OutputReservation.acquire(config.output)
+            reservation = OutputReservation.acquire(config.output, existing=existing)
         except OutputBusyError as exc:
             raise EncodeError(str(exc)) from exc
         try:
-            if not validate:
-                signals = self._run_async_preparation(config)
-            else:
-                signals = self._run_with_preparation(config, validate=True)
+            leases = self._engine_leases(config)
         except BaseException:
             reservation.release()
             raise
+
+        def release() -> None:
+            reservation.release()
+            for lease in leases:
+                lease.release()
+
+        try:
+            if not validate:
+                signals = self._run_async_preparation(config, **retain_kwargs)
+            else:
+                signals = self._run_with_preparation(config, validate=True, **retain_kwargs)
+        except BaseException:
+            release()
+            raise
         signals.connect_terminal(
-            finished=lambda *_args: reservation.release(),
-            failed=lambda *_args: reservation.release(),
-            cancelled=lambda *_args: reservation.release(),
+            finished=lambda *_args: release(),
+            failed=lambda *_args: release(),
+            cancelled=lambda *_args: release(),
             direct=True,
         )
         return signals
 
-    def _run_async_preparation(self, config: EncodeConfig) -> TaskSignals:
-        return self._preparation_runner().run_async_preparation(config)
+    def _engine_leases(self, config: EncodeConfig) -> list:
+        """Baux des extensions utilisées par l'encodage (moteur muxiveo-rife, accélération TensorRT) : jamais
+        retirées par un nettoyage ou une suppression pendant le job ; extension en cours de modification →
+        :class:`EncodeError`."""
+        tracks = [*(config.video_tracks or ()), *([config.video] if config.video is not None else [])]
+        if not any(getattr(video, "uses_engine", lambda: False)() for video in tracks) or not self._rife_bin:
+            return []
+        from core import plugins
+
+        engine = shutil.which(self._rife_bin) or self._rife_bin
+        try:
+            return plugins.leases_for(engine, self._rife_trt_plugin or None)
+        except (OSError, plugins.PluginError) as exc:
+            raise EncodeError(f"Moteur vidéo indisponible : {exc}") from exc
+
+    def _run_async_preparation(self, config: EncodeConfig, *, retain_failed_work_dir: bool = False) -> TaskSignals:
+        return self._preparation_runner().run_async_preparation(
+            config, retain_failed_work_dir=retain_failed_work_dir,
+        )
 
     @staticmethod
     def _check_cancelled(signals: TaskSignals | None) -> None:
@@ -3692,6 +4424,7 @@ class EncodeWorkflow(QObject):
         *,
         validate: bool,
         prep_signals: TaskSignals | None = None,
+        retain_failed_work_dir: bool = False,
     ) -> TaskSignals:
         # Ce prérequis reste obligatoire pour run(validate=False), avant
         # préparation et encodage des artefacts vidéo.
@@ -3702,6 +4435,7 @@ class EncodeWorkflow(QObject):
             config,
             validate=validate,
             prep_signals=prep_signals,
+            retain_failed_work_dir=retain_failed_work_dir,
         )
 
     def _sync_rewrite_errors(self, config: EncodeConfig) -> list[str]:
@@ -3744,6 +4478,8 @@ class EncodeWorkflow(QObject):
                 resolve_source_color_transfer=self.resolve_source_color_transfer,
                 resolve_dovi_sources=self.resolve_dovi_sources,
                 prepare_dovi_sources=self.prepare_dovi_sources,
+                request_failed_work_dir_retention=self._failed_work_dir_retention.request,
+                retain_failed_work_dir=self._retain_failed_work_dir,
             )
         )
 
@@ -3838,6 +4574,14 @@ class EncodeWorkflow(QObject):
                 self.log_message.emit("WARN", f"Impossible d'inspecter les pistes vidéo Matroska : {exc}")
                 actual_track_idx = stream_idx
             video_artifacts = [_NativeVideoArtifactRef(source, track_index=actual_track_idx, offset_ms=video_offset_ms)]
+            commands: list[list[str]] = []
+            intermediate = None
+        elif is_copy and is_streamable_source(source):
+            # Copie depuis MP4/MOV : piste lue en flux par l'assemblage natif
+            # (producteur FFmpeg sur pipe), aucun fichier vidéo intermédiaire.
+            video_artifacts = [_NativeVideoArtifactRef(
+                source, track_index=self._video_stream_index(config), offset_ms=video_offset_ms,
+            )]
             commands = []
             intermediate = None
         else:
@@ -4039,6 +4783,7 @@ class EncodeWorkflow(QObject):
                 finalize_ffmpeg=self._finalize_ffmpeg_output,
                 log_step=self._log_step,
                 log_info=lambda message: self.log_message.emit("INFO", message),
+                log_warn=lambda message: self.log_message.emit("WARN", message),
                 ui_encode_progress_message=_ui_encode_progress_message,
                 cleanup_two_pass_logs_for_prefix=self._cleanup_two_pass_logs_for_prefix,
                 build_video_only_mkv_commands=self._build_video_only_mkv_commands,
@@ -4047,6 +4792,8 @@ class EncodeWorkflow(QObject):
                 two_pass_log_prefix=self._two_pass_log_prefix,
                 native_assemble=self._native_assemble_multi if native_mux else None,
                 validation_override=self._validation_override_for(config),
+                regenerate_hdr10plus=self._regenerate_hdr10plus,
+                stream_start_time=lambda path, stream: _stream_start_time(self._ffprobe_path(), Path(path), stream),
             )
         ).run(
             config,
@@ -4061,6 +4808,29 @@ class EncodeWorkflow(QObject):
         session: LiveSyncSession | None,
     ) -> None:
         self._signal_binding_service.bind_live_sync_cleanup(signals, session)
+
+    def _retain_failed_work_dir(self, cleanup_paths: list[Path]) -> bool:
+        """Échec : dossier de travail demandé gardé s'il contient déjà des fichiers produits.
+
+        Les pièces jointes préparées ne comptent pas. Les chemins temporaires hors
+        de ce dossier sont supprimés comme d'habitude. False : nettoyage normal.
+        """
+        for path in cleanup_paths:
+            owned = self._failed_work_dir_retention.claim(path)
+            if owned is None:
+                continue
+            payload = process_dir_payload_bytes(owned.path, excluded=_is_prepared_attachment_entry)
+            if payload <= 0:
+                return False
+            for other in cleanup_paths:
+                if other != owned.path and not other.is_relative_to(owned.path):
+                    try:
+                        remove_path(other)
+                    except OSError:
+                        pass
+            self.failed_work_dir_retained.emit(RetainedProcessWorkDir(owned, payload))
+            return True
+        return False
 
     def _bind_temp_cleanup(self, signals: TaskSignals, cleanup_paths: list[Path]) -> None:
         """Supprime les fichiers/dossiers temporaires quand le workflow se termine."""
@@ -4123,6 +4893,13 @@ class EncodeWorkflow(QObject):
             warn=lambda message: self.log_message.emit("WARN", message),
             track_enabled_post_action=self._track_enabled_post_action,
             validation_override=self._validation_override_for(config),
+            # Muxage final FFmpeg d'un job demandé en Auto = repli (le natif est retenu
+            # pour toute sortie .mkv non bloquée) : filet de réassemblage natif.
+            repair_interleave=(
+                _normalize_mux_backend(getattr(config, "mux_backend", None)) == "auto"
+                and config.output.suffix.lower() == ".mkv"
+            ),
+            info=lambda message: self.log_message.emit("INFO", message),
         )
         return transaction.execute(
             command,
@@ -4235,8 +5012,6 @@ class EncodeWorkflow(QObject):
             config,
             estimate_requirements=self._estimate_inject_storage_requirements,
             log_info=lambda message: self.log_message.emit("INFO", message),
-            ram_buffer_enabled=self._ram_buffer_enabled,
-            ram_buffer_dir=EncodeWorkflow._ram_buffer_dir,
             disk_usage=shutil.disk_usage,
             stat=os.stat,
             temp_dir=tempfile.gettempdir,
@@ -4508,8 +5283,15 @@ class EncodeWorkflow(QObject):
             libplacebo_ready=self._nvencc_libplacebo_ready,
         )
 
-    def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0) -> tuple[int, int, int, int] | None:
+    def set_probe_cancel_event(self, cancel_event: threading.Event | None) -> None:
+        """Jeton des sondes internes (bandes L5 du RPU) d'une opération headless ; ``None`` : sans annulation."""
+        self._probe_cancel_event = cancel_event
+
+    def _probe_dovi_l5_offsets(self, source: Path, *, stream_index: int = 0,
+                               cancel_event: threading.Event | None = None) -> tuple[int, int, int, int] | None:
+        """Bandes L5 du RPU (sonde facultative : ``None`` si indisponible ; l'annulation remonte)."""
         from core.dovi_profile_detector import DoviProfileDetector
+        from core.subprocess_utils import ProbeCancelledError
 
         dovi_bin = self._bins.get("dovi_tool") or "dovi_tool"
         try:
@@ -4520,7 +5302,11 @@ class EncodeWorkflow(QObject):
                     ffprobe_bin=self._ffprobe_path(),
                 )
                 self._dovi_geometry_detector_key = key
-            return self._dovi_geometry_detector.probe_l5_offsets(source, stream_index=stream_index)
+            return self._dovi_geometry_detector.probe_l5_offsets(
+                source, stream_index=stream_index,
+                cancel_event=cancel_event if cancel_event is not None else self._probe_cancel_event)
+        except ProbeCancelledError:
+            raise
         except Exception:
             return None
 
@@ -4544,23 +5330,6 @@ class EncodeWorkflow(QObject):
     @staticmethod
     def _fps_expr_to_float(value: object) -> float | None:
         return _fps_expr_to_float_runtime(value)
-
-    def _wrap_injected_hevc_for_reconstruction(
-        self,
-        *,
-        source: Path,
-        hevc_input: Path,
-        mkv_output: Path,
-    ) -> list[str]:
-        return _build_injected_hevc_wrap_command_runtime(
-            ffmpeg_bin=self._ffmpeg,
-            source=source,
-            hevc_input=hevc_input,
-            mkv_output=mkv_output,
-            source_video_fps_expr=self._source_video_fps_expr,
-            ffmpeg_progress_args=self._ffmpeg_progress_args,
-            ffmpeg_thread_args=self._ffmpeg_thread_args,
-        )
 
     def _resolve_global_tags(self, config: EncodeConfig) -> dict[str, str]:
         tags = _common_resolve_global_tags(config.tag_overrides, "")

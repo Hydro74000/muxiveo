@@ -42,12 +42,13 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from core.matroska.reader import strict_demuxer_reads_tracks
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_probe, subprocess_text_kwargs
 from core.video_sampling import probe_video_duration, video_sample_times
 
 
@@ -123,6 +124,31 @@ class DoviDetectionResult:
     el_type: str | None = None
 
 
+def _probe_run(command: list[str], *, timeout: float,
+               cancel_event: threading.Event | None) -> subprocess.CompletedProcess:
+    """Sonde bornée, code de retour vérifié ; avec ``cancel_event`` : processus tués dès l'annulation."""
+    if cancel_event is None:
+        # Outils locaux configurés, argv séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        return subprocess.run(command, capture_output=True, check=True, timeout=timeout,  # nosec B603
+                              **subprocess_text_kwargs())
+    result = run_probe(command, timeout=timeout, cancel_event=cancel_event)
+    result.check_returncode()
+    return result
+
+
+def _compat_id_from_text(text: str) -> int | None:
+    """``bl_signal_compat_id`` d'après un libellé de compatibilité MediaInfo (HDR10+ ignoré)."""
+    text = text.lower().replace("hdr10+", "")
+    if "hlg" in text:
+        return 4
+    if "hdr10" in text:
+        return 1
+    if "sdr" in text:
+        return 2
+    return None
+
+
 class DoviProfileDetector:
     """
     Détecte le sous-profil Dolby Vision d'un fichier source ou d'un dict
@@ -175,16 +201,16 @@ class DoviProfileDetector:
             m2 = re.search(r"dv(?:he|av)\.?(\d+)", hfp)
             profile = int(m2.group(1)) if m2 else None
 
-        # Compat_id depuis HDR_Format_Compatibility.
-        compat = str(mi_video.get("HDR_Format_Compatibility") or "").lower()
-        if "hdr10" in compat:
-            compat_id: int | None = 1
-        elif "sdr" in compat:
-            compat_id = 2
-        elif "hlg" in compat:
-            compat_id = 4
-        else:
-            compat_id = None
+        # Compat_id depuis HDR_Format_Compatibility : segment du Dolby Vision (« HLG / HDR10+ Profile A » :
+        # HLG pour le Dolby Vision, HDR10+ pour le second format), sinon champ entier.
+        compat = str(mi_video.get("HDR_Format_Compatibility") or "")
+        formats = [part.strip().lower() for part in hdr_format.split("/")]
+        segments = [part.strip() for part in compat.split("/")]
+        compat_id: int | None = None
+        if len(formats) == len(segments) and len(formats) > 1:
+            compat_id = _compat_id_from_text(segments[next(i for i, f in enumerate(formats) if "dolby vision" in f)])
+        if compat_id is None:
+            compat_id = _compat_id_from_text(compat)
 
         # Settings : "BL+EL+RPU" pour FEL ; "BL+RPU" pour MEL ou P8 mono-layer.
         settings = str(mi_video.get("HDR_Format_Settings") or "").upper()
@@ -253,6 +279,8 @@ class DoviProfileDetector:
             # MKV dont Tracks échappe au premier SeekHead : lu par le pipe FFmpeg ci-dessous.
             direct = ext != ".mkv" or strict_demuxer_reads_tracks(source)
             if stream_index is None and direct and ext in {".mkv", ".hevc", ".h265", ".265", ".x265"}:
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 extract = subprocess.run(
                     [self._dovi_tool, "extract-rpu", "-i", str(source), "-l", "100", "-o", str(rpu_bin)],
                     capture_output=True, check=False, **subprocess_text_kwargs(),
@@ -265,6 +293,8 @@ class DoviProfileDetector:
                     )
             else:
                 # MP4/MOV/TS : pipe ffmpeg → dovi_tool extract-rpu via stdin.
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 ff = subprocess.Popen(
                     [self._ffmpeg, "-nostdin", "-loglevel", "error", "-i", str(source),
                      "-map", "0:v:0" if stream_index is None else f"0:{int(stream_index)}",
@@ -274,6 +304,8 @@ class DoviProfileDetector:
                 )
                 pipe_kwargs = subprocess_text_kwargs()
                 pipe_kwargs.pop("stdin", None)
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 dt = subprocess.run(
                     [self._dovi_tool, "extract-rpu", "-", "-l", "100", "-o", str(rpu_bin)],
                     stdin=ff.stdout, capture_output=True, check=False,
@@ -290,6 +322,8 @@ class DoviProfileDetector:
                     )
 
             try:
+                # dovi_tool / FFmpeg configurés, arguments séparés, sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
                 result = subprocess.run(
                     [self._dovi_tool, "info", "-i", str(rpu_bin), "--summary"],
                     capture_output=True, check=False, **subprocess_text_kwargs(),
@@ -393,6 +427,7 @@ class DoviProfileDetector:
 
     def probe_l5_offsets(
         self, source: Path | str, *, duration_s: float | None = None, stream_index: int = 0,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[int, int, int, int] | None:
         """Sample L5 across the timeline; retain only borders common to all samples.
 
@@ -408,7 +443,7 @@ class DoviProfileDetector:
         key = (source_path, stat.st_mtime_ns, stat.st_size, stream_index, duration_s)
         if key in self._l5_cache:
             return self._l5_cache[key]
-        duration = duration_s or probe_video_duration(source_path, ffprobe_bin=self._ffprobe)
+        duration = duration_s or probe_video_duration(source_path, ffprobe_bin=self._ffprobe, cancel_event=cancel_event)
         if not duration or duration <= 0:
             return None
         samples: list[tuple[int, int, int, int]] = []
@@ -417,26 +452,21 @@ class DoviProfileDetector:
                 hevc = Path(tmp) / "sample.hevc"
                 rpu = Path(tmp) / "sample.bin"
                 for position in video_sample_times(duration):
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise ProbeCancelledError("Sonde L5 annulée.")
                     # Input seeking uses the container index. Stream copy reads a
                     # small GOP fragment, without decoding/scanning the whole film.
                     # Configured local tools, separate argv, no shell expansion.
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    subprocess.run(  # nosec B603
+                    _probe_run(
                         [self._ffmpeg, "-nostdin", "-v", "error", "-y", "-ss", f"{position:.3f}",
                          "-i", str(source_path), "-map", f"0:{stream_index}", "-c:v", "copy",
                          "-frames:v", "12", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", str(hevc)],
-                        capture_output=True, check=True, timeout=20, **subprocess_text_kwargs(),
+                        timeout=20, cancel_event=cancel_event,
                     )
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    subprocess.run(  # nosec B603  # même contrat argv sans shell
-                        [self._dovi_tool, "extract-rpu", "-i", str(hevc), "-o", str(rpu)],
-                        capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
-                    )
-                    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-                    result = subprocess.run(  # nosec B603  # même contrat argv sans shell
-                        [self._dovi_tool, "info", "-i", str(rpu), "--summary"],
-                        capture_output=True, check=True, timeout=10, **subprocess_text_kwargs(),
-                    )
+                    _probe_run([self._dovi_tool, "extract-rpu", "-i", str(hevc), "-o", str(rpu)],
+                               timeout=10, cancel_event=cancel_event)
+                    result = _probe_run([self._dovi_tool, "info", "-i", str(rpu), "--summary"],
+                                        timeout=10, cancel_event=cancel_event)
                     offsets = self.parse_dovi_tool_output(result.stdout).l5_offsets
                     if offsets is None:
                         return None

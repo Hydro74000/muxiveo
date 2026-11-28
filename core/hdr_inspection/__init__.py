@@ -9,7 +9,14 @@ from core.hdr_inspection.inspector import (
     InspectionReport,
     snapshot_report,
 )
-from core.hdr_inspection.snapshot import DoviRecord, HdrSnapshot, MasteringDisplay, build_snapshot
+from core.hdr_inspection.snapshot import (
+    DoviRecord,
+    HdrSnapshot,
+    MasteringDisplay,
+    TrackNotFoundError,
+    build_snapshot,
+    video_track,
+)
 
 __all__ = [
     "ActiveArea",
@@ -26,7 +33,9 @@ __all__ = [
     "MasteringDisplay",
     "Severity",
     "audit",
+    "TrackNotFoundError",
     "build_snapshot",
+    "video_track",
     "parse_dovi_export",
     "parse_hdr10plus_json",
     "scene_alignment",

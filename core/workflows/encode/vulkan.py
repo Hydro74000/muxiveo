@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import run_probe, subprocess_text_kwargs
 
 _LISTING_RE = re.compile(
     r"^\[Vulkan @ [^\]]+\]\s+(\d+):\s+(.+?)\s+\((discrete|integrated|virtual|software|cpu|other)\)",
@@ -81,8 +82,11 @@ def vulkan_parallelism(width: int, height: int) -> int:
     return max(1, min(_BEST_PARALLELISM, int(fitting)))
 
 
-def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str] | None:
+def _run(cmd: list[str], timeout: int,
+         cancel_event: threading.Event | None = None) -> subprocess.CompletedProcess[str] | None:
     try:
+        if cancel_event is not None:  # sonde tuée dès l'annulation (ProbeCancelledError)
+            return run_probe(cmd, timeout=timeout, cancel_event=cancel_event)
         # argv d'outils configurés ; aucune interprétation shell des chemins.
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         return subprocess.run(cmd, capture_output=True, check=False, timeout=timeout, **subprocess_text_kwargs())  # nosec B603
@@ -90,9 +94,9 @@ def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str] | Non
         return None
 
 
-def detect_vulkan(ffmpeg_bin: str) -> VulkanCapability:
-    """GPU dédié Vulkan et ``nlmeans_vulkan`` fonctionnel dessus (≈ 1 s, au lancement)."""
-    filters = _run([ffmpeg_bin, "-hide_banner", "-filters"], 15)
+def detect_vulkan(ffmpeg_bin: str, cancel_event: threading.Event | None = None) -> VulkanCapability:
+    """GPU dédié Vulkan et ``nlmeans_vulkan`` fonctionnel dessus (≈ 1 s, au lancement) ; annulable."""
+    filters = _run([ffmpeg_bin, "-hide_banner", "-filters"], 15, cancel_event)
     if filters is None:
         return VulkanCapability(reason="FFmpeg introuvable")
     if not re.search(r"\bnlmeans_vulkan\b", filters.stdout or ""):
@@ -100,7 +104,7 @@ def detect_vulkan(ffmpeg_bin: str) -> VulkanCapability:
     listing = _run(
         [ffmpeg_bin, "-hide_banner", "-nostdin", "-v", "verbose", "-init_hw_device", "vulkan=vk",
          "-f", "lavfi", "-i", "nullsrc=s=16x16", "-frames:v", "1", "-f", "null", "-"],
-        30,
+        30, cancel_event,
     )
     devices = parse_vulkan_devices(((listing.stdout or "") + (listing.stderr or "")) if listing else "")
     if not devices:
@@ -115,7 +119,7 @@ def detect_vulkan(ffmpeg_bin: str) -> VulkanCapability:
          "-init_hw_device", f"vulkan=vk:{chosen.index}", "-filter_hw_device", "vk",
          "-f", "lavfi", "-i", "color=c=gray:s=64x64,format=p010le", "-frames:v", "1",
          "-vf", "hwupload,nlmeans_vulkan,hwdownload,format=p010le", "-f", "null", "-"],
-        60,
+        60, cancel_event,
     )
     if probe is None or probe.returncode != 0:
         lines = [line for line in ((probe.stderr or "") if probe else "").splitlines() if line.strip()]

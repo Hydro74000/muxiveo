@@ -63,7 +63,7 @@ def test_prepared_video_mux_preserves_audio_after_video_seek(sparse_subtitle_sou
         audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy")],
         copy_subtitles=True, mux_backend="ffmpeg", duration_s=160,
     )
-    workflow = EncodeWorkflow(ffmpeg_bin="ffmpeg", ram_buffer_enabled=False, generate_nfo=False)
+    workflow = EncodeWorkflow(ffmpeg_bin="ffmpeg", generate_nfo=False)
     if builder == "nvencc":
         command, live, cleanup = workflow._build_runtime_nvencc_remux_cmd(config, prepared)
         assert live is None and cleanup == []

@@ -467,3 +467,46 @@ def test_startup_cleanup_is_detached_from_gui_process(window, tmp_path):
         window._report_previous_updates()
     cleanup.assert_called_once_with([old])
     thread.assert_not_called()
+
+
+def test_install_refused_by_pending_settings_downloads_nothing(window, qt_app):
+    """Réglages non enregistrés + « Annuler » : ni téléchargement, ni installation, ni fermeture."""
+    window._settings_panel = SimpleNamespace(confirm_leave=Mock(return_value=False))
+    with patch("ui.main_window.download_update") as download, \
+         patch("ui.main_window.apply_update") as apply, \
+         patch("ui.main_window.QApplication.quit") as quit_app:
+        window._start_update_install(UpdateInfo("99.0.0", "https://example/"), InstallKind.APPIMAGE)
+        qt_app.processEvents()
+    window._settings_panel.confirm_leave.assert_called_once_with()
+    download.assert_not_called()
+    apply.assert_not_called()
+    quit_app.assert_not_called()
+    assert window._update_download_cancel is None
+
+
+def test_requested_update_dialog_waits_for_modal_dialogs(window, qt_app):
+    """Réponse d'une vérification demandée pendant la question des paramètres : affichée après."""
+    window._update_info = UpdateInfo("99.0.0", "https://example/")
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=object()), \
+         patch("ui.main_window.QTimer.singleShot") as later:
+        window._show_requested_update_dialog()
+    window._show_update_dialog.assert_not_called()
+    later.assert_called_once()
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=None):
+        window._show_requested_update_dialog()
+    window._show_update_dialog.assert_called_once_with(window._update_info)
+
+
+def test_requested_update_dialog_shown_once(window, qt_app):
+    """Fenêtre présentée par un autre chemin (badge) pendant l'attente : le rappel ne la rouvre pas."""
+    window._update_info = UpdateInfo("99.0.0", "https://example/")
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=object()), \
+         patch("ui.main_window.QTimer.singleShot") as later:
+        window._show_requested_update_dialog()
+    retry = later.call_args.args[-1]
+    dialog = Mock(choice=None, popup_enabled=window._config.update_popup)
+    with patch("ui.main_window.UpdateDialog", return_value=dialog):
+        MainWindow._show_update_dialog(window, window._update_info)   # clic sur le badge
+    with patch("ui.main_window.QApplication.activeModalWidget", return_value=None):
+        retry()
+    window._show_update_dialog.assert_not_called()

@@ -75,7 +75,7 @@ def test_fel_software_workflow(qt_app, tmp_path, monkeypatch, mode):
     )
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=12*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"), rife_bin=shutil.which("muxiveo-rife"))
     messages: list[str] = []
     workflow.log_message.connect(lambda _level, message: messages.append(message))
@@ -127,7 +127,7 @@ def test_fel_chroma_location_matches_bl(qt_app, tmp_path, monkeypatch, codec, lo
     target = tmp_path / "out.mkv"
     config = EncodeConfig(source=source, output=target, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=12*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"))
     state = wait_task(workflow.run(config), timeout=120)
     assert state["failed"] is None, state["failed"]
@@ -184,7 +184,7 @@ def test_fel_variable_timestamps_survive_encoding(qt_app, tmp_path, monkeypatch,
         fel_precision="fast" if codec == "direct_nvenc" and not engine.supports_precision else "exact")
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=15*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False,
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, generate_nfo=False,
         nvencc_bin=shutil.which("nvencc"))
     state = wait_task(workflow.run(config), timeout=120)
     assert state["failed"] is None, state["failed"]
@@ -225,7 +225,7 @@ def test_missing_enhancement_frame_restarts_whole_track_on_bl(qt_app, tmp_path, 
         quality_mode=QualityMode.SIZE if two_pass else QualityMode.CRF, target_size_mb=1)
     config = EncodeConfig(source=source, output=output, video=video, audio_tracks=[],
         copy_subtitles=False, keep_chapters=False, duration_s=12*1001/24000, work_dir=tmp_path)
-    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, ram_buffer_enabled=False, generate_nfo=False)
+    workflow = EncodeWorkflow(ffmpeg_bin=_FFMPEG, ffmpeg_threads=2, generate_nfo=False)
     messages: list[str] = []
     workflow.log_message.connect(lambda _level, message: messages.append(message))
     state = wait_task(workflow.run(config), timeout=120)

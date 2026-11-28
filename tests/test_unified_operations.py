@@ -272,18 +272,34 @@ def test_failed_individual_recalibration_discards_the_previous_plan(window, tmp_
 
 def test_context_and_media_settings_share_one_operation(window, tmp_path, monkeypatch):
     ready_hybrid(window, tmp_path)
-    encode = SimpleNamespace(output=tmp_path / "encoded.mkv")
+    # Champs lus par le résumé de la barre d'opération (configuration du Conteneur et de l'Encodage).
+    encode = SimpleNamespace(output=tmp_path / "encoded.mkv", sources=[], track_order=[], video=None,
+                             video_tracks=[], audio_tracks=[], target_size_mb=None)
     monkeypatch.setattr(window._encode_panel, "collect_config", lambda: encode)
     monkeypatch.setattr(window._encode_panel, "is_pure_copy", lambda _: False)
     for page in (2, 3):
         window._stack.setCurrentIndex(page)
         assert window._run_btn.text() == "Remux & Encode"
         assert len([op for op in window._operation_states() if op.key == "media"]) == 1
+        # Chemin dans la barre « Fichier de sortie » ; titre de l'espace de travail = nom de la sortie.
+        assert "encoded.mkv" in window._workspace_title.text()
+        assert "encoded.mkv" not in window._status_lbl.text()
     monkeypatch.setattr(window._encode_panel, "is_pure_copy", lambda _: True)
     monkeypatch.setattr(window._remux_panel, "collect_config", lambda: encode)
     window._encode_panel.operation_changed.emit()
     QTest.qWait(90)
     assert window._run_btn.text() == "Remux & Encode"
+
+
+def test_output_bar_follows_media_pages(window):
+    bar = window._remux_panel.output_bar
+    assert window._remux_panel._output_edit.parentWidget().parentWidget() is bar
+    for page, host in ((2, window._encode_panel), (3, window._remux_panel), (2, window._encode_panel)):
+        window._stack.setCurrentIndex(page)
+        assert bar.parentWidget() is host
+        assert bar.isVisible()
+    window._stack.setCurrentIndex(4)
+    assert not bar.isVisible()
 
 
 def test_incomplete_context_keeps_other_operations_accessible(window, tmp_path, monkeypatch, qt_app):
@@ -690,3 +706,97 @@ def test_pages_have_one_scroll_owner_and_keep_global_controls_visible(window, qt
         bottom = scroll.widget().mapTo(scroll.viewport(), QPoint(0, scroll.widget().height())).y()
         assert bottom <= scroll.viewport().height() + 1, type(panel).__name__
         assert window.rect().contains(window._run_btn.mapTo(window, window._run_btn.rect().center()))
+
+
+def test_leaving_settings_with_unsaved_changes_asks_first(window, qt_app, monkeypatch):
+    panel = window._settings_panel
+    settings_index = window._stack.indexOf(panel)
+    window._sidebar.select_page(settings_index)
+    window._stack.setCurrentIndex(settings_index)
+    checkbox = panel.widget_for("ui", "startup_menu_compact")
+    checkbox.setChecked(not checkbox.isChecked())
+    answers = iter(["cancel", "discard"])
+    asked = []
+    monkeypatch.setattr(panel, "_ask_pending_changes", lambda sections: asked.append(sections) or next(answers))
+
+    window._sidebar.page_changed.emit(0)
+    assert window._stack.currentIndex() == settings_index
+    assert [btn.page_index for btn in window._sidebar._buttons if btn._checked] == [settings_index]
+
+    window._sidebar.page_changed.emit(0)
+    assert window._stack.currentIndex() == 0
+    assert asked == [["ui"], ["ui"]]
+    assert not panel.has_unsaved_changes()
+
+
+def test_operation_launched_from_settings_waits_for_pending_changes(window, tmp_path, qt_app, monkeypatch):
+    """Barre d'exécution depuis Paramètres modifiés : « Annuler » ne lance rien, « Ignorer » lance."""
+    ready_hybrid(window, tmp_path)
+    panel = window._settings_panel
+    settings_index = window._stack.indexOf(panel)
+    window._stack.setCurrentIndex(settings_index)
+    checkbox = panel.widget_for("ui", "startup_menu_compact")
+    checkbox.setChecked(not checkbox.isChecked())
+    answers = iter(["cancel", "discard"])
+    monkeypatch.setattr(panel, "_ask_pending_changes", lambda sections: next(answers))
+    run = Mock()
+    monkeypatch.setattr(window._hybrid_panel, "run", run)
+
+    window._launch_operation("hybrid")
+    run.assert_not_called()
+    assert window._stack.currentIndex() == settings_index
+
+    window._launch_operation("hybrid")
+    run.assert_called_once_with()
+    assert window._stack.currentIndex() == 4
+    window._running = False
+
+
+def test_settings_saved_during_an_operation_apply_when_it_ends(window, qt_app, monkeypatch):
+    """Outils et options enregistrés pendant une opération : le traitement en cours garde les siens."""
+    encode, remux = Mock(), Mock()
+    monkeypatch.setattr(window._encode_panel, "refresh_runtime_settings", encode)
+    monkeypatch.setattr(window._remux_panel, "refresh_runtime_settings", remux)
+    window._running = True
+    window._refresh_panels_runtime_settings()
+    remux.assert_not_called()           # Encodage : différé par le panneau lui-même
+    window._running = False
+    _wait_until(qt_app, lambda: remux.call_count == 1)
+    assert encode.call_count == 2
+
+
+def test_encode_panel_keeps_its_tools_during_operation_and_preview(window, qt_app, monkeypatch):
+    panel = window._encode_panel
+    applied = Mock()
+    monkeypatch.setattr(panel._workflow, "set_metadata_tools", applied)
+    panel._preview_signals = object()                  # aperçu en cours
+    panel.refresh_runtime_settings()
+    applied.assert_not_called()
+    panel._set_preview_running(False)
+    _wait_until(qt_app, lambda: applied.call_count == 1)
+
+    before = set(panel._hw_encoders)
+    panel.set_operation_running(True)
+    panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, str(window._config.tool_ffmpeg), {}, frozenset(),
+                          {}, {}, panel._detection_tools)
+    assert set(panel._hw_encoders) == before          # résultat différé
+    panel.set_operation_running(False)
+    _wait_until(qt_app, lambda: "hevc_nvenc" in panel._hw_encoders)
+
+
+def test_no_settings_refresh_once_shutdown_started(qt_app):
+    from types import SimpleNamespace
+
+    stub = SimpleNamespace(_shutdown=object(), _running=False, _encode_panel=Mock(), _remux_panel=Mock())
+    MainWindow._refresh_panels_runtime_settings(stub)
+    stub._encode_panel.refresh_runtime_settings.assert_not_called()
+    stub._remux_panel.refresh_runtime_settings.assert_not_called()
+
+
+def test_stale_hardware_detection_is_ignored(window, qt_app):
+    panel = window._encode_panel
+    panel._detection_tools = ("/opt/new-ffmpeg", None)
+    before = set(panel._hw_encoders)
+    panel._on_hw_detected({"hevc_nvenc"}, panel._sw_encoders, "/opt/old-ffmpeg", {}, frozenset(), {}, {},
+                          ("/opt/old-ffmpeg", None))
+    assert set(panel._hw_encoders) == before

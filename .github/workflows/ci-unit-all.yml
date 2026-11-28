@@ -8,6 +8,9 @@ on:
   workflow_call:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Ruff + Mypy
@@ -57,11 +60,14 @@ jobs:
         uses: ./.github/actions/apt-install
         with:
           packages: >-
-            ffmpeg mediainfo g++
+            mediainfo g++
             libegl1 libgl1 libglib2.0-0 libdbus-1-3
             libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1
             libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
             libxkbcommon-x11-0
+
+      - name: Install FFmpeg master
+        uses: ./.github/actions/ffmpeg-master
 
       - name: Install Python dependencies
         run: |
@@ -106,8 +112,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest pytest-qt
 
+      # FFmpeg et MediaInfo réels : worker serve en sous-processus (tests/integration/test_serve.py).
+      - name: Install FFmpeg master
+        uses: ./.github/actions/ffmpeg-master
+
+      - name: Install MediaInfo
+        shell: pwsh
+        run: choco install mediainfo-cli -y --no-progress
+
       # Qt réel (pas le bootstrap simulé) : verrous msvcrt, aperçus cmd.exe
-      # réellement exécutés, propriété des fichiers et chemins Windows.
+      # réellement exécutés, propriété des fichiers et chemins Windows,
+      # descripteurs du protocole et arrêt du worker serve.
       - name: Run Windows platform tests
         shell: pwsh
         env:
@@ -117,7 +132,18 @@ jobs:
           -W error::pytest.PytestUnhandledThreadExceptionWarning
           tests/test_encode_preview_quoting.py
           tests/test_output_commit.py
+          tests/test_output_commit_policy.py
+          tests/test_document_publication.py
           tests/test_workdir_ownership.py
+          tests/test_api_request_paths.py
+          tests/test_ini_line_separators.py
+          tests/test_nvencc_install.py
+          tests/test_tool_admission.py
+          tests/test_main_window_extensions.py
+          tests/test_service_hdr_cancel.py
+          tests/test_encode_preview_image.py
+          tests/integration/test_encode_preview_image.py
+          tests/test_windows_named_pipe.py
           tests/test_cli_batch_collisions.py
           tests/test_profile_store.py
           tests/test_json_documents.py
@@ -133,6 +159,8 @@ jobs:
           tests/test_python_requirements.py
           tests/test_qt_binding_sanity.py
           tests/test_shutdown_cleanup.py::test_sync_studio_cancels_audio_and_keeps_resources_until_worker_finishes
+          tests/test_cli_serve.py
+          tests/integration/test_serve.py
           --junitxml=pytest-windows.xml
 
       - name: Upload test report

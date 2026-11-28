@@ -50,6 +50,7 @@ def prepare_timeline_sync_inputs(
     log_cb: Callable[[str, str], None],
     syncer_factory,
     fallback_helper_factory,
+    base_input_idx: int | None = None,
 ) -> tuple[list[MappedTrack], list[SyncPreparedInput], LiveSyncSession | None]:
     syncer = syncer_factory(
         ffmpeg_bin=ffmpeg_bin,
@@ -63,7 +64,7 @@ def prepare_timeline_sync_inputs(
     ).prepare(
         mapped_tracks=mapped_tracks,
         sources=config.sources,
-        base_input_idx=len(config.sources),
+        base_input_idx=len(config.sources) if base_input_idx is None else int(base_input_idx),
         allow_live=allow_live,
         cancel_cb=signals._cancel_event.is_set,
     )

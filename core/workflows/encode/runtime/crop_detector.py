@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import re
 import subprocess
+import threading
 from pathlib import Path
 
 from core.dovi_profile_detector import DoviProfileDetector
 from core.workflows.encode.catalog import is_nvenc_hevc
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import ProbeCancelledError, run_probe, subprocess_text_kwargs
 from core.video_sampling import probe_video_duration, video_sample_times
 
 
@@ -33,8 +34,11 @@ def detect_black_bars_ffmpeg(
     limit: int = 64,
     ffprobe_bin: str = "ffprobe",
     stream_index: int = 0,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, int, int, int]:
     """Détecte les bandes noires via le filtre cropdetect de ffmpeg sur plusieurs échantillons.
+
+    ``cancel_event`` : vérifié avant chaque échantillon (sonde bornée à 15 s), ``ProbeCancelledError``.
 
     Retourne:
         tuple[int, int, int, int]: (top, bottom, left, right) en pixels.
@@ -44,12 +48,14 @@ def detect_black_bars_ffmpeg(
     else:
         src_w, src_h = dimensions
 
-    duration = duration_s or probe_video_duration(source_path, ffprobe_bin=ffprobe_bin)
+    duration = duration_s or probe_video_duration(source_path, ffprobe_bin=ffprobe_bin, cancel_event=cancel_event)
     sample_times = video_sample_times(duration)
 
     detected_crops: list[tuple[int, int, int, int]] = []
 
     for ts in sample_times:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ProbeCancelledError("Recadrage automatique annulé.")
         cmd = [
             ffmpeg_bin,
             "-hide_banner",
@@ -69,15 +75,18 @@ def detect_black_bars_ffmpeg(
             "-",
         ]
         try:
-            # FFmpeg configuré localement ; chemins et filtre restent des argv sans shell.
-            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
-            res = subprocess.run(  # nosec B603
-                cmd,
-                capture_output=True,
-                check=False,
-                timeout=15,
-                **subprocess_text_kwargs(),
-            )
+            if cancel_event is not None:  # processus tué dès l'annulation
+                res = run_probe(cmd, timeout=15, cancel_event=cancel_event)
+            else:
+                # FFmpeg configuré localement ; chemins et filtre restent des argv sans shell.
+                # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+                res = subprocess.run(  # nosec B603
+                    cmd,
+                    capture_output=True,
+                    check=False,
+                    timeout=15,
+                    **subprocess_text_kwargs(),
+                )
             output = (res.stderr or "") + (res.stdout or "")
             matches = list(_CROP_RE.finditer(output))
             if not matches:
@@ -118,6 +127,7 @@ def detect_video_crop(
     dovi_tool_bin: str = "dovi_tool",
     ffprobe_bin: str = "ffprobe",
     stream_index: int = 0,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, int, int, int]:
     """Détecte les bandes noires et renvoie le crop (top, bottom, left, right) aligné pour le codec.
 
@@ -131,9 +141,12 @@ def detect_video_crop(
     try:
         detector = DoviProfileDetector(dovi_tool_bin=dovi_tool_bin, ffmpeg_bin=ffmpeg_bin,
                                        ffprobe_bin=ffprobe_bin)
-        l5 = detector.probe_l5_offsets(source_path, duration_s=duration_s, stream_index=stream_index)
+        l5 = detector.probe_l5_offsets(source_path, duration_s=duration_s, stream_index=stream_index,
+                                       cancel_event=cancel_event)
         if l5 is not None:
             raw_crop = (l5[0], l5[1], l5[2], l5[3])  # (top, bottom, left, right)
+    except ProbeCancelledError:
+        raise
     except Exception:
         raw_crop = None
 
@@ -147,6 +160,7 @@ def detect_video_crop(
             limit=64,
             ffprobe_bin=ffprobe_bin,
             stream_index=stream_index,
+            cancel_event=cancel_event,
         )
 
     return align_crop_for_codec(

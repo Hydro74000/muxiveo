@@ -568,6 +568,8 @@ class FileInspector:
         if bluray_title is None and info.frame_count is None:
             try:
                 info.frame_count = self.get_frame_count(path)
+            except InspectionCancelled:
+                raise  # annulation : jamais une inspection terminée normalement
             except Exception:
                 pass
         # Statistiques Matroska périmées (fichier coupé/remuxé en recopiant les
@@ -1480,6 +1482,8 @@ def build_chapter_xml(entries: "list[ChapterEntry]") -> str:
     Le format suit le schéma XML Matroska Chapters.
     Les chapitres sont triés par timecode croissant.
     """
+    # Échappement de texte seul (aucune analyse XML).
+    # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
     from xml.sax.saxutils import escape as _xe
     atoms: list[str] = []
     for e in sorted(entries, key=lambda x: x.timecode_s):

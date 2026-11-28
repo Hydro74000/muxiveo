@@ -1,0 +1,177 @@
+"""Contexte d'exécution d'une opération : configuration figée, événements, annulation.
+
+Aucun état global : chaque appel reçoit son contexte. La configuration est un instantané
+(copie superficielle, conteneurs copiés, sans objet QSettings) : une modification des
+réglages pendant l'exécution n'atteint pas l'opération, et l'opération ne peut pas les
+enregistrer. Les « ports » remplacent un service externe (réseau…) sans globale.
+"""
+
+from __future__ import annotations
+
+import copy
+import threading
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from core.service.errors import ApiError, ErrorCode
+from core.service.events import Emitter, EventSink
+
+
+class CancelToken:
+    """Demande d'annulation partagée entre une opération et ses sous-tâches."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._callbacks: list[Callable[[], None]] = []
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def event(self) -> threading.Event:
+        """Événement levé à l'annulation (analyseurs qui attendent un ``cancel_event``)."""
+        return self._event
+
+    def cancel(self) -> None:
+        """Lève l'annulation puis exécute chaque rappel ; un rappel en échec n'empêche pas les suivants (première
+        erreur relancée à la fin)."""
+        with self._lock:
+            if self._event.is_set():
+                return
+            self._event.set()
+            callbacks = list(self._callbacks)
+        failure: BaseException | None = None
+        for callback in callbacks:
+            try:
+                callback()
+            except BaseException as exc:  # noqa: BLE001 - relancée après les autres rappels
+                failure = failure or exc
+        if failure is not None:
+            raise failure
+
+    def on_cancel(self, callback: Callable[[], None]) -> None:
+        """Appelle ``callback`` à l'annulation (immédiatement si elle a déjà eu lieu)."""
+        with self._lock:
+            if not self._event.is_set():
+                self._callbacks.append(callback)
+                return
+        callback()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            raise ApiError(ErrorCode.CANCELLED, "Opération annulée.")
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._event.wait(timeout)
+
+
+@dataclass(frozen=True)
+class Overrides:
+    """Surcharges propres à l'appel (outils, threads, dossier de travail).
+
+    Portées par l'adaptateur (options du CLI), jamais écrites dans la configuration ;
+    un daemon pourra les refuser (exécution d'un binaire arbitraire).
+    """
+
+    ffmpeg: str | None = None
+    ffprobe: str | None = None
+    mediainfo: str | None = None
+    threads: int | None = None
+    work_dir: Path | None = None
+
+
+def snapshot_config(config: Any) -> Any:
+    """Instantané de lecture de la configuration (sans objet QSettings)."""
+    snapshot = copy.copy(config)
+    state = getattr(snapshot, "__dict__", None)
+    if isinstance(state, dict):
+        for key, value in list(state.items()):
+            if isinstance(value, (dict, list, set)):
+                state[key] = copy.copy(value)
+        if "_settings" in state:
+            state["_settings"] = None
+    return snapshot
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    """Contexte d'un appel.
+
+    ``api`` : requête de l'API (``call``, service, intégration Python ; faux pour les commandes historiques du
+    CLI) — paramètres libres de l'encodeur limités à ses options. ``base_dir`` : dossier de référence des
+    valeurs relatives (commande historique : dossier courant ; ``call`` : dossier de la requête ; service : celui
+    de la soumission) ; ``None`` : aucune valeur relative n'est acceptée, jamais le dossier courant du processus.
+    ``allow_privileged`` : opérations privilégiées (configuration, extensions, mise à jour) autorisées — commandes
+    historiques, ``call --allow-privileged`` ; refusées par défaut. ``protected_paths`` : documents du transport lus
+    avant l'opération (``call --request F``, ``--config``, ``--template``…), jamais remplacés par une annexe
+    (:mod:`core.sidecar_output`).
+    """
+
+    config: Any
+    events: Emitter
+    cancel: CancelToken = field(default_factory=CancelToken)
+    overrides: Overrides = field(default_factory=Overrides)
+    ports: Mapping[str, Callable[..., Any]] = field(default_factory=dict)
+    api: bool = True
+    base_dir: Path | None = None
+    allow_privileged: bool = False
+    protected_paths: tuple[Path, ...] = ()
+    #: Rappels exécutés une fois le résultat écrit et confirmé par le transport (comptes rendus marqués signalés
+    #: seulement alors) ; erreur, annulation ou écriture en échec : jamais appelés.
+    _result_written: list[Callable[[], None]] = field(default_factory=list, compare=False, repr=False)
+
+    def on_result_written(self, callback: Callable[[], None]) -> None:
+        """Rappel exécuté après l'écriture confirmée du résultat (CLI : sortie vidée ; ``serve`` : trame vidée)."""
+        self._result_written.append(callback)
+
+    def confirm_result_written(self) -> None:
+        """Appelé par l'adaptateur une fois le résultat écrit : rappels exécutés une fois (erreurs ignorées)."""
+        callbacks, self._result_written[:] = list(self._result_written), []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:  # nosec B110  # noqa: BLE001 — un rappel en échec n'invalide jamais le résultat déjà écrit
+                pass
+
+    @classmethod
+    def create(
+        cls,
+        config: Any,
+        sink: EventSink,
+        *,
+        job: str | None = None,
+        parent: str | None = None,
+        cancel: CancelToken | None = None,
+        overrides: Overrides | None = None,
+        ports: Mapping[str, Callable[..., Any]] | None = None,
+        api: bool = True,
+        base_dir: Path | None = None,
+        allow_privileged: bool = False,
+        emitter: Emitter | None = None,
+        protected_paths: tuple[Path, ...] = (),
+    ) -> ExecutionContext:
+        """``emitter`` : émetteur déjà créé (gestionnaire de jobs : numérotation continue depuis l'admission) ;
+        ``sink``, ``job`` et ``parent`` sont alors ignorés."""
+        return cls(
+            config=snapshot_config(config),
+            events=emitter if emitter is not None else Emitter(sink, job, parent),
+            cancel=cancel or CancelToken(),
+            overrides=overrides or Overrides(),
+            ports=dict(ports or {}),
+            api=api,
+            base_dir=base_dir,
+            allow_privileged=allow_privileged,
+            protected_paths=tuple(Path(path) for path in protected_paths),
+        )
+
+    def tool(self, name: str) -> str:
+        """Commande de l'outil ``name`` : surcharge de l'appel, sinon configuration."""
+        override = getattr(self.overrides, name, None)
+        return str(override or getattr(self.config, f"tool_{name}", None) or name)
+
+    def port(self, name: str, default: Callable[..., Any]) -> Callable[..., Any]:
+        return self.ports.get(name, default)

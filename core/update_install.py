@@ -40,6 +40,7 @@ _MAX_ASSET_BYTES = 2 * 1024**3
 _MAX_CHECKSUMS_BYTES = 1024 * 1024
 _CHUNK_BYTES = 1024 * 1024
 _WINDOWS_INSTALLER_RE = re.compile(r"^Muxiveo-Setup-.+\.exe$", re.IGNORECASE)
+_NOVIDIA_INSTALLER_RE = re.compile(r"^Muxiveo-Setup-AllInc_NoVidia-.+\.exe$", re.IGNORECASE)
 _SOURCE_ARCHIVE_RE = re.compile(r"^Muxiveo-.+-source\.tar\.gz$")
 _MACOS_DMG_RE = re.compile(r"^Muxiveo-.+\.dmg$")
 _HELPER_READY_TIMEOUT_S = 15.0
@@ -166,12 +167,23 @@ def self_install_blocker(kind: InstallKind) -> str:
     return ""
 
 
+def _bundle_marker(name: str) -> bool:
+    """Marqueur posé à côté de l'exécutable figé (``_ALLINC``, ``_ALLINC_NOVIDIA``)."""
+    return bool(getattr(sys, "frozen", False)) and (Path(sys.executable).parent / name).exists()
+
+
 def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None) -> ReleaseAsset | None:
-    """Choisit l'asset de release adapté au mode d'installation."""
+    """Choisit l'asset de release adapté au mode d'installation.
+
+    Variante AllInc NoVidia (marqueur ``_ALLINC_NOVIDIA``, sans NVEncC) : seuls ses paquets
+    (``…_allinc_novidia-…``, ``Muxiveo-Setup-AllInc_NoVidia-…``) ; les autres installations ne les prennent jamais.
+    """
+    novidia = _bundle_marker("_ALLINC_NOVIDIA")
     if kind is InstallKind.APPIMAGE:
         arch = (machine or platform.machine()).lower()
         return next(
-            (a for a in info.assets if a.name.endswith(".AppImage") and arch in a.name.lower()),
+            (a for a in info.assets if a.name.endswith(".AppImage") and arch in a.name.lower()
+             and ("_allinc_novidia" in a.name.lower()) == novidia),
             None,
         )
     if kind is InstallKind.SOURCE_ARCHIVE:
@@ -179,9 +191,11 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
     if kind is InstallKind.MACOS_APP:
         return next((a for a in info.assets if _MACOS_DMG_RE.match(a.name)), None)
     if kind is InstallKind.WINDOWS_INSTALLER:
-        is_allinc = False
-        if getattr(sys, "frozen", False):
-            is_allinc = (Path(sys.executable).parent / "_ALLINC").exists()
+        if novidia:
+            return next(
+                (a for a in info.assets if _NOVIDIA_INSTALLER_RE.match(a.name)), None,
+            )
+        is_allinc = _bundle_marker("_ALLINC")
         if is_allinc:
             allinc_asset = next(
                 (a for a in info.assets if re.match(r"^Muxiveo-Setup-AllInc-.+\.exe$", a.name, re.IGNORECASE)),
@@ -196,7 +210,10 @@ def select_asset(info: UpdateInfo, kind: InstallKind, machine: str | None = None
             )
             if std_asset is not None:
                 return std_asset
-        return next((a for a in info.assets if _WINDOWS_INSTALLER_RE.match(a.name)), None)
+        return next(
+            (a for a in info.assets if _WINDOWS_INSTALLER_RE.match(a.name) and not _NOVIDIA_INSTALLER_RE.match(a.name)),
+            None,
+        )
     return None
 
 
@@ -311,10 +328,13 @@ def download_update(
     kind: InstallKind,
     progress: ProgressCallback | None = None,
     cancelled: CancelCallback | None = None,
+    *,
+    relaunch: bool = True,
 ) -> Path:
     """Télécharge et vérifie l'asset de mise à jour ; renvoie le fichier prêt à installer.
 
-    Archive source, application macOS : renvoie le dossier de travail préparé (`update_apply.prepare`).
+    Archive source, application macOS : renvoie le dossier de travail préparé (`update_apply.prepare`) ;
+    ``relaunch=False`` (CLI) : la nouvelle version n'est pas relancée après l'échange.
     """
     asset = select_asset(info, kind)
     if asset is None:
@@ -326,14 +346,14 @@ def download_update(
     # Dossier de travail à côté de l'installation : même système de fichiers, échange par simple renommage.
     work = Path(tempfile.mkdtemp(prefix=update_apply.WORKDIR_PREFIX, dir=root.parent))
     try:
-        (work / update_apply.WORKDIR_TAG).touch()
+        update_apply.write_workdir_tag(work, root)  # transaction de cette installation (format courant)
         archive = download_asset(asset, work / asset.name, expected, progress, cancelled)
         if cancelled is not None and cancelled():
             raise UpdateInstallError("Téléchargement annulé.")
-        probe, relaunch = _swap_commands(kind)
+        probe, relaunch_command = _swap_commands(kind)
         update_apply.prepare(
-            _SWAP_KINDS[kind], archive, work, root, info.version, probe, relaunch, APP_MACOS_BUNDLE_ID,
-            cancelled=cancelled,
+            _SWAP_KINDS[kind], archive, work, root, info.version, probe, relaunch_command if relaunch else [],
+            APP_MACOS_BUNDLE_ID, cancelled=cancelled,
         )
         if cancelled is not None and cancelled():
             raise UpdateInstallError("Mise à jour annulée.")
@@ -403,7 +423,9 @@ def start_update_cleanup(paths: list[Path], kind: InstallKind | None = None) -> 
     kind = detect_install_kind() if kind is None else kind
     work = Path(tempfile.mkdtemp(prefix=update_apply.CLEANUP_PREFIX))
     try:
-        (work / update_apply.CLEANUP_FILE).write_text(json.dumps([str(path.absolute()) for path in paths]), encoding="utf-8")
+        install = str(installation_root(kind)) if kind in _SWAP_KINDS else None
+        manifest = {"install": install, "paths": [str(path.absolute()) for path in paths]}
+        (work / update_apply.CLEANUP_FILE).write_text(json.dumps(manifest), encoding="utf-8")
         command = _helper_command(kind, work) + ["cleanup", str(work)]
         update_apply.spawn_detached(command, work.parent)
     except OSError:
@@ -412,27 +434,52 @@ def start_update_cleanup(paths: list[Path], kind: InstallKind | None = None) -> 
 
 
 def collect_update_results(kind: InstallKind | None = None, *, discard: list[Path] | None = None) -> list[dict]:
-    """Résultats des mises à jour par échange de dossiers (signalés une fois), ménage des dossiers de travail
-    (`discard` : dossiers à supprimer confiés à l'appelant, voir `update_apply.collect_results`)."""
+    """Comptes rendus non signalés des mises à jour par échange de dossiers **de cette installation**, ménage de
+    ses dossiers de travail (`discard` : dossiers à supprimer confiés à l'appelant, voir
+    `update_apply.collect_results`). À marquer signalés par :func:`mark_update_results_reported` une fois écrits."""
     kind = detect_install_kind() if kind is None else kind
     if kind not in _SWAP_KINDS:
         return []
     try:
-        return update_apply.collect_results(installation_root(kind).parent, discard=discard)
+        root = installation_root(kind)
+        return update_apply.collect_results(root.parent, discard=discard, install=root)
     except OSError:
         return []
 
 
-def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None = None) -> None:
-    """Installe le fichier téléchargé ; l'appelant doit ensuite quitter l'application."""
+def mark_update_results_reported(results: list[dict], kind: InstallKind | None = None) -> None:
+    """Comptes rendus signalés (affichés, écrits et vidés) : jamais avant, sinon ils seraient perdus."""
+    kind = detect_install_kind() if kind is None else kind
+    if kind not in _SWAP_KINDS or not results:
+        return
+    try:
+        root = installation_root(kind)
+        update_apply.mark_reported(root.parent, root, [str(entry["id"]) for entry in results if entry.get("id")])
+    except OSError:
+        pass
+
+
+#: `apply_update` : AppImage remplacée tout de suite ; installeur ou échange de dossiers après la sortie.
+APPLY_INSTALLED = "installed"
+APPLY_SCHEDULED = "scheduled"
+
+
+def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None = None, relaunch: bool = True) -> str:
+    """Installe le fichier téléchargé ; l'appelant doit ensuite quitter l'application.
+
+    Retourne ``APPLY_INSTALLED`` (AppImage remplacée) ou ``APPLY_SCHEDULED`` (installeur Windows, échange de
+    dossiers par l'auxiliaire qui attend la sortie). ``relaunch=False`` (CLI) : aucune relance de l'interface.
+    """
     if kind in _SWAP_KINDS:
         _start_swap_helper(kind, downloaded)
-        return
+        return APPLY_SCHEDULED
     if kind is InstallKind.APPIMAGE:
         target = _appimage_path()
         try:
             downloaded.chmod(0o755)
             os.replace(downloaded, target)
+            if not relaunch:
+                return APPLY_INSTALLED
             # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args, python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.Popen(  # nosec B603  # nosemgrep
                 [str(target)],  # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
@@ -444,12 +491,12 @@ def apply_update(kind: InstallKind, downloaded: Path, *, owner_hwnd: int | None 
             )
         except OSError as exc:
             raise UpdateInstallError(f"Remplacement de l'AppImage impossible : {exc}") from exc
-        return
+        return APPLY_INSTALLED
     if kind is InstallKind.WINDOWS_INSTALLER:
         from core.windows_shell import launch_installer
         try:
             launch_installer(downloaded, owner_hwnd)
         except OSError as exc:
             raise UpdateInstallError(f"Lancement de l'installeur impossible : {exc}") from exc
-        return
+        return APPLY_SCHEDULED
     raise UpdateInstallError("Mise à jour automatique non supportée pour ce mode d'installation.")

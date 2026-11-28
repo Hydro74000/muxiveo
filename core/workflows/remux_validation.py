@@ -14,7 +14,7 @@ from core.workflows.common.metadata import STREAM_SPEC_BY_TRACK_TYPE
 from core.workflows.common.path_safety import same_filesystem_target as _same_filesystem_target
 from core.workflows.common.sync_rewrite import (
     REWRITE_AUDIO_CODECS, REWRITE_SUBTITLE_CODECS,
-    normalized_rewrite_codec, track_has_object_audio_metadata,
+    normalized_rewrite_codec, requested_audio_reencode, track_has_object_audio_metadata,
 )
 from core.workflows.sync_calibration import effective_calibration
 from core.workflows.remux_models import RemuxConfig, TrackEntry
@@ -176,22 +176,33 @@ def validate_remux_config(
             selected_track.track_type,
         )
         if calibration is not None and selected_track.track_type in {"audio", "subtitle"}:
-            codec = normalized_rewrite_codec(selected_track.orig_codec or selected_track.codec)
-            object_audio = track_has_object_audio_metadata(
-                codec=selected_track.orig_codec or selected_track.codec, title=selected_track.title,
-                display_info=selected_track.orig_display_info or selected_track.display_info,
-            )
+            # Mode physique : la préparation encode l'audio dans le codec de sortie de la piste (variante
+            # AAC d'un DTS comprise, `physical_sync.preparation_commands`) ; critères identiques ici.
+            physical_audio = config.sync_mode == "physical" and selected_track.track_type == "audio"
+            source_codec = selected_track.codec if physical_audio else (selected_track.orig_codec or selected_track.codec)
+            codec = normalized_rewrite_codec(source_codec)
+            object_audio = not (physical_audio and requested_audio_reencode(selected_track)) and (
+                track_has_object_audio_metadata(
+                    codec=source_codec, title=selected_track.title,
+                    display_info=(selected_track.display_info if physical_audio
+                                  else selected_track.orig_display_info or selected_track.display_info),
+                ))
             audio_codecs = REWRITE_AUDIO_CODECS | ({"flac"} if config.sync_mode == "physical" else set())
+            # Mode container : la réécriture décode la source et produit la variante dans son codec cible.
+            target_codec = normalized_rewrite_codec(selected_track.codec)
+            variant_target = (not physical_audio and selected_track.track_type == "audio"
+                              and target_codec != codec and target_codec not in REWRITE_AUDIO_CODECS)
             unsupported = (
                 selected_track.track_type == "subtitle" and codec not in REWRITE_SUBTITLE_CODECS
             ) or (
-                selected_track.track_type == "audio" and (object_audio or codec not in audio_codecs)
+                selected_track.track_type == "audio" and (object_audio or codec not in audio_codecs or variant_target)
             )
             if unsupported:
                 errors.append(
                     "Calibration multi-segments/cadence incompatible avec la piste "
                     f"{selected_track.title or selected_track.track_type} "
-                    f"(source={file_index}, stream={mkv_tid}, codec={codec}). "
+                    f"(source={file_index}, stream={mkv_tid}, "
+                    f"codec={target_codec if variant_target else codec}). "
                     "Retirer cette piste de la sortie, annuler sa calibration ou fournir une variante compatible."
                 )
 

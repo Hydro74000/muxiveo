@@ -234,8 +234,13 @@ class FrameCountGuard:
         known_source_frames: int | None = None,
         source_stream_index: int | None = None,
         frame_ratio: Fraction | int = 1,
+        exact_source: bool = False,
     ) -> FrameCountAudit:
         """Compte les trames de chaque flux.
+
+        ``exact_source`` (HDR10+ **généré**, mesure ou L1 : aucune lecture de la source ne l'a compté) : compte
+        source = comptage des paquets de la piste, jamais le compte rapide ni le raccourci « métadonnées égales au
+        flux encodé », piste principale comprise.
 
         ``frame_ratio`` (interpolation RIFE) : le compte source est rapporté
         à la cadence encodée (``ceil(source × rapport)``, règle de muxiveo-rife).
@@ -253,8 +258,17 @@ class FrameCountGuard:
         selected_source = source_stream_index is not None and source_stream_index != 0
         deferred_source = not source_known and (raw_source or selected_source)
         source_count: int | None
+        exact_count = exact_source and not source_known
         if known_source_frames is not None and known_source_frames > 0:
             source_count = math.ceil(known_source_frames * ratio)
+        elif exact_count:
+            counted = (
+                ffprobe_packet_count(self._ffprobe, source, run_command=self._run_command,
+                                     stream_index=source_stream_index)
+                if selected_source else self._recount_video_frames(source)
+            )
+            source_count = math.ceil(counted * ratio) if counted else None
+            deferred_source = False
         elif deferred_source:
             source_count = None
         else:
@@ -280,7 +294,7 @@ class FrameCountGuard:
         metadata_agree = encoded_known and bool(metadata) and all(
             count == encoded_count for count in metadata
         )
-        basis = "known" if source_known else "video"
+        basis = "known" if source_known else "exact" if exact_count else "video"
 
         if deferred_source:
             if metadata_agree:
@@ -295,6 +309,7 @@ class FrameCountGuard:
                 source_count = math.ceil(exact * ratio) if exact else None
         elif (
             not source_known
+            and not exact_count
             and source_count is not None
             and encoded_count is not None
             and source_count != encoded_count
@@ -313,7 +328,7 @@ class FrameCountGuard:
                 if not encoded_known:
                     encoded_count = self._recount_video_frames(encoded) or encoded_count
         if (
-            (source_known or deferred_source)
+            (source_known or deferred_source or exact_count)
             and not encoded_known
             and source_count is not None
             and encoded_count is not None

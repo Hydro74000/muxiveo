@@ -40,14 +40,23 @@ from core.workflows.encode.runtime.frame_count_guard import (
 from core.workflows.hevc_static_hdr_metadata import (
     inject_static_hdr_sei_file, replace_content_light_level_sei_file,
 )
+from core.workflows.encode.hdr10plus_output import (
+    generates_hdr10plus,
+    has_hdr10plus_sei,
+    hdr10plus_from_source,
+    outputs_hdr10plus,
+)
 from core.fel.hdr10plus import (
     FrameStatisticsError, deferred_light_levels, describe, fel_statistics_path, hdr10plus_recomputed,
+    dynamic_metadata_adequacy, light_level_statistics_path, written_light_levels,
     read_frame_statistics,
     write_hdr10plus_json,
 )
 from core.dovi_profile_detector import DoviSubProfile
 from core.workflows.encode.runtime.dovi_p7_router import DoviP7Router
-from core.workflows.encode.runtime.dovi_geometry import convert_p7_rpu_to_p81, crop_dovi_rpu, extract_dovi_rpu
+from core.workflows.encode.runtime.dovi_geometry import (
+    convert_p7_rpu_to_p81, crop_dovi_rpu, extract_dovi_rpu, prepared_source_rpu,
+)
 from core.matroska.reader import strict_demuxer_reads_tracks
 from core.workflows.encode.dovi_policy import P5_COPY_NORMALIZE_ERROR, dovi_output_compat_id_for
 from core.workflows.encode.runtime.hevc_sei_normalizer import (
@@ -60,10 +69,12 @@ from core.matroska.editors.dovi import (
     sanitize_dovi_level,
 )
 from core.matroska.hevc.access_units import HevcStreamCancelled
-from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter
+from core.matroska.hevc.payload_rewriter import MatroskaHevcPayloadRewriter, discarded_nal_message
 from core.matroska.hevc.timing_skeleton import write_timing_skeleton
 from core.matroska.writer import MatroskaWriteCancelled
 from core.workflows.remux_timeline_sync import LiveSyncSession
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
+from core.workflows.common.timeline_sync import SyncInput
 
 import dataclasses
 
@@ -120,9 +131,9 @@ class MetadataInjectRunnerCallbacks:
     cleanup_two_pass_logs_for_prefix: Callable[[Path], None]
     build_encode_plan: Callable[[EncodeConfig], EncodePlan]
     source_input_index_map: Callable[[list[Path]], dict[Path, int]]
-    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[Path | str], LiveSyncSession | None, bool]]
-    sync_cleanup_paths: Callable[[list[Path | str]], list[Path]]
-    append_sync_inputs: Callable[[list[str], list[Path | str]], None]
+    prepare_multisource_sync: Callable[..., tuple[dict[tuple[Path, int, str], tuple[int, int]], list[SyncInput], LiveSyncSession | None, bool]]
+    sync_cleanup_paths: Callable[[list[SyncInput]], list[Path]]
+    append_sync_inputs: Callable[[list[str], list[SyncInput]], None]
     prepare_container_metadata_inputs: Callable[..., tuple[int, int | None, int | None]]
     ffmpeg_thread_args: Callable[[], list[str]]
     ffmpeg_progress_args: Callable[[], list[str]]
@@ -189,7 +200,16 @@ class MetadataInjectRunner:
                 _ = ref_size
                 return tmp / name
 
+            def _owned(path: Path) -> bool:
+                """Artefact du dossier jetable du runner (jamais la source ni un fichier de la préparation)."""
+                try:
+                    return Path(path).resolve().is_relative_to(tmp.resolve())
+                except OSError:
+                    return False
+
             def _free(path: Path) -> None:
+                if not _owned(path):
+                    return  # source, RPU préparé : jamais supprimés ici
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
@@ -208,6 +228,12 @@ class MetadataInjectRunner:
                 video = config.video
                 if video is None:
                     raise ValueError("EncodeConfig.video is required for metadata injection")
+                copy_video = str(video.codec or "").strip().lower() == "copy"
+                # Traitement Dolby Vision (routeur P7/P5, RPU extrait / réinjecté, record) : réencodage avec copie
+                # DV, ou Copy normalisé en P8.1. Copy avec HDR10+ généré seul : RPU, EL et record intacts.
+                dv_processing = bool(video.copy_dv) and (
+                    not copy_video or _should_normalize_dovi_profile(str(video.dovi_profile or "0")))
+                generated_json = video.generated_hdr10plus_json if generates_hdr10plus(video) else None
 
                 # STEP 4-bis : routage P7/P5 → P8.1 si besoin.
                 # P7 peut réutiliser son base layer. P5 nécessite deux chemins :
@@ -217,7 +243,7 @@ class MetadataInjectRunner:
                 # étape supplémentaire).
                 effective_config = config
                 p7_router_decision = None
-                if video.copy_dv:
+                if dv_processing:
                     p7_router = DoviP7Router()
                     mi_video = _load_mediainfo_video(
                         cb.bins.get("mediainfo", "mediainfo"),
@@ -372,7 +398,7 @@ class MetadataInjectRunner:
                             )
                         _check()
 
-                if video.copy_dv or video.copy_hdr10plus:
+                if dv_processing or outputs_hdr10plus(video):
                     cb.log_step(5, "Extraction des métadonnées dynamiques (DoVi/HDR10+)")
                 else:
                     cb.log_step(5, "Préparation de l'injection HDR statique")
@@ -392,7 +418,15 @@ class MetadataInjectRunner:
                     # non respectée) : illisible par dovi_tool / hdr10plus_tool.
                     or (meta_src_ext == ".mkv" and not strict_demuxer_reads_tracks(meta_src))
                 )
-                if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
+                # RPU de la source extrait (et complété) à la préparation : dérivé sans relecture.
+                prepared_rpu = bool(
+                    dv_processing and not rpu_preextracted and video.source_rpu_path is not None
+                    and video.source_rpu_path.is_file()
+                )
+                # HDR10+ généré : JSON préparé, aucune lecture HDR10+ de la source.
+                extract_annexb = needs_annexb and ((dv_processing and not prepared_rpu)
+                                                   or hdr10plus_from_source(video))
+                if extract_annexb:
                     annexb_src = _alloc("source.hevc", src_size_est)
                     signals.progress.emit("Extraction HEVC annexB pour outillage DoVi/HDR10+…")
                     annexb_cmd = [cb.ffmpeg_bin, "-nostdin", "-y"]
@@ -408,12 +442,15 @@ class MetadataInjectRunner:
                 else:
                     meta_input = meta_src
 
-                if video.copy_dv and not rpu_preextracted:
-                    signals.progress.emit("Extraction RPU Dolby Vision…")
-                    _run([
-                        cb.bins["dovi_tool"], "extract-rpu",
-                        "-i", str(meta_input), "-o", str(rpu_bin),
-                    ])
+                if dv_processing and not rpu_preextracted:
+                    if not prepared_rpu or prepared_source_rpu(
+                        video, dovi_tool_bin=cb.bins["dovi_tool"], target=rpu_bin, mode=None, run_cmd=lambda c: _run(c),
+                    ) is None:
+                        signals.progress.emit("Extraction RPU Dolby Vision…")
+                        _run([
+                            cb.bins["dovi_tool"], "extract-rpu",
+                            "-i", str(meta_input), "-o", str(rpu_bin),
+                        ])
                     _check()
                     # Vidéo injectée toujours sans couche d'amélioration (P7 converti
                     # en amont) : un RPU P7 restant (record P8 d'un fichier mal
@@ -426,7 +463,7 @@ class MetadataInjectRunner:
                         cb.log_info("Dolby Vision : RPU P7 sur une vidéo sans couche d'amélioration, converti en P8.1.")
                         rpu_bin = rpu_p81
                     _check()
-                if video.copy_dv:
+                if dv_processing:
                     # Image recadrée (bandes, canevas NVENC) : offsets L5 réalignés par scène.
                     rpu_bin = crop_dovi_rpu(
                         video=video, rpu_bin=rpu_bin, dovi_tool_bin=cb.bins["dovi_tool"],
@@ -437,15 +474,20 @@ class MetadataInjectRunner:
                 hdr10p_json = tmp / "hdr10p.json"
                 # FEL intégré avec HDR10+ recalculé : JSON généré après l'encodage (statistiques du plugin).
                 fel_statistics = fel_statistics_path(video)
-                if video.copy_hdr10plus and not hdr10plus_recomputed(video):
+                if hdr10plus_from_source(video) and not hdr10plus_recomputed(video):
                     signals.progress.emit("Extraction métadonnées HDR10+…")
                     _run([
                         cb.bins["hdr10plus_tool"], "extract",
                         str(meta_input), "-o", str(hdr10p_json),
                     ])
                     _check()
+                elif generates_hdr10plus(video) and not hdr10plus_recomputed(video):
+                    # HDR10+ généré à la préparation (indexé sur la source) : copie étendue ci-dessous.
+                    if generated_json is None or not Path(generated_json).is_file():
+                        raise EncodeError("HDR10+ généré absent : préparation incomplète.")
+                    shutil.copyfile(generated_json, hdr10p_json)
 
-                if needs_annexb and (video.copy_dv or video.copy_hdr10plus):
+                if extract_annexb:
                     _free(meta_input)
 
                 # Interpolation RIFE : une trame source -> ``factor`` trames
@@ -459,8 +501,11 @@ class MetadataInjectRunner:
                 )
                 expand_dynamic_hdr_metadata(
                     ratio=frame_ratio,
-                    rpu_bin=rpu_bin if video.copy_dv else None,
-                    hdr10p_json=hdr10p_json if (video.copy_hdr10plus and fel_statistics is None) else None,
+                    rpu_bin=rpu_bin if dv_processing else None,
+                    hdr10p_json=hdr10p_json if (
+                        (hdr10plus_from_source(video) and fel_statistics is None)
+                        or (generates_hdr10plus(video) and not hdr10plus_recomputed(video))
+                    ) else None,
                     dovi_tool_bin=cb.bins.get("dovi_tool"),
                     run_cmd=_run,
                     log=cb.log_info,
@@ -472,12 +517,12 @@ class MetadataInjectRunner:
                         cb.video_stream_index(effective_config),
                         frame_ratio,
                     )
-                    if video.copy_dv and frame_ratio > 1
+                    if dv_processing and frame_ratio > 1
                     else None
                 )
 
                 native_dovi_record = None
-                if cb.native_assemble is not None and video.copy_dv:
+                if cb.native_assemble is not None and dv_processing:
                     if not rpu_bin.is_file():
                         raise EncodeError(
                             "Dolby Vision natif requis mais aucun RPU n'a été extrait."
@@ -499,7 +544,6 @@ class MetadataInjectRunner:
                         )
 
                 enc_video_mkv = _alloc("enc_video.mkv", src_size_est)
-                copy_video = str(video.codec or "").strip().lower() == "copy"
                 if copy_video:
                     # Copie : un annexB brut n'a pas d'horodatage (images B) ; la piste
                     # d'origine fournit le timing, ses blocs sont remplacés un pour un.
@@ -509,7 +553,8 @@ class MetadataInjectRunner:
                     append_ffmpeg_input_args(timed_cmd, selected_video_source)
                     timed_cmd.extend([
                         "-map", f"0:{int(selected_video_stream)}", "-c:v", "copy",
-                        "-an", "-sn", "-dn", str(enc_video_mkv),
+                        "-an", "-sn", "-dn", *matroska_output_args(cb.ffmpeg_bin, enc_video_mkv),
+                        str(enc_video_mkv),
                     ])
                     _run(timed_cmd)
                     _check()
@@ -560,7 +605,9 @@ class MetadataInjectRunner:
                 # bitstream. Le MKV encodé complet est libéré aussitôt — le
                 # squelette suffit à la réécriture (pic disque 2× vidéo).
                 converted_hevc = cb.video_source_path(effective_config)
-                if copy_video and converted_hevc.suffix.lower() in _RAW_HEVC_EXT:
+                # Seul le flux converti du dossier jetable (P7 → P8.1) sert tel quel : une source HEVC brute
+                # serait modifiée puis supprimée par les injections.
+                if copy_video and converted_hevc.suffix.lower() in _RAW_HEVC_EXT and _owned(converted_hevc):
                     # Flux converti (P7 → P8.1) : déjà en annexB, mêmes access units que la piste copiée.
                     _free(enc_video_mkv)
                     current_hevc = converted_hevc
@@ -659,21 +706,27 @@ class MetadataInjectRunner:
                     )
 
                 light_levels: tuple[int, int] | None = None
-                if fel_statistics is not None and (hdr10plus_recomputed(video) or deferred_light_levels(video)):
-                    # HDR10+ et MaxCLL/MaxFALL de l'image reconstruite, mesurés pendant l'encodage.
+                light_statistics = light_level_statistics_path(video)
+                if (fel_statistics is not None and hdr10plus_recomputed(video)) or (
+                        light_statistics is not None and deferred_light_levels(video)):
+                    # HDR10+ de l'image reconstruite (FEL) et MaxCLL/MaxFALL de l'image produite (restaurée par le
+                    # moteur, sinon reconstruite), mesurés pendant l'encodage.
                     try:
-                        statistics = read_frame_statistics(fel_statistics)
+                        statistics = (read_frame_statistics(fel_statistics)
+                                      if fel_statistics is not None and hdr10plus_recomputed(video) else None)
+                        light = (read_frame_statistics(light_statistics)
+                                 if light_statistics is not None and deferred_light_levels(video) else None)
                     except FrameStatisticsError as exc:
                         raise EncodeError(str(exc)) from exc
-                    if hdr10plus_recomputed(video):
+                    if statistics is not None:
                         write_hdr10plus_json(statistics, hdr10p_json)
                         expand_dynamic_hdr_metadata(
                             ratio=frame_ratio, rpu_bin=None, hdr10p_json=hdr10p_json,
                             dovi_tool_bin=cb.bins.get("dovi_tool"), run_cmd=_run, log=cb.log_info,
                         )
                         cb.log_info(f"HDR10+ recalculé sur l'image reconstruite : {describe(statistics)}.")
-                    if deferred_light_levels(video):
-                        exact = statistics.static_light_levels()
+                    if light is not None:
+                        exact, message = written_light_levels(video, light)
                         video = dataclasses.replace(video, max_cll=exact)
                         max_cll, max_fall = (int(value) for value in exact.split(","))
                         light_levels = (max_cll, max_fall)
@@ -693,15 +746,17 @@ class MetadataInjectRunner:
                             current_hevc = out_cll
                         else:
                             _free(out_cll)
-                        cb.log_info(f"MaxCLL/MaxFALL exacts de l'image reconstruite : {exact}.")
+                        cb.log_info(message)
                     _check()
+                if adequacy := dynamic_metadata_adequacy(video, frame_ratio):
+                    (cb.log_warn if adequacy[0] == "WARN" else cb.log_info)(adequacy[1])
 
                 # Audit frame count : empêche l'injection sur un stream qui
                 # aurait dérapé en frame count (NVENC drop, NVDEC dup, filtre
                 # non frame-preserving). Sans ça, l'injection RPU/HDR10+ se
                 # désaligne silencieusement et on produit un fichier où les
                 # scènes-cuts DV ne tombent plus aux bons endroits.
-                if video.copy_dv or video.copy_hdr10plus:
+                if dv_processing or outputs_hdr10plus(video):
                     cb.log_info("Audit alignement frame count (source/encoded/RPU/HDR10+)…")
                     guard = FrameCountGuard(
                         mediainfo_bin=cb.bins.get("mediainfo", "mediainfo"),
@@ -718,10 +773,13 @@ class MetadataInjectRunner:
                         source=cb.video_source_path(effective_config),
                         encoded=current_hevc,
                         source_stream_index=cb.video_stream_index(effective_config),
-                        rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
-                        hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
+                        rpu_bin=rpu_bin if (dv_processing and rpu_bin.exists()) else None,
+                        hdr10p_json=hdr10p_json if (outputs_hdr10plus(video) and hdr10p_json.exists()) else None,
                         known_encoded_frames=skeleton_result.blocks_written,
                         frame_ratio=frame_ratio,
+                        # HDR10+ généré (mesure ou L1) : compte source exact (paquets), jamais le raccourci
+                        # « métadonnées égales au flux encodé », qui suppose une extraction de la source.
+                        exact_source=generates_hdr10plus(video) and outputs_hdr10plus(video),
                     )
                     try:
                         # TRIM_TAIL : RPU / HDR10+ extraits du même fichier que
@@ -730,10 +788,13 @@ class MetadataInjectRunner:
                         guard.enforce(
                             audit,
                             adjustment=MetadataAdjustment.TRIM_TAIL,
-                            rpu_bin=rpu_bin if (video.copy_dv and rpu_bin.exists()) else None,
-                            hdr10p_json=hdr10p_json if (video.copy_hdr10plus and hdr10p_json.exists()) else None,
+                            rpu_bin=rpu_bin if (dv_processing and rpu_bin.exists()) else None,
+                            hdr10p_json=hdr10p_json if (outputs_hdr10plus(video) and hdr10p_json.exists()) else None,
                             on_warn=lambda msg: signals.progress.emit(f"[WARN] {msg}"),
                             on_info=lambda msg: signals.progress.emit(msg),
+                            # HDR10+ généré : compte illisible = alignement invérifiable → refus (dérogation
+                            # d'audit possible), comme la route NVEncC.
+                            strict=generates_hdr10plus(video) and outputs_hdr10plus(video),
                         )
                     except FrameCountAuditError as exc:
                         _check()
@@ -761,7 +822,15 @@ class MetadataInjectRunner:
                     effective_config = config
 
                 cb.log_step(7, "Injection des métadonnées vidéo HDR")
-                if video.copy_hdr10plus and hdr10p_json.exists():
+                if generates_hdr10plus(video) and hdr10p_json.exists() and has_hdr10plus_sei(current_hevc):
+                    # Remplacement : HDR10+ de la source (copie, ou repris par l'encodeur) retiré d'abord.
+                    out_clean = _alloc("enc_sans_hdr10p.hevc", current_hevc.stat().st_size)
+                    signals.progress.emit("Retrait du HDR10+ de la source…")
+                    _run([cb.bins["hdr10plus_tool"], "remove", "-i", str(current_hevc), "-o", str(out_clean)])
+                    _free(current_hevc)
+                    current_hevc = out_clean
+                    _check()
+                if outputs_hdr10plus(video) and hdr10p_json.exists():
                     cur_size = current_hevc.stat().st_size
                     out_hdr10p = _alloc("enc_hdr10p.hevc", cur_size)
                     signals.progress.emit("Injection métadonnées HDR10+…")
@@ -775,7 +844,7 @@ class MetadataInjectRunner:
                     current_hevc = out_hdr10p
                     _check()
 
-                if video.copy_dv and rpu_bin.exists():
+                if dv_processing and rpu_bin.exists():
                     cur_size = current_hevc.stat().st_size
                     out_dv = _alloc("enc_dv.hevc", cur_size)
                     signals.progress.emit("Injection RPU Dolby Vision…")
@@ -863,7 +932,7 @@ class MetadataInjectRunner:
                 # eu lieu au préflight ; un échec ici est fatal (pas de
                 # fallback FFmpeg silencieux).
                 record_for_muxer = native_dovi_record
-                if record_for_muxer is None and video.copy_dv and rpu_bin.exists():
+                if record_for_muxer is None and dv_processing and rpu_bin.exists():
                     record_for_muxer = _build_dovi_record_from_rpu(
                         rpu_bin=rpu_bin,
                         dovi_tool_bin=cb.bins["dovi_tool"],
@@ -892,6 +961,8 @@ class MetadataInjectRunner:
                     f"Payloads réécrits : {rewrite_result.frames_rewritten} frame(s) — "
                     "CodecPrivate et signalisation Dolby Vision portés par le TrackEntry."
                 )
+                if rewrite_result.discarded_nal_units:
+                    cb.log_warn(discarded_nal_message(rewrite_result.discarded_nal_units))
                 _free(current_hevc)
                 _free(timing_mkv)
                 current_video_input = wrapped_video
@@ -933,7 +1004,7 @@ class MetadataInjectRunner:
                 extra_sources = all_sources[1:]
                 recon_source_idx = cb.source_input_index_map(all_sources)
                 sync_remap: dict[tuple[Path, int, str], tuple[int, int]] = {}
-                sync_inputs: list[Path | str] = []
+                sync_inputs: list[SyncInput] = []
                 strict_interleave = False
 
                 recon_cmd = [
@@ -1046,10 +1117,11 @@ class MetadataInjectRunner:
                     tag_input_index=tag_input_index,
                     plan=encode_plan,
                 )
+                recon_cmd.extend(matroska_output_args(recon_cmd[0], config.output))
                 recon_cmd.append(str(config.output))
 
                 dovi_post_actions: tuple[Callable[[Path], object], ...] = ()
-                if video.copy_dv and rpu_bin.exists():
+                if dv_processing and rpu_bin.exists():
                     cb.log_info("Injection signal Dolby Vision au niveau Matroska…")
                     forced_compat_id = _resolve_dovi_compat_id(
                         p7_router_decision=p7_router_decision,
@@ -1147,6 +1219,8 @@ class MetadataInjectRunner:
 def _load_mediainfo_video(mediainfo_bin: str, path: Path) -> dict | None:
     """Charge le track Video du JSON mediainfo, ou None si indisponible."""
     try:
+        # MediaInfo configuré, arguments séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [mediainfo_bin, "--Output=JSON", str(path)],
             capture_output=True, check=False,
@@ -1189,6 +1263,8 @@ def _build_dovi_record_from_rpu(
     TV refusent le flux ou tombent en fallback HDR10 cassé.
     """
     try:
+        # dovi_tool configuré, arguments séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
         result = subprocess.run(
             [dovi_tool_bin, "info", "-i", str(rpu_bin), "--summary"],
             capture_output=True,

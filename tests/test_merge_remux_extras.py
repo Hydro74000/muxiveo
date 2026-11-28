@@ -25,6 +25,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 
 from core.workflows.encode.models import AudioTrackSettings, EncodeConfig, TrackTimeOffset, VideoEncodeSettings
 from core.workflows.remux_models import RemuxConfig, SourceInput, TrackEntry
@@ -259,11 +261,71 @@ class TestNoMergeReturnsOriginal:
             orig_language="", orig_title="",
         )
         enc = _encode_cfg(src, out, file_title="Film", keep_chapters=True)
+        enc.copy_subtitles = False
         rmx = _remux_cfg(src, out, keep_chapters=True, tracks=[bare_track])
 
         result = _merge(enc, rmx)
 
         assert result is enc, "Devrait retourner l'objet original sans reconstruction"
+
+
+class TestRemuxSubtitleSelectionIsAuthoritative:
+    """La sélection de sous-titres du job conteneur fait foi, même vide.
+
+    Cas réel (Le Samouraï) : tous les sous-titres décochés dans le panneau
+    Conteneur, ``copy_subtitles=True`` du panneau Encodage → toutes les pistes
+    de sous-titres des sources se retrouvaient dans la sortie.
+    """
+
+    @pytest.mark.parametrize("video_title", ["", "Titre piste"], ids=["sans-fusion", "avec-fusion"])
+    def test_all_subtitles_unchecked_copies_none(self, tmp_path, qt_app, video_title):
+        from core.workflows.encode.planning.subtitles import resolve_subtitle_tracks_for_encode
+        from core.workflows.encode.runtime.native_mux import resolve_native_subtitle_tracks
+
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video = TrackEntry(
+            mkv_tid=0, track_type="video", codec="H264", display_info="",
+            language="", title=video_title, orig_language="", orig_title="",
+        )
+        unchecked = TrackEntry(
+            mkv_tid=2, track_type="subtitle", codec="SUBRIP", display_info="",
+            language="eng", title="English forced", orig_language="eng", orig_title="English forced",
+        )
+        enc = _encode_cfg(src, out)
+        assert enc.copy_subtitles is True  # copie générique du panneau Encodage
+        rmx = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[video, unchecked])],
+            output=out,
+            track_order=[(0, 0)],  # sous-titre décoché : absent de l'ordre de sortie
+            keep_chapters=True,
+        )
+
+        result = _merge(enc, rmx)
+
+        assert result.copy_subtitles is False
+        assert result.subtitle_tracks == []
+        resolved = resolve_subtitle_tracks_for_encode(result, [src], probe_indices=lambda _p, _t: [2])
+        assert list(resolved.tracks) == []
+        assert resolve_native_subtitle_tracks(result) == []
+
+    def test_checked_subtitle_only(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video, kept, dropped = _track(0), _track(2, "subtitle"), _track(3, "subtitle")
+        rmx = RemuxConfig(
+            sources=[SourceInput(path=src, file_index=0, tracks=[video, kept, dropped])],
+            output=out,
+            track_order=[(0, 0), (0, 2)],
+            keep_chapters=True,
+        )
+
+        result = _merge(_encode_cfg(src, out), rmx)
+
+        assert result.copy_subtitles is False
+        assert result.subtitle_tracks == [(src, 2)]
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +361,109 @@ class TestLanguageClearPropagation:
         assert [(edit.track_order, edit.language, edit.title) for edit in result.track_meta_edits] == [
             (1, "und", None),
         ]
+
+    def test_cleared_video_title_emits_empty_title_edit(self, tmp_path, qt_app):
+        """Titre de la source vidé (panneau, profil) : effacé en sortie, jamais repris de la source."""
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        cleared_video = TrackEntry(
+            mkv_tid=0,
+            track_type="video",
+            codec="HEVC",
+            display_info="",
+            language="",
+            title="",
+            orig_language="",
+            orig_title="BEN.THE.MEN",
+        )
+        enc = _encode_cfg(src, out)
+        rmx = _remux_cfg(src, out, tracks=[cleared_video])
+
+        result = _merge(enc, rmx)
+
+        assert [(edit.track_order, edit.title) for edit in result.track_meta_edits] == [(1, "")]
+        from core.workflows.encode.planning.track_metadata import resolve_track_metadata
+
+        planned = resolve_track_metadata(result, video_refs=[(src, 0)], subtitle_refs=[])
+        assert planned[0].name == ""
+
+    def test_audio_variant_cloned_after_title_clear_keeps_empty_title(self, tmp_path, qt_app):
+        """Variante créée après l'effacement : son titre d'origine (clone) est vide, le flux source non."""
+        from core.workflows.remux_models import clone_track_entry
+        from core.workflows.encode.planning.track_metadata import resolve_track_metadata
+
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video = TrackEntry(
+            mkv_tid=0, track_type="video", codec="HEVC", display_info="",
+            language="", title="", orig_language="", orig_title="",
+        )
+        audio = TrackEntry(
+            mkv_tid=1, track_type="audio", codec="DTS", display_info="",
+            language="", title="", orig_language="", orig_title="Audio original",
+        )
+        variant = clone_track_entry(audio)
+        assert variant.orig_title == ""
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=audio.entry_id),
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=variant.entry_id, codec="ac3"),
+            ],
+        )
+        rmx = _remux_cfg(src, out, tracks=[video, audio, variant])
+
+        result = _merge(enc, rmx)
+
+        assert [(edit.track_order, edit.title) for edit in result.track_meta_edits] == [(2, ""), (3, "")]
+        planned = resolve_track_metadata(result, video_refs=[(src, 0)], subtitle_refs=[])
+        assert [item.name for item in planned[1:]] == ["", ""]
+
+    def test_audio_variant_cloned_after_language_clear_gets_und(self, tmp_path, qt_app):
+        """Langue vidée puis variante : ``und`` en sortie, jamais la langue du flux source."""
+        from core.workflows.remux_models import clone_track_entry
+
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+        video = TrackEntry(
+            mkv_tid=0, track_type="video", codec="HEVC", display_info="",
+            language="", title="", orig_language="", orig_title="",
+        )
+        audio = TrackEntry(
+            mkv_tid=1, track_type="audio", codec="DTS", display_info="",
+            language="", title="Audio", orig_language="fra", orig_title="Audio",
+        )
+        variant = clone_track_entry(audio)
+        assert variant.orig_language == ""
+        enc = _encode_cfg(
+            src,
+            out,
+            audio_tracks=[
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=audio.entry_id),
+                AudioTrackSettings(stream_index=1, source_path=src, track_entry_id=variant.entry_id, codec="ac3"),
+            ],
+        )
+        result = _merge(enc, _remux_cfg(src, out, tracks=[video, audio, variant]))
+
+        assert [(edit.track_order, edit.language) for edit in result.track_meta_edits] == [(2, "und"), (3, "und")]
+
+    def test_untitled_source_video_emits_no_title_edit(self, tmp_path, qt_app):
+        src = tmp_path / "src.mkv"
+        src.touch()
+        out = tmp_path / "out.mkv"
+
+        untitled = TrackEntry(
+            mkv_tid=0, track_type="video", codec="HEVC", display_info="",
+            language="", title="", orig_language="", orig_title="",
+        )
+        result = _merge(_encode_cfg(src, out), _remux_cfg(src, out, tracks=[untitled]))
+
+        assert result.track_meta_edits == []
 
     def test_multiple_video_tracks_are_ordered_before_audio_tracks(self, tmp_path, qt_app):
         src = tmp_path / "src.mkv"
@@ -608,7 +773,9 @@ class TestTrackTimeOffsetsPropagation:
             time_shift_ms=0,
         )
         enc = _encode_cfg(src, out)
+        enc.copy_subtitles = False
         rmx = _remux_cfg(src, out, tracks=[video])
 
         result = _merge(enc, rmx)
         assert result is enc
+        assert result.track_time_offsets == []

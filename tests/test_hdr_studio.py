@@ -223,20 +223,34 @@ def test_track_table_video_menu_emits(qt_app, monkeypatch):
     table.hdr_inspect_requested.connect(emitted.append)
     import ui.panels.remux_panel.widgets.track_table as track_table_module
 
+    labels: list[str] = []
+    chosen: list[int] = [0]
+
     class FakeMenu:
         def __init__(self, *_args) -> None:
-            self.labels: list[str] = []
+            pass
 
         def addAction(self, label):  # noqa: N802 (API Qt)
-            self.labels.append(label)
+            labels.append(label)
             return label
 
+        def addMenu(self, _label):  # noqa: N802 (API Qt)
+            return FakeMenu()
+
         def exec(self, *_args):
-            return self.labels[0]
+            return labels[chosen[0]]
 
     monkeypatch.setattr(track_table_module, "QMenu", FakeMenu)
     table._on_context_menu(table.visualRect(table.model().index(0, 0)).center())
     assert emitted == [entry]
+    # Sous-menu « Extraire » : flux puis couches fournies par le panneau.
+    extracted: list[tuple[TrackEntry, str]] = []
+    table.extract_requested.connect(lambda e, layer: extracted.append((e, layer)))
+    table.set_extract_layers_provider(lambda _entry: [("rpu", "RPU…")])
+    labels.clear()
+    chosen[0] = 2
+    table._on_context_menu(table.visualRect(table.model().index(0, 0)).center())
+    assert extracted == [(entry, "rpu")]
     table.close()
 
 
@@ -567,3 +581,133 @@ def test_encode_panel_applies_light_levels(qt_app, monkeypatch):
         assert panel._inject_hdr_cb.isChecked() and panel._max_cll.text() == "700,200"
     finally:
         panel.close()
+
+
+def test_cache_load_exact_count_is_cancelled(studio, qt_app, tmp_path, monkeypatch):
+    """Mesure en cache démentie par l'inspection : le comptage exact (ffprobe) est arrêté par un nouveau
+    chargement, sans bloquer la file des tâches ; mesure non reprise."""
+    import sys
+    import threading
+
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    media = _media(tmp_path)
+    studio._cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 3)))
+    started = threading.Event()
+
+    def slow_count(_ffprobe, _path, *, run_command, stream_index):
+        started.set()
+        run_command([sys.executable, "-c", "import time; time.sleep(30)"], **frame_count.subprocess_text_kwargs())
+        return 3
+
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", slow_count)
+    cancel = studio._cache_cancel("main")
+    result: dict = {}
+    worker = threading.Thread(target=lambda: result.update(studio._cached(media, 0, 5, cancel)))
+    begin = time.monotonic()
+    worker.start()
+    assert started.wait(10)
+    studio._cache_cancel("main")  # nouveau chargement : le précédent est arrêté
+    worker.join(10)
+    assert not worker.is_alive() and time.monotonic() - begin < 10
+    assert result["measure"] is None and cancel.is_set()
+
+
+def test_exact_count_from_cache_load_guards_following_measure(studio, tmp_path, monkeypatch):
+    """Inspection 5, cache 3, compte exact 4 : cache écarté, puis une mesure neuve de 5 images (égale au compte
+    démenti de l'inspection) refusée ; le compte exact n'est fait qu'une fois."""
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    media = _media(tmp_path)
+    studio._cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 3)))
+    counted: list[int] = []
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", lambda *a, **k: counted.append(4) or 4)
+    assert studio._cached(media, 0, 5)["measure"] is None
+    check = studio._frame_check(media, 0, 5)
+    assert check(read_measurement(write_statistics(tmp_path / "s5.jsonl", [100.0] * 5))) is not None
+    assert check(read_measurement(write_statistics(tmp_path / "s4.jsonl", [100.0] * 4))) is None
+    assert counted == [4]
+
+
+def test_cancel_during_inspection_drops_pending_analysis(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    analyses: list[bool] = []
+    monkeypatch.setattr(studio, "analyze", lambda *a, **k: analyses.append(True))
+    studio.load_source(_media(tmp_path), 0, analyze=True)
+    studio.cancel()
+    # Inspection annulée (D5, lot 5) : son retour est ignoré, rien n'est affiché ni analysé.
+    assert _wait(qt_app, lambda: getattr(studio, "_inflight", 0) == 0)
+    qt_app.processEvents()
+    assert studio._info is None and analyses == [] and not studio._busy
+
+
+def test_unreadable_exact_count_is_retried(studio, tmp_path, monkeypatch):
+    """Comptage exact illisible (échec transitoire) : jamais mémorisé, refait au contrôle suivant."""
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    media = _media(tmp_path)
+    answers = [None, 4]
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", lambda *a, **k: answers.pop(0))
+    measurement = read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 3))
+    assert studio._frame_check(media, 0, 5)(measurement) is None  # invérifiable : acceptée
+    assert studio._frame_check(media, 0, 5)(measurement) is not None  # recompté : 4, refusée
+    assert answers == []
+
+
+def test_cancel_reaches_cache_count_after_track_change(studio, qt_app, tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    studio.load_source(_media(tmp_path), 0)
+    assert _wait(qt_app, lambda: studio._info is not None and not studio.is_busy())
+    studio._on_track_changed(0)
+    pending = studio._cache_cancels["main"]
+    studio.cancel()
+    assert pending.is_set()
+
+
+@pytest.mark.parametrize("role", ["main", "compare"])
+def test_cancel_button_stops_blocked_cache_count(studio, qt_app, tmp_path, monkeypatch, role):
+    """Comptage exact bloqué pendant un chargement du cache (piste changée ou piste B) : opération affichée,
+    « Annuler » visible ; un clic l'arrête et libère la file des tâches."""
+    import sys
+    import threading
+
+    import core.frame_count as frame_count
+    from core.hdr_inspection.measure import read_measurement
+    from tests.test_hdr_edit import write_statistics
+
+    monkeypatch.setattr(panel_module, "FileInspector", _FakeInspector)
+    media = _media(tmp_path)
+    studio.load_source(media, 0)
+    assert _wait(qt_app, lambda: studio._info is not None and not studio.is_busy())
+    studio._cache.store_measurement(media, 0, read_measurement(write_statistics(tmp_path / "s.jsonl", [100.0] * 2)))
+    # Compte de l'inspection (5) différent de la mesure en cache (2) : comptage exact déclenché.
+    monkeypatch.setattr(panel_module, "_inspected_frames", lambda info, index: 5)
+    original = panel_module.build_snapshot
+    monkeypatch.setattr(panel_module, "build_snapshot", lambda info, stream=None: dataclasses.replace(
+        original(info, stream), frames=5, frames_exact=True))
+    started = threading.Event()
+
+    def slow_count(_ffprobe, _path, *, run_command, stream_index):
+        started.set()
+        run_command([sys.executable, "-c", "import time; time.sleep(30)"], **frame_count.subprocess_text_kwargs())
+        return 5
+
+    monkeypatch.setattr(frame_count, "ffprobe_packet_count", slow_count)
+    if role == "main":
+        studio._on_track_changed(0)
+    else:
+        studio.load_compare(media, 0)
+    assert started.wait(10)
+    assert _wait(qt_app, lambda: studio.is_busy() and studio._cancel_btn.isVisibleTo(studio))
+    begin = time.monotonic()
+    studio._cancel_btn.click()
+    assert not studio.is_busy()
+    done = threading.Event()
+    studio._submit(done.set)  # file des tâches libérée
+    assert _wait(qt_app, done.is_set, 10) and time.monotonic() - begin < 10

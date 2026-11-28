@@ -141,6 +141,66 @@ def test_measurement_cache_round_trip(tmp_path):
     assert cache.load(media, 0) is None  # métadonnées dynamiques : fichier distinct
 
 
+def test_measurement_frame_count_mismatch_needs_exact_confirmation(tmp_path, french_messages):
+    """Compte de l'inspection (MediaInfo, plausible) différent de la mesure : écart confirmé par le comptage
+    exact avant d'écarter le cache ou de refuser (mvo-fel ≤ 0.6.1 : premier GOP perdu, statistiques
+    décalées) ; compte exact égal ou illisible : mesure gardée."""
+    from core.hdr_inspection.measure import frame_count_check, measure_track
+
+    short = write_statistics(tmp_path / "short.jsonl", [100.0, 900.0], scenes=[0, 1])
+    media = tmp_path / "film.mkv"
+    media.write_bytes(b"x")
+    cache = InspectionCache(tmp_path / "cache")
+    cache.store_measurement(media, 0, read_measurement(short))
+    counts: list[str] = []
+
+    def exact(value):
+        return lambda: counts.append("exact") or value
+
+    assert cache.load_measurement(media, 0, check=frame_count_check(2, exact(3))) is not None
+    assert counts == []  # compte de l'inspection concordant : aucun comptage exact
+    assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(3))) is None
+    assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(2))) is not None  # MediaInfo faux
+    assert cache.load_measurement(media, 0, check=frame_count_check(3, exact(None))) is not None  # illisible
+    # Compte de l'inspection inconnu : compte exact demandé (D2, lot 4), écart refusé.
+    assert cache.load_measurement(media, 0, check=frame_count_check(None, exact(3))) is None
+    assert cache.load_measurement(media, 0, check=frame_count_check(None, exact(2))) is not None
+    assert counts == ["exact"] * 5
+    # Compte de l'inspection démenti (100 contre 101 exactes) : une mesure de 100 images reste refusée.
+    check = frame_count_check(100, exact(101))
+    assert check(read_measurement(write_statistics(tmp_path / "s99.jsonl", [100.0] * 99))) is not None
+    assert check(read_measurement(write_statistics(tmp_path / "s100.jsonl", [100.0] * 100))) is not None
+    assert check(read_measurement(write_statistics(tmp_path / "s101.jsonl", [100.0] * 101))) is None
+    assert counts == ["exact"] * 6  # compte exact fait une fois
+
+    class Engine:
+        def measure(self, path, stream, statistics_path, **_):
+            Path(statistics_path).write_text(short.read_text(encoding="utf-8"), encoding="utf-8")
+            return "cpu"
+
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(MeasurementError, match="2 images pour 3"):
+        measure_track(Engine(), media, 0, work, frame_check=frame_count_check(3, lambda: 3))
+    assert measure_track(Engine(), media, 0, work, frame_check=frame_count_check(3, lambda: 2))[0].frames == 2
+    assert not list(work.iterdir())
+
+
+def test_patcher_raw_hevc_output_drops_invalid_nal_units(tmp_path):
+    """HEVC brut : NAL à bit interdit (rip DVDFab) absente du fichier corrigé, avertissement émis."""
+    junk = b"\x00\x00\x00\x01" + bytes([0x80 | (31 << 1), 0x42, 0x01, 0x01, 0x22])
+    clean = b"\x00\x00\x00\x01" + b"\x40\x01" + b"\x0c" * 16
+    source = tmp_path / "film.hevc"
+    source.write_bytes(junk + clean)
+    warnings: list[tuple[str, dict]] = []
+    output = tmp_path / "out.hevc"
+    plan = PatchPlan(source, 0, output, rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)))
+    _patcher(tmp_path, _FakeTools(tmp_path / "unused.json"),
+             warn=lambda code, message, fields: warnings.append((code, fields))).run(plan)
+    assert output.read_bytes() == clean
+    assert ("invalid_nal_removed", {"count": 1}) in warnings
+
+
 # ── Tone mapping ─────────────────────────────────────────────────────────────
 def test_eetf_reference_points():
     values = np.array([1.0, 100.0, 400.0, 1000.0, 4000.0, 8000.0])
@@ -401,7 +461,7 @@ def test_patcher_keeps_result_when_publication_is_refused(tmp_path):
     from core.output_commit import OutputChangedError
 
     source = tmp_path / "film.hevc"
-    source.write_bytes(b"\x00" * 32)
+    source.write_bytes(b"\x00\x00\x00\x01\x40\x01" + b"\x0c" * 26)  # un NAL (VPS)
     output = tmp_path / "out.hevc"
 
     class _ToolsCreatingOutput(_FakeTools):
@@ -496,3 +556,124 @@ def test_engine_measure_contract(tmp_path):
     assert not measure_supported(old)
     with pytest.raises(FelError, match="0.4.0"):
         old.measure(tmp_path / "f.mkv", 0, tmp_path / "s.jsonl")
+
+
+# ---------------------------------------------------------------------------
+# Images sans RPU : complétées à leur rang et annoncées (audit D01)
+# ---------------------------------------------------------------------------
+
+class _GapTools(_FakeTools):
+    """Comme _FakeTools, avec la duplication de RPU (fill_rpu_gaps) et un avertissement de longueur optionnel."""
+
+    def __init__(self, hdr10plus_json: Path, inject_output: str = "") -> None:
+        super().__init__(hdr10plus_json)
+        self.inject_output = inject_output
+
+    def __call__(self, cmd):
+        cmd = list(cmd)
+        if Path(cmd[0]).name == "dovi_tool" and cmd[1] == "editor":
+            edit = json.loads(Path(cmd[cmd.index("-j") + 1]).read_text())
+            if "duplicate" in edit:
+                self.commands.append(cmd)
+                Path(cmd[cmd.index("-o") + 1]).write_bytes(b"rpu-complet")
+                return ""
+        output = super().__call__(cmd)
+        if Path(cmd[0]).name == "dovi_tool" and cmd[1] == "inject-rpu":
+            return self.inject_output
+        return output
+
+
+def _gaps(*missing: int, frames: int = 10):
+    from core.workflows.encode.runtime.dovi_rpu_gaps import RpuGaps
+
+    return RpuGaps(frames=frames, missing=tuple(missing), with_el=(), trailing=False)
+
+
+def test_patcher_completes_missing_rpu_at_display_ranks(tmp_path):
+    source = tmp_path / "film.hevc"
+    source.write_bytes(b"\x00" * 32)
+    tools = _GapTools(tmp_path / "unused.json")
+    warnings: list[tuple[str, str, dict]] = []
+    plan = PatchPlan(source, 0, tmp_path / "out.hevc", rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)),
+                     rpu_gaps=_gaps(7, 8), rpu_gaps_checked=True)
+    _patcher(tmp_path, tools, warn=lambda *item: warnings.append(item)).run(plan)
+    duplicates = [json.loads(Path(c[c.index("-j") + 1]).read_text()) if Path(c[c.index("-j") + 1]).exists() else None
+                  for c in tools.commands if c[1] == "editor" and "fill" in c[c.index("-j") + 1]]
+    assert len(duplicates) == 2  # une duplication par rang manquant (RPU précédent)
+    inject = next(c for c in tools.commands if c[1] == "inject-rpu")
+    assert inject[inject.index("-r") + 1].endswith("rpu_edit_complete.bin")
+    assert [(code, fields) for code, _message, fields in warnings] == [
+        ("dovi_rpu_completed", {"ranks": [7, 8], "frames": 10})]
+    assert "7, 8" in warnings[0][1]
+
+
+def test_patcher_without_gaps_injects_edited_rpu_without_warning(tmp_path):
+    source = tmp_path / "film.hevc"
+    source.write_bytes(b"\x00" * 32)
+    tools = _GapTools(tmp_path / "unused.json")
+    warnings: list[object] = []
+    plan = PatchPlan(source, 0, tmp_path / "out.hevc", rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)),
+                     rpu_gaps=_gaps(), rpu_gaps_checked=True)
+    _patcher(tmp_path, tools, warn=lambda *item: warnings.append(item)).run(plan)
+    inject = next(c for c in tools.commands if c[1] == "inject-rpu")
+    assert inject[inject.index("-r") + 1].endswith("rpu_edit.bin") and warnings == []
+
+
+def test_patcher_scans_when_gaps_not_provided(tmp_path, monkeypatch):
+    from core.hdr_inspection import patch as patch_module
+
+    source = tmp_path / "film.hevc"
+    source.write_bytes(b"\x00" * 32)
+    scanned: list[object] = []
+    monkeypatch.setattr(patch_module, "analyze_rpu_gaps",
+                        lambda plan, report=None, cancelled=None: (scanned.append(plan.source), _gaps(0))[1])
+    warnings: list[tuple[str, str, dict]] = []
+    plan = PatchPlan(source, 0, tmp_path / "out.hevc", rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)))  # HDR Studio
+    _patcher(tmp_path, _GapTools(tmp_path / "unused.json"), warn=lambda *item: warnings.append(item)).run(plan)
+    assert scanned == [source] and warnings[0][0] == "dovi_rpu_completed"
+
+
+def test_static_only_patch_never_scans(tmp_path, monkeypatch):
+    from core.hdr_inspection import patch as patch_module
+
+    plan = PatchPlan(tmp_path / "film.mkv", 0, tmp_path / "out.mkv", static=StaticEdit(1000, 400))
+    monkeypatch.setattr(patch_module, "scan_rpu_gaps", lambda *a, **k: pytest.fail("aucune lecture attendue"),
+                        raising=False)
+    assert patch_module.analyze_rpu_gaps(plan) is None
+
+
+def test_tool_length_mismatch_is_reported(tmp_path):
+    source = tmp_path / "film.hevc"
+    source.write_bytes(b"\x00" * 32)
+    tools = _GapTools(tmp_path / "unused.json", inject_output=(
+        "Warning: mismatched lengths. video 2878, RPU 2876\nMetadata will be duplicated at the end to match video length"))
+    warnings: list[tuple[str, str, dict]] = []
+    plan = PatchPlan(source, 0, tmp_path / "out.hevc", rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)),
+                     rpu_gaps=None, rpu_gaps_checked=True)  # rangs non localisables : comportement de l'outil
+    _patcher(tmp_path, tools, warn=lambda *item: warnings.append(item)).run(plan)
+    assert [code for code, _m, _f in warnings] == ["tool_length_mismatch"]
+    assert "video 2878, RPU 2876" in warnings[0][1]
+
+
+def test_analyze_rpu_gaps_skips_scan_when_counts_match(tmp_path):
+    from types import SimpleNamespace
+
+    from core.hdr_inspection.patch import analyze_rpu_gaps
+
+    plan = PatchPlan(tmp_path / "film.mkv", 0, tmp_path / "out.mkv", rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)))
+    report = SimpleNamespace(snapshot=SimpleNamespace(frames=10, frames_exact=True), dovi=SimpleNamespace(frames=10))
+    assert analyze_rpu_gaps(plan, report).missing == ()  # aucun fichier lu (la source n'existe pas)
+
+
+def test_analyze_rpu_gaps_cancelled_during_scan(tmp_path, monkeypatch):
+    from core.workflows.encode.runtime import dovi_rpu_gaps
+
+    from core.hdr_inspection.patch import analyze_rpu_gaps
+
+    def interrupted(*_args, **_kwargs):
+        raise InterruptedError
+
+    monkeypatch.setattr(dovi_rpu_gaps, "scan_rpu_gaps", interrupted)
+    plan = PatchPlan(tmp_path / "film.mkv", 0, tmp_path / "out.mkv", rpu=RpuEdit(l6=(1000, 0.0001, 700, 200)))
+    with pytest.raises(PatchCancelled):
+        analyze_rpu_gaps(plan)

@@ -18,6 +18,7 @@ from core.workflows.encode.planning.plan_models import EncodePlan
 from core.workflows.encode.planning.subtitle_inputs import plan_isolated_subtitle_inputs
 from core.workflows.encode.planning.track_metadata import resolve_track_metadata
 from core.workflows.encode.planning.sources import source_input_index_map as _source_input_index_map_plan
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 
 
 @dataclass(frozen=True)
@@ -120,39 +121,6 @@ class EncodeStreamMappingService:
             cmd.extend(["-attach", str(att_path)])
             cmd.extend([f"-metadata:s:t:{att_idx}", f"mimetype={mime_for_path(att_path)}"])
             cmd.extend([f"-metadata:s:t:{att_idx}", f"filename={att_name}"])
-
-
-def build_injected_hevc_wrap_command(
-    *,
-    ffmpeg_bin: str,
-    source: Path,
-    hevc_input: Path,
-    mkv_output: Path,
-    source_video_fps_expr: Callable[[Path], str],
-    ffmpeg_progress_args: Callable[[], list[str]],
-    ffmpeg_thread_args: Callable[[], list[str]],
-) -> list[str]:
-    fps_expr = source_video_fps_expr(source)
-    return [
-        ffmpeg_bin,
-        "-hide_banner",
-        "-y",
-        *ffmpeg_progress_args(),
-        "-f",
-        "hevc",
-        "-framerate",
-        fps_expr,
-        "-i",
-        str(hevc_input),
-        *ffmpeg_thread_args(),
-        "-map",
-        "0:v:0",
-        "-c:v",
-        "copy",
-        "-bsf:v",
-        f"setts=pts=N/({fps_expr}*TB)",
-        str(mkv_output),
-    ]
 
 
 @dataclass(frozen=True)
@@ -263,6 +231,7 @@ class EncodeFinalMuxBuilder:
             include_copy_video_stream_passthrough=False,
             plan=plan,
         )
+        cmd.extend(matroska_output_args(cmd[0], config.output))
         cmd.append(str(config.output))
         return cmd
 

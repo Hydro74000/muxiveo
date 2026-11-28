@@ -53,9 +53,10 @@ def _hevc_output(video: VideoEncodeSettings) -> bool:
 
 
 def recomputes_hdr10plus(video: VideoEncodeSettings) -> bool:
-    """HDR10+ recalculé demandé : copie HDR10+ active, sortie HEVC (hdr10plus_tool), choix « recompute »."""
-    return bool(video.copy_hdr10plus and video.fel_hdr10plus == "recompute" and _hevc_output(video)
-                and not video.tonemap_to_sdr)
+    """HDR10+ recalculé demandé, sortie HEVC (hdr10plus_tool) : copie HDR10+ active et choix « recompute », ou
+    HDR10+ généré depuis le Dolby Vision (toujours l'image produite)."""
+    wanted = video.generate_hdr10plus or (video.copy_hdr10plus and video.fel_hdr10plus == "recompute")
+    return bool(wanted and _hevc_output(video) and not video.tonemap_to_sdr)
 
 
 #: Provenances des MaxCLL/MaxFALL déduites automatiquement (source, RPU) : remplacées par la mesure.
@@ -79,16 +80,21 @@ def prepare_fel(
     ffprobe: str = "ffprobe",
     capture: Callable[[list[str]], str], cancelled: Callable[[], bool], log: Callable[[str, str], None],
     engine_loader: Callable[[], FelEngine] | None = None,
+    source_rpu: Path | None = None,
 ) -> VideoEncodeSettings:
+    """``source_rpu`` : RPU d'origine (mode 0) déjà extrait et complété par la préparation, réutilisé tel quel."""
     if not requested(video):
         return video
     prefix = f"Piste vidéo #{index} — "
     try:
         engine = (engine_loader or FelEngine.installed)()
-        rpu = work_dir / f"fel_original_{index}.bin"
-        extract_dovi_rpu(source=source, stream_index=video.stream_index, ffmpeg_bin=ffmpeg,
-                         dovi_tool_bin=dovi, output_rpu=rpu, work_dir=work_dir,
-                         run_cmd=run, cleanup_paths=[], mode="0")
+        if source_rpu is not None and source_rpu.is_file():
+            rpu = source_rpu
+        else:
+            rpu = work_dir / f"fel_original_{index}.bin"
+            extract_dovi_rpu(source=source, stream_index=video.stream_index, ffmpeg_bin=ffmpeg,
+                             dovi_tool_bin=dovi, output_rpu=rpu, work_dir=work_dir,
+                             run_cmd=run, cleanup_paths=[], mode="0")
         kind = engine.classify(rpu, cancelled)
         if kind != "fel":
             log("INFO", prefix + f"Reconstruction FEL sans effet ({kind}).")
@@ -99,9 +105,9 @@ def prepare_fel(
             log("WARN", prefix + "GPU FEL mémorisé indisponible : choix automatique pour cette exécution.")
             choice = "auto"
         plan = FelDevicePlan(choice, devices, video, log, precision_supported=precision_supported(engine))
-        # Interpolation RIFE : elle limite le débit et partage le GPU ; une seule image FEL en vol
-        # suffit (mesures de bout en bout du plugin) et économise la mémoire vidéo.
-        workers = 1 if video.interpolation.enabled else None
+        # Moteur muxiveo-rife (interpolation RIFE, Restauration) : il limite le débit et partage le GPU ;
+        # une seule image FEL en vol suffit (mesures de bout en bout du plugin) et économise la mémoire vidéo.
+        workers = 1 if video.interpolation.enabled or video.restoration.enabled else None
         statistics: Path | None = None
         if recomputes_hdr10plus(video) or measures_light_levels(video):
             if frame_statistics_supported(engine):
@@ -116,6 +122,12 @@ def prepare_fel(
                                source_chroma_location(ffprobe, source, video.stream_index, capture),
                                supports_chroma_setparams(ffmpeg, capture), statistics)
         result = replace(video, fel_context=context, source_color_transfer="smpte2084")
+        mastering = dv_master_display(video, rpu, dovi, capture)
+        if mastering:
+            result = replace(result, master_display=mastering,
+                             fel_context=replace(context, original_master_display=video.master_display))
+            log("INFO", prefix + "Master Display de l'image reconstruite : luminance du master Dolby Vision (L6 du "
+                "RPU), primaires de la source : " + mastering + ".")
         if statistics is not None:
             # MaxCLL/MaxFALL exacts mesurés pendant l'encodage, insérés ensuite : rien de provisoire
             # n'est transmis à l'encodeur.
@@ -146,9 +158,43 @@ def prepare_fel(
         return replace(video, bake_dovi_fel=False, fel_context=None)
 
 
+#: Méthodes de génération HDR10+ liées à l'image reconstruite : caduques après une reprise sur le BL.
+_FEL_GENERATION_METHODS = frozenset({"fel_statistics", "measure_reconstructed"})
+
+
 def fallback_video(video: VideoEncodeSettings) -> VideoEncodeSettings:
+    """Réglages de la reprise sur le BL ; HDR10+ généré sur l'image reconstruite invalidé (JSON à refaire)."""
     context = video.fel_context
     if context is None:
         return video
-    return replace(video, fel_context=None, bake_dovi_fel=False,
-                   max_cll=context.original_max_cll, static_hdr_light_level_source=context.original_light_source)
+    restored = replace(video, fel_context=None, bake_dovi_fel=False,
+                       max_cll=context.original_max_cll, static_hdr_light_level_source=context.original_light_source)
+    if video.generate_hdr10plus and video.hdr10plus_generation_method in _FEL_GENERATION_METHODS:
+        restored = replace(restored, generated_hdr10plus_json=None, hdr10plus_generation_method="")
+    return replace(restored, master_display=context.original_master_display) if context.original_master_display \
+        else restored
+
+
+_LUMINANCE = re.compile(r"L\(\s*\d+\s*,\s*\d+\s*\)")
+
+
+def dv_master_display(video: VideoEncodeSettings, rpu: Path, dovi: str, capture: Callable[[list[str]], str]) -> str:
+    """Master Display de l'image reconstruite : celui du master Dolby Vision ; "" si inchangé.
+
+    Le FEL intégré remplace la BL (grade HDR10 de la source) par le master DV, que décrit le L6 du RPU :
+    le Master Display repris de la source garde ses primaires (L9 absent en CM v2.9) et prend la luminance
+    du L6 (sinon de ``source_max_pq``). Saisie manuelle, provenance inconnue ou champ vide : inchangé.
+    """
+    current = (video.master_display or "").strip()
+    if (not video.inject_hdr_meta or video.tonemap_to_sdr or not current
+            or video.static_hdr_master_display_source != "source" or _LUMINANCE.search(current) is None):
+        return ""
+    # Seule la luminance est retenue : pas de comptage complet des L9.
+    estimate = estimate_static_hdr_from_rpu(dovi, rpu, capture, count_l9=lambda *_args: None)
+    if getattr(estimate, "luminance_source", "") not in {"rpu_l6", "rpu_source_pq"}:
+        return ""
+    luminance = _LUMINANCE.search(str(getattr(estimate, "master_display", "")))
+    if luminance is None:
+        return ""
+    proposed = _LUMINANCE.sub(luminance.group(0), current)
+    return proposed if proposed != current else ""

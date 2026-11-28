@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from core.service.catalog import CATALOG
+from tests._json_schema import errors
 from tests.integration._synth import make_av_container
 
 
@@ -61,6 +63,8 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     assert inspect.returncode == 0, inspect.stderr
     payload = json.loads(inspect.stdout)
     assert payload["files"][0]["tracks"]
+    described = CATALOG.get("media.inspect").describe()
+    assert not errors(payload, described["result"], described)  # fiche réelle (ffprobe) conforme au schéma
 
     config = tmp_path / "job.json"
     config.write_text(
@@ -73,7 +77,7 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
 
     preview = _run_cli(root, "preview", "--config", str(config))
     assert preview.returncode == 0, preview.stderr
-    assert "ffmpeg" in preview.stdout
+    assert "native Matroska" in preview.stdout
     assert out.as_posix() in preview.stdout
 
     validate_json = _run_cli(root, "validate", "--config", str(config), "--json")
@@ -86,30 +90,30 @@ def test_cli_inspect_validate_preview_on_synthetic_media(tmp_path: Path) -> None
     assert preview_json.returncode == 0, preview_json.stderr
     preview_payload = json.loads(preview_json.stdout)
     assert preview_payload["valid"] is True
-    assert preview_payload["command"][0] == "ffmpeg"
-    # Défaut effectif sans configuration : FFmpeg (setting global [matroska]).
-    assert preview_payload["selected_backend"] == "ffmpeg"
+    # Défaut effectif sans configuration : Auto → natif pour une sortie .mkv (setting global [matroska]).
+    marker = "REM " if sys.platform == "win32" else "# "
+    assert preview_payload["command_text"].startswith(marker + "Backend: native Matroska")
+    assert preview_payload["selected_backend"] == "native"
     assert preview_payload["plan_version"] == 1
-    assert preview_payload["execution_preview"]["action"] == "external_ffmpeg"
+    assert preview_payload["execution_preview"]["action"] == "internal_matroska_write"
 
-    # Choix explicite du job : le natif reste prioritaire sur le setting.
+    # Choix explicite du job : FFmpeg reste prioritaire sur le setting.
     config.write_text(
         json.dumps({
             "version": 1,
             "sources": [{"path": str(src)}],
             "output": str(out),
-            "mux_backend": "native",
+            "mux_backend": "ffmpeg",
         }),
         encoding="utf-8",
     )
-    preview_native = _run_cli(root, "preview", "--config", str(config), "--json")
-    assert preview_native.returncode == 0, preview_native.stderr
-    native_payload = json.loads(preview_native.stdout)
-    assert native_payload["valid"] is True
-    marker = "REM " if sys.platform == "win32" else "# "
-    assert native_payload["command_text"].startswith(marker + "Backend: native Matroska")
-    assert native_payload["selected_backend"] == "native"
-    assert native_payload["execution_preview"]["action"] == "internal_matroska_write"
+    preview_ffmpeg = _run_cli(root, "preview", "--config", str(config), "--json")
+    assert preview_ffmpeg.returncode == 0, preview_ffmpeg.stderr
+    ffmpeg_payload = json.loads(preview_ffmpeg.stdout)
+    assert ffmpeg_payload["valid"] is True
+    assert ffmpeg_payload["command"][0] == "ffmpeg"
+    assert ffmpeg_payload["selected_backend"] == "ffmpeg"
+    assert ffmpeg_payload["execution_preview"]["action"] == "external_ffmpeg"
 
 
 def test_cli_remux_dry_run_refuses_invalid_json_before_inspection(tmp_path: Path) -> None:
@@ -489,3 +493,36 @@ def test_cli_batch_output_dir_overrides_template_output(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     outputs = [job["output"] for job in json.loads(summary.read_text(encoding="utf-8"))["jobs"]]
     assert outputs == [str(out_dir / "a.mkv"), str(out_dir / "b.mkv")]
+
+
+@pytest.mark.parametrize("with_template", [True, False])
+def test_call_profile_preview_reads_profile_and_output_from_the_request_folder(tmp_path: Path, with_template) -> None:
+    """Audit 14 : requête ``call`` lue depuis un autre dossier : profil fichier relatif et sortie ``sorties/``
+    (dossier encore absent) résolus depuis le dossier de la requête ; gabarit du profil appliqué dans ce dossier."""
+    root = Path(__file__).resolve().parents[2]
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    elsewhere = tmp_path / "ailleurs"
+    elsewhere.mkdir()
+    make_av_container(jobs / "source.mkv", duration=0.3)
+    profile = {"version": 1, "kind": "decision-profile", "name": "rendu", "rules": []}
+    if with_template:
+        profile["output_template"] = "{source_name}-rendu"
+    (jobs / "profil.json").write_text(json.dumps(profile), encoding="utf-8")
+    (elsewhere / "profil.json").write_text("{}", encoding="utf-8")  # homonyme dans le cwd : ignoré
+    request = jobs / "requete.json"
+    request.write_text(json.dumps({"profile": "profil.json", "inputs": ["source.mkv"], "output": "sorties/"}),
+                       encoding="utf-8")
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "XDG_CONFIG_HOME": str(tmp_path / "xdg")}
+    result = subprocess.run(
+        [sys.executable, str(root / "main.py"), "--cli", "call", "profile.preview", "--request", str(request),
+         "--ffmpeg", "ffmpeg", "--ffprobe", "ffprobe", "--mediainfo", "/bin/false"],
+        cwd=elsewhere, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+    )
+    assert result.returncode == 0, result.stderr
+    output = Path(json.loads(result.stdout)["result"]["config"]["output"])
+    if with_template:  # gabarit rendu dans le dossier de la requête
+        assert output == jobs / "sorties" / "source-rendu.mkv"
+    else:  # sans gabarit : « sorties/ » garde son sens historique (chemin donné), résolu depuis la requête
+        assert output == jobs / "sorties"
+    assert not (elsewhere / "sorties").exists()

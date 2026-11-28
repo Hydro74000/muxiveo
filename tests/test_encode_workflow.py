@@ -20,27 +20,7 @@ Plan de couverture :
             - Parse correctement vm_stat avec différentes tailles de page
             - Retourne 0 si vm_stat échoue
 
-        _ram_buffer_dir :
-            - Linux/macOS : /dev/shm si writable
-            - Linux/macOS : None si /dev/shm absent ou non writable
-            - Windows     : None systématiquement
-
-    _shm_path (méthode d'instance) — formule de seuil :
-        Formule : available - file_size ≥ total × threshold_pct / 100
-        - Retourne RAM si formule vérifiée
-        - Retourne disque si RAM insuffisante
-        - Retourne disque si ram_buffer_enabled=False (config)
-        - Retourne disque si _ram_buffer_dir() = None
-        - Retourne disque si total ou available = 0
-        - Frontière exacte du seuil
-
     Gestion des fichiers dans _run_with_metadata_inject :
-        Tracking ext_files :
-            - Un fichier RAM est enregistré dans ext_files
-            - Un fichier disque N'est PAS dans ext_files
-            - _free() retire le fichier de ext_files
-            - _free() silencieux si fichier déjà absent
-
         Pas de src.hevc :
             - aucune extraction ffmpeg vers src.hevc n'est créée
 
@@ -53,12 +33,7 @@ Plan de couverture :
               courant + annexB injecté — pipeline lot 3)
 
         Cleanup ext_files sur annulation / exception :
-            - Fichiers ext_files supprimés si RuntimeError
-            - Fichiers ext_files supprimés si TaskCancelledError
             - Itération sur copie de ext_files (pas de mutation pendant le finally)
-
-        Désactivation du buffer RAM :
-            - ram_buffer_enabled=False → tous les HEVC vont sur disque (ext_files vide)
 
     Codec COPY — passthrough métadonnées (TestCopyCodecMetadataPassthrough) :
         build_command single pass :
@@ -105,7 +80,6 @@ import re
 import json
 import threading
 import time
-from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -202,6 +176,7 @@ class _FakePayloadRewriteResult:
         self.frames_rewritten = frames
         self.codec_private_updated = False
         self.dovi_mapping_written = False
+        self.discarded_nal_units = 0
 
 
 @pytest.fixture(autouse=True)
@@ -245,18 +220,18 @@ def _fake_payload_rewriter(monkeypatch):
 
 
 def _make_workflow(
-    enabled=True,
     threshold=15,
     ffmpeg_threads=None,
     max_parallel_video_encodes=1,
+    x265_frame_threads=0,
 ) -> EncodeWorkflow:
     return EncodeWorkflow(
         ffmpeg_bin="ffmpeg", dovi_tool_bin="dovi_tool",
         hdr10plus_bin="hdr10plus_tool",
-        ram_buffer_enabled=enabled,
         ram_buffer_threshold_pct=threshold,
         ffmpeg_threads=ffmpeg_threads,
         max_parallel_video_encodes=max_parallel_video_encodes,
+        x265_frame_threads=x265_frame_threads,
     )
 
 
@@ -267,16 +242,22 @@ class TestEncodePreviewWorkflow:
         src = tmp_path / "source.mkv"
         out = tmp_path / "preview.mkv"
 
+        from fractions import Fraction
+
+        # Image clé à 90 004 / 90 000 s (hors grille milliseconde) : -ss au µs supérieur, jamais avant elle.
         cmd = wf._build_preview_source_segment_cmd(
             src,
             out,
             stream_index=2,
-            start_s=12.3456,
+            start_s=Fraction(90004, 90000),
             duration_s=8.0,
         )
 
         assert cmd[:4] == ["ffmpeg", "-hide_banner", "-y", "-ss"]
-        assert cmd[cmd.index("-ss") + 1] == "12.346"
+        assert cmd[cmd.index("-ss") + 1] == "1.000045"
+        assert cmd[cmd.index("-bsf:v") + 1] == "noise=drop=lt(pts\\,0)"
+        assert wf._build_preview_source_segment_cmd(src, out, stream_index=2, start_s=Fraction(1001, 1000),
+                                                    duration_s=8.0)[4] == "1.001000"
         assert cmd[cmd.index("-t") + 1] == "8.000"
         assert cmd[cmd.index("-map") + 1] == "0:2"
         assert cmd[-1] == str(out)
@@ -343,62 +324,51 @@ class TestEncodePreviewWorkflow:
         assert EncodePreviewRequest(mode="video", duration_s=99).normalized_duration_s() == 30.0
         assert EncodePreviewRequest(mode="image", duration_s=99).normalized_duration_s() == 5.0
 
-    def test_run_preview_sync_image_mode_generates_seven_captures(self, tmp_path, monkeypatch):
-        from core.workflows.encode import PREVIEW_IMAGE_CAPTURE_COUNT
-        from core.workflows.encode.runtime.hdr_metadata import DynamicHdrPreviewSceneSelection
+    def test_run_preview_sync_image_mode_encodes_and_picks_requested_instant(self, tmp_path, monkeypatch):
+        """Aperçu image : extrait encodé depuis l'image clé ≤ instant, image choisie par son instant réel (audit C03)."""
+        from fractions import Fraction
 
         src = tmp_path / "source.mkv"
         src.touch()
         wf = _make_workflow()
-        cfg = _make_config(
-            src,
-            tmp_path / "out.mkv",
-            work_dir=tmp_path,
-            duration_s=600.0,
-        )
-        created_images: list[Path] = []
+        cfg = _make_config(src, tmp_path / "out.mkv", work_dir=tmp_path, duration_s=600.0)
+        commands: dict[str, list[str]] = {}
 
         def fake_run_cmd(cmd, *, cwd=None, env=None, label="", progress_cb=None, progress_pct_cb=None, signals=None):
             _ = (cwd, env, progress_cb, progress_pct_cb, signals)
+            commands[label] = list(cmd)
             output = Path(cmd[-1])
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_bytes(b"\x89PNG\r\n\x1a\n")
-            if label.startswith("ffmpeg-preview-image-"):
-                created_images.append(output)
             return ""
 
-        fake_scenes = tuple(
-            DynamicHdrPreviewSceneSelection(
-                requested_time_s=float(i) * 60.0,
-                scene_time_s=float(i) * 60.0 + 1.0,
-                reason="I-frame DoVi metadata",
-            )
-            for i in range(PREVIEW_IMAGE_CAPTURE_COUNT)
-        )
+        def fake_run_with_preparation(config, *, validate, prep_signals=None):
+            config.output.write_bytes(b"encoded")
+            commands["clip_duration"] = [str(config.duration_s)]
+            prep_signals.finished.emit("ok")
+            return prep_signals
+
+        def fake_probe(cmd, _signals, **_kwargs):
+            if "frame=best_effort_timestamp_time" in cmd:
+                return "".join(f"{100 + index * 0.04:.6f}\n" for index in range(60))  # 25 i/s, PTS non nuls
+            return '{"packets": [{"pts_time": "0.000000", "flags": "K__"}]}'
 
         monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
-        monkeypatch.setattr(
-            wf._hdr_metadata_service,
-            "select_preview_scenes_random",
-            lambda *args, **kwargs: fake_scenes,
-        )
-        monkeypatch.setattr(
-            wf._hdr_metadata_service,
-            "source_hdr_transfer",
-            lambda *args, **kwargs: "pq",
-        )
+        monkeypatch.setattr(wf, "_run_with_preparation", fake_run_with_preparation)
+        monkeypatch.setattr(wf, "_preview_cut_points", lambda *_a, **_k: (Fraction(40), Fraction(4104, 100), Fraction(42)))
+        monkeypatch.setattr(wf, "_preview_probe", fake_probe)
+        monkeypatch.setattr(wf._hdr_metadata_service, "source_hdr_transfer", lambda *args, **kwargs: "")
 
-        result = wf._run_preview_sync(
-            cfg,
-            EncodePreviewRequest(mode="image"),
-            TaskSignals(),
-        )
+        result = wf._run_preview_sync(cfg, EncodePreviewRequest(mode="image", timecode_s=41.01), TaskSignals())
 
-        assert result.mode == "image"
-        assert result.video_path is None
-        assert len(result.captures) == PREVIEW_IMAGE_CAPTURE_COUNT
-        assert len(created_images) == PREVIEW_IMAGE_CAPTURE_COUNT
-        assert all(capture.image_path.exists() for capture in result.captures)
+        assert result.mode == "image" and result.video_path is None
+        assert len(result.captures) == 1 and result.captures[0].image_path.exists()
+        # Première image d'instant ≥ 41,01 s : rang 26 (40 + 26 × 0,04 = 41,04).
+        assert result.captures[0].scene_time_s == pytest.approx(41.04)
+        assert "select=eq(n\\,26)" in commands["ffmpeg-preview-image"]
+        segment = commands["ffmpeg-preview-source"]
+        assert segment[segment.index("-ss") + 1] == "40.000000" and "noise=drop=lt(pts\\,0)" in segment
+        assert not list(tmp_path.glob("previews/*_source.mkv")) and not list(tmp_path.glob("previews/*[0-9a-f].mkv"))
 
     def test_run_preview_sync_video_mode_generates_thumbnails(self, tmp_path, monkeypatch):
         from core.workflows.encode import PREVIEW_VIDEO_THUMBNAIL_COUNT
@@ -439,6 +409,10 @@ class TestEncodePreviewWorkflow:
 
         monkeypatch.setattr(wf._runner, "_run_cmd", fake_run_cmd)
         monkeypatch.setattr(wf, "_run_with_preparation", fake_run_with_preparation)
+        from fractions import Fraction
+        monkeypatch.setattr(wf, "_preview_keyframe_at_or_before", lambda *_a, **_k: Fraction(42))
+        monkeypatch.setattr(wf, "_preview_probe",
+                            lambda *_a, **_k: '{"packets": [{"pts_time": "0.000000", "flags": "K__"}]}')
         monkeypatch.setattr(
             wf._hdr_metadata_service,
             "select_preview_scene",
@@ -497,52 +471,6 @@ class TestDynamicHdrPreviewSceneProbe:
         assert selection.reason == "I-frame HDR10+"
         assert selection.snapped is True
 
-    def test_select_preview_scenes_random_skips_probe_for_sdr(self, tmp_path, monkeypatch):
-        source = tmp_path / "sdr.mkv"
-        source.touch()
-        service = self._service()
-        probe_calls: list[int] = []
-        monkeypatch.setattr(
-            service,
-            "preview_keyframe_times",
-            lambda *_args, **_kwargs: probe_calls.append(1) or (),
-        )
-
-        scenes = service.select_preview_scenes_random(
-            source,
-            count=7,
-            source_duration_s=600.0,
-            prefer_dovi=False,
-            prefer_hdr10plus=False,
-        )
-
-        assert len(scenes) == 7
-        assert probe_calls == []
-        assert all(1.0 <= s.scene_time_s <= 595.0 for s in scenes)
-
-    def test_select_preview_scenes_random_uses_keyframes_for_hdr(self, tmp_path, monkeypatch):
-        source = tmp_path / "dv.mkv"
-        source.touch()
-        service = self._service()
-        keyframes = tuple(float(i) * 2.0 for i in range(300))  # 0, 2, 4, ..., 598
-        monkeypatch.setattr(
-            service,
-            "preview_keyframe_times",
-            lambda *_args, **_kwargs: keyframes,
-        )
-
-        scenes = service.select_preview_scenes_random(
-            source,
-            count=7,
-            source_duration_s=600.0,
-            prefer_dovi=True,
-        )
-
-        assert len(scenes) == 7
-        for s in scenes:
-            assert s.scene_time_s in keyframes
-            assert "I-frame" in s.reason
-
 
 # ===========================================================================
 # FFmpeg threads
@@ -564,7 +492,7 @@ class TestFfmpegThreads:
         src = tmp_path / "source.mkv"
         src.touch()
         wf = _make_workflow(ffmpeg_threads=10)
-        cmd = wf.build_command_single(_make_config(src, tmp_path / "out.mkv"))
+        cmd = wf.build_command_single(_make_config(src, tmp_path / "out.mkv", video=_make_video_settings(codec="libx264")))
 
         assert "-threads" in cmd
         assert cmd[cmd.index("-threads") + 1] == "10"
@@ -572,37 +500,39 @@ class TestFfmpegThreads:
     def test_two_pass_build_includes_threads_on_both_passes(self, tmp_path):
         src = tmp_path / "source.mkv"
         src.touch()
-        video = _make_video_settings(quality_mode=QualityMode.SIZE)
+        video = _make_video_settings(codec="libx264", quality_mode=QualityMode.SIZE)
         wf = _make_workflow(ffmpeg_threads=14)
         cmds = wf.build_command(_make_config(src, tmp_path / "out.mkv", video=video))
 
         assert cmds[0][cmds[0].index("-threads") + 1] == "14"
         assert cmds[1][cmds[1].index("-threads") + 1] == "14"
 
-    @pytest.mark.parametrize(("codec", "threads", "expected"), [
-        ("libx265", 24, "16"),  # frame-threads de x265 borné à 16 : au-delà, refus d'ouverture
-        ("libx265", 16, "16"),
-        ("libx265", 0, "0"),
-        ("libx264", 24, "24"),
-        ("libsvtav1", 48, "48"),
+    @pytest.mark.parametrize(("codec", "threads", "frame_threads", "expected"), [
+        # libx265 : -threads = frame-threads (images en parallèle), jamais le nombre de threads FFmpeg
+        ("libx265", 24, 0, "0"),
+        ("libx265", 24, 6, "6"),
+        ("libx265", 8, 40, "16"),  # au-delà de 16, x265 refuse de s'ouvrir
+        ("libx264", 24, 6, "24"),
+        ("libsvtav1", 48, 6, "48"),
     ])
-    def test_single_pass_threads_within_encoder_limit(self, tmp_path, codec, threads, expected):
+    def test_single_pass_encoder_threads(self, tmp_path, codec, threads, frame_threads, expected):
         src = tmp_path / "source.mkv"
         src.touch()
-        wf = _make_workflow(ffmpeg_threads=threads)
+        wf = _make_workflow(ffmpeg_threads=threads, x265_frame_threads=frame_threads)
         cmd = wf.build_command_single(_make_config(src, tmp_path / "out.mkv", video=_make_video_settings(codec=codec)))
 
         assert cmd[cmd.index("-threads") + 1] == expected
 
-    def test_two_pass_x265_threads_capped_on_both_passes(self, tmp_path):
+    def test_two_pass_x265_frame_threads_on_both_passes(self, tmp_path):
         src = tmp_path / "source.mkv"
         src.touch()
         video = _make_video_settings(quality_mode=QualityMode.SIZE)
         wf = _make_workflow(ffmpeg_threads=48)
+        wf.set_x265_frame_threads(4)
         cmds = wf.build_command(_make_config(src, tmp_path / "out.mkv", video=video))
 
-        assert cmds[0][cmds[0].index("-threads") + 1] == "16"
-        assert cmds[1][cmds[1].index("-threads") + 1] == "16"
+        assert cmds[0][cmds[0].index("-threads") + 1] == "4"
+        assert cmds[1][cmds[1].index("-threads") + 1] == "4"
 
 
 class TestMaxParallelVideoEncodes:
@@ -989,184 +919,6 @@ class TestMacosAvailableRam:
 
 
 # ===========================================================================
-# _ram_buffer_dir
-# ===========================================================================
-
-class TestRamBufferDir:
-
-    def test_linux_returns_dev_shm_when_writable(self):
-        with patch("sys.platform", "linux"), \
-             patch.object(Path, "is_dir", return_value=True), \
-             patch("os.access", return_value=True):
-            assert _ram_buffer_mod.ram_buffer_dir() == Path("/dev/shm")
-
-    def test_linux_returns_none_when_shm_not_dir(self):
-        with patch("sys.platform", "linux"), \
-             patch.object(Path, "is_dir", return_value=False):
-            assert _ram_buffer_mod.ram_buffer_dir() is None
-
-    def test_linux_returns_none_when_shm_not_writable(self):
-        with patch("sys.platform", "linux"), \
-             patch.object(Path, "is_dir", return_value=True), \
-             patch("os.access", return_value=False):
-            assert _ram_buffer_mod.ram_buffer_dir() is None
-
-    def test_macos_returns_dev_shm_when_available(self):
-        with patch("sys.platform", "darwin"), \
-             patch.object(Path, "is_dir", return_value=True), \
-             patch("os.access", return_value=True):
-            assert _ram_buffer_mod.ram_buffer_dir() == Path("/dev/shm")
-
-    def test_windows_always_returns_none(self):
-        """Windows n'a pas de répertoire RAM standard."""
-        with patch("sys.platform", "win32"):
-            assert _ram_buffer_mod.ram_buffer_dir() is None
-
-    def test_unknown_platform_returns_none(self):
-        with patch("sys.platform", "freebsd11"):
-            assert _ram_buffer_mod.ram_buffer_dir() is None
-
-
-# ===========================================================================
-# _shm_path — formule de seuil  (available - file_size ≥ total × pct / 100)
-# ===========================================================================
-
-class TestShmPath:
-    """
-    Formule : available_before - file_size >= total_ram * threshold_pct / 100
-    Valeurs par défaut du workflow : enabled=True, threshold=15 %
-    """
-
-    def _wf(self, enabled=True, threshold=15) -> EncodeWorkflow:
-        return _make_workflow(enabled=enabled, threshold=threshold)
-
-    def _patch_ram(self, available: int, total: int) -> ExitStack:
-        stack = ExitStack()
-        stack.enter_context(patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=available))
-        stack.enter_context(patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=total))
-        stack.enter_context(patch.object(_ram_buffer_mod, "ram_buffer_dir",      return_value=Path("/dev/shm")))
-        return stack
-
-    # ── formule correcte ─────────────────────────────────────────────────────
-
-    def test_uses_shm_when_formula_satisfied(self, tmp_path):
-        """
-        total=10 Go, file=1 Go, available=3 Go
-        3 - 1 = 2 Go  ≥  10 × 15% = 1.5 Go  → RAM
-        """
-        total     = 10 * 2**30
-        file_size =  1 * 2**30
-        available =  3 * 2**30
-        wf = self._wf()
-        with self._patch_ram(available, total):
-            result = wf._shm_path(tmp_path, "test.hevc", file_size)
-        assert result == Path("/dev/shm/test.hevc")
-
-    def test_uses_disk_when_formula_not_satisfied(self, tmp_path):
-        """
-        total=10 Go, file=1 Go, available=2.4 Go
-        2.4 - 1 = 1.4 Go  <  10 × 15% = 1.5 Go  → disque
-        """
-        total     = 10 * 2**30
-        file_size =  1 * 2**30
-        available = int(2.4 * 2**30)
-        wf = self._wf()
-        with self._patch_ram(available, total):
-            result = wf._shm_path(tmp_path, "test.hevc", file_size)
-        assert result == tmp_path / "test.hevc"
-
-    def test_boundary_exactly_at_threshold_uses_shm(self, tmp_path):
-        """
-        Exactement à la limite : available - file = total × pct / 100
-        → condition satisfaite (>=) → RAM
-        """
-        total     = 10 * 2**30
-        threshold = 15
-        file_size =  1 * 2**30
-        available = file_size + int(total * threshold / 100)   # exactement égal
-        wf = self._wf(threshold=threshold)
-        with self._patch_ram(available, total):
-            result = wf._shm_path(tmp_path, "test.hevc", file_size)
-        assert result == Path("/dev/shm/test.hevc")
-
-    def test_boundary_one_byte_above_threshold_uses_shm(self, tmp_path):
-        """Un octet au-dessus de la limite exacte → RAM."""
-        total     = 10 * 2**30
-        threshold = 15
-        file_size =  1 * 2**30
-        available = file_size + int(total * threshold / 100) + 1
-        wf = self._wf(threshold=threshold)
-        with self._patch_ram(available, total):
-            result = wf._shm_path(tmp_path, "test.hevc", file_size)
-        assert result == Path("/dev/shm/test.hevc")
-
-    # ── config disabled ───────────────────────────────────────────────────────
-
-    def test_disabled_config_always_returns_disk(self, tmp_path):
-        """ram_buffer_enabled=False → disque même avec RAM abondante."""
-        wf = self._wf(enabled=False)
-        with self._patch_ram(10 * 2**30, 10 * 2**30):
-            result = wf._shm_path(tmp_path, "test.hevc", 1_000_000)
-        assert result == tmp_path / "test.hevc"
-
-    # ── ram_buffer_dir absent ─────────────────────────────────────────────────
-
-    def test_no_ram_dir_returns_disk(self, tmp_path):
-        """Pas de répertoire RAM (Windows) → disque même avec RAM suffisante."""
-        wf = self._wf()
-        with patch.object(_ram_buffer_mod, "ram_buffer_dir", return_value=None), \
-             patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=10 * 2**30), \
-             patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=10 * 2**30):
-            result = wf._shm_path(tmp_path, "test.hevc", 1_000_000)
-        assert result == tmp_path / "test.hevc"
-
-    # ── RAM indisponible / inconnue ───────────────────────────────────────────
-
-    def test_zero_total_returns_disk(self, tmp_path):
-        """total=0 → impossible d'évaluer le seuil → disque."""
-        wf = self._wf()
-        with patch.object(_ram_buffer_mod, "ram_buffer_dir", return_value=Path("/dev/shm")), \
-             patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=8 * 2**30), \
-             patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=0):
-            result = wf._shm_path(tmp_path, "test.hevc", 1_000_000)
-        assert result == tmp_path / "test.hevc"
-
-    def test_zero_available_returns_disk(self, tmp_path):
-        """available=0 → disque."""
-        wf = self._wf()
-        with patch.object(_ram_buffer_mod, "ram_buffer_dir", return_value=Path("/dev/shm")), \
-             patch.object(_ram_buffer_mod, "available_ram_bytes", return_value=0), \
-             patch.object(_ram_buffer_mod, "total_ram_bytes",     return_value=10 * 2**30):
-            result = wf._shm_path(tmp_path, "test.hevc", 1_000_000)
-        assert result == tmp_path / "test.hevc"
-
-    # ── seuil configurable ────────────────────────────────────────────────────
-
-    def test_custom_threshold_5pct(self, tmp_path):
-        """
-        Seuil 5% : total=10 Go, file=1 Go, available=1.5 Go
-        1.5 - 1 = 0.5 Go  ≥  10 × 5% = 0.5 Go  → exactement égal → RAM (>=)
-        """
-        total     = 10 * 2**30
-        file_size =  1 * 2**30
-        available = file_size + int(total * 5 / 100)
-        wf = self._wf(threshold=5)
-        with self._patch_ram(available, total):
-            result = wf._shm_path(tmp_path, "test.hevc", file_size)
-        assert result == Path("/dev/shm/test.hevc")   # exactement égal → RAM
-
-    def test_threshold_clamped_to_90(self, tmp_path):
-        """threshold > 90 est ramené à 90 par le constructeur."""
-        wf = _make_workflow(threshold=200)
-        assert wf._ram_buffer_threshold_pct == 90
-
-    def test_threshold_clamped_to_0(self, tmp_path):
-        """threshold < 0 est ramené à 0 (toujours utiliser RAM si disponible)."""
-        wf = _make_workflow(threshold=-5)
-        assert wf._ram_buffer_threshold_pct == 0
-
-
-# ===========================================================================
 # _run_with_metadata_inject — gestion fichiers (mock _run_cmd)
 # ===========================================================================
 
@@ -1193,11 +945,9 @@ def _delayed_finalizer(*_args, **_kwargs):
 
 class TestMetadataInjectFileManagement:
 
-    def _run_inject(self, tmp_path: Path, copy_dv: bool, copy_hdr10plus: bool,
-                    ram_enabled: bool = False) -> list[list[Path]]:
+    def _run_inject(self, tmp_path: Path, copy_dv: bool, copy_hdr10plus: bool) -> list[list[Path]]:
         """
         Lance le workflow avec des mocks.
-        ram_enabled=False : force les HEVC sur disque pour tester les snapshots disque.
         Retourne la liste des snapshots (fichiers présents après chaque _run_cmd).
         """
         src = tmp_path / "source.mkv"
@@ -1206,7 +956,7 @@ class TestMetadataInjectFileManagement:
         config = _make_config(source=src, output=out, copy_dv=copy_dv,
                               copy_hdr10plus=copy_hdr10plus,
                               work_dir=tmp_path / "work")
-        wf = _make_workflow(enabled=ram_enabled)
+        wf = _make_workflow()
         snapshots: list[list[Path]] = []
 
         def _fake_run_cmd(cmd, signals=None, cwd=None, progress_cb=None):
@@ -1225,12 +975,9 @@ class TestMetadataInjectFileManagement:
             snapshots.append(snap[:])
             return ""
 
-        # Force disque pour tests de comptage (pas de /dev/shm)
-        with patch.object(EncodeWorkflow, "_shm_path",
-                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
-                sigs = wf._run_with_metadata_inject(config)
-                _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run_cmd):
+            sigs = wf._run_with_metadata_inject(config)
+            _collect_signals(sigs)
         return snapshots
 
     # ── pas de src.hevc ──────────────────────────────────────────────────────
@@ -1314,46 +1061,6 @@ class TestMetadataInjectFileManagement:
         assert "enc_timing.mkv" not in final_names, \
             "le squelette doit être libéré après la réécriture des payloads"
 
-    # ── buffer RAM désactivé ──────────────────────────────────────────────────
-
-    def test_disabled_ram_buffer_no_ext_files(self, tmp_path):
-        """
-        ram_buffer_enabled=False → _shm_path retourne toujours disque
-        → ext_files reste vide tout au long du workflow.
-        """
-        src = tmp_path / "source.mkv"
-        src.write_bytes(b"\x00" * 200_000)
-        config = _make_config(source=src, output=tmp_path / "out.mkv",
-                              copy_dv=True, copy_hdr10plus=True,
-                              work_dir=tmp_path / "work")
-        wf = _make_workflow(enabled=False)
-
-        shm_calls: list[Path] = []
-
-        def _fake_shm_path(tmp_dir, name, _size):
-            # Avec enabled=False, le vrai _shm_path retourne toujours disque
-            p = tmp_dir / name
-            if p.parent == Path("/dev/shm"):
-                shm_calls.append(p)
-            return p
-
-        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
-            for arg in reversed(cmd):
-                s = str(arg)
-                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
-                    p = Path(s)
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_bytes(b"\x00" * 50_000)
-                    break
-            return ""
-
-        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-            sigs = wf._run_with_metadata_inject(config)
-            _collect_signals(sigs)
-
-        assert shm_calls == [], "Des fichiers /dev/shm créés malgré enabled=False"
-
-
 class TestMetadataInjectDoviProfileRouting:
 
     @staticmethod
@@ -1368,7 +1075,7 @@ class TestMetadataInjectDoviProfileRouting:
             dovi_profile=dovi_profile,
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cmds_run: list[list[str]] = []
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -1382,10 +1089,9 @@ class TestMetadataInjectDoviProfileRouting:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                sigs = wf._run_with_metadata_inject(config)
-                _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_with_metadata_inject(config)
+            _collect_signals(sigs)
         return cmds_run
 
     def test_p7_source_auto_converts_even_when_user_profile_is_0(self, tmp_path):
@@ -1399,7 +1105,7 @@ class TestMetadataInjectDoviProfileRouting:
             dovi_profile="0",
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cmds_run: list[list[str]] = []
         mi_p7_fel = {
             "HDR_Format": "Dolby Vision, Version 1.0, dvhe.07.06, BL+EL+RPU",
@@ -1418,14 +1124,13 @@ class TestMetadataInjectDoviProfileRouting:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                with patch(
-                    "core.workflows.encode.runtime.metadata_inject._load_mediainfo_video",
-                    return_value=mi_p7_fel,
-                ):
-                    sigs = wf._run_with_metadata_inject(config)
-                    _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            with patch(
+                "core.workflows.encode.runtime.metadata_inject._load_mediainfo_video",
+                return_value=mi_p7_fel,
+            ):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
 
         convert_cmds = [
             cmd for cmd in cmds_run
@@ -1453,7 +1158,7 @@ class TestMetadataInjectDoviProfileRouting:
             dovi_profile="2",
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cmds_run: list[list[str]] = []
         mi_p7_fel = {
             "HDR_Format": "Dolby Vision, Version 1.0, dvhe.07.06, BL+EL+RPU",
@@ -1472,14 +1177,13 @@ class TestMetadataInjectDoviProfileRouting:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                with patch(
-                    "core.workflows.encode.runtime.metadata_inject._load_mediainfo_video",
-                    return_value=mi_p7_fel,
-                ):
-                    sigs = wf._run_with_metadata_inject(config)
-                    _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            with patch(
+                "core.workflows.encode.runtime.metadata_inject._load_mediainfo_video",
+                return_value=mi_p7_fel,
+            ):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
 
         convert_cmds = [
             cmd for cmd in cmds_run
@@ -1511,7 +1215,7 @@ class TestMetadataInjectDoviProfileRouting:
             copy_dv=True,
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         calls: list[tuple[Path, Path, str, str]] = []
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -1535,14 +1239,13 @@ class TestMetadataInjectDoviProfileRouting:
                 preserved_access_units=0,
             )
 
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                with patch(
-                    "core.workflows.encode.runtime.metadata_inject.inject_static_hdr_sei_file",
-                    side_effect=_fake_static_patch,
-                ):
-                    sigs = wf._run_with_metadata_inject(config)
-                    _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            with patch(
+                "core.workflows.encode.runtime.metadata_inject.inject_static_hdr_sei_file",
+                side_effect=_fake_static_patch,
+            ):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
 
         assert len(calls) == 1
         src_path, dst_path, master_display, max_cll = calls[0]
@@ -1637,59 +1340,6 @@ class TestRuntimeCleanup:
 
 class TestExtFilesCleanupOnFailure:
 
-    def _run_and_fail(self, tmp_path: Path, fail_after: int, exc_class) -> list[Path]:
-        """Simule une erreur après N commandes, retourne les fichiers /dev/shm créés."""
-        src = tmp_path / "source.mkv"
-        src.write_bytes(b"\x00" * 200_000)
-        config = _make_config(source=src, output=tmp_path / "out.mkv",
-                              copy_dv=True, copy_hdr10plus=True,
-                              work_dir=tmp_path / "work")
-        wf = _make_workflow(enabled=True)
-
-        call_n = [0]
-        created_ext: list[Path] = []
-        shm = Path("/dev/shm")
-
-        def _fake_shm_path(tmp_dir, name, _size):
-            if name.endswith(".hevc"):
-                p = shm / f"_test_cleanup_{id(wf)}_{name}"
-                created_ext.append(p)
-                return p
-            return tmp_dir / name
-
-        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
-            call_n[0] += 1
-            for arg in reversed(cmd):
-                s = str(arg)
-                if any(s.endswith(ext) for ext in (".hevc", ".mkv", ".bin", ".json")):
-                    p = Path(s)
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    p.write_bytes(b"\x00" * 50_000)
-                    break
-            if call_n[0] >= fail_after:
-                raise exc_class("Simulated")
-            return ""
-
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=_fake_shm_path), \
-             patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-            sigs = wf._run_with_metadata_inject(config)
-            _collect_signals(sigs)
-
-        return created_ext
-
-    def test_ext_files_cleaned_on_runtime_error(self, tmp_path):
-        """Fichiers ext (shm) supprimés si RuntimeError."""
-        created = self._run_and_fail(tmp_path, fail_after=4, exc_class=RuntimeError)
-        for p in created:
-            assert not p.exists(), f"Fichier ext non nettoyé : {p}"
-
-    def test_ext_files_cleaned_on_cancel(self, tmp_path):
-        """Fichiers ext (shm) supprimés si TaskCancelledError."""
-        from core.runner import TaskCancelledError
-        created = self._run_and_fail(tmp_path, fail_after=4, exc_class=TaskCancelledError)
-        for p in created:
-            assert not p.exists(), f"Fichier ext non nettoyé après cancel : {p}"
-
     def test_finally_iterates_copy_of_ext_files(self, tmp_path):
         """
         Le finally itère sur une copie de ext_files (list(ext_files)).
@@ -1700,7 +1350,7 @@ class TestExtFilesCleanupOnFailure:
         src.write_bytes(b"\x00" * 200_000)
         config = _make_config(source=src, output=tmp_path / "out.mkv",
                               copy_dv=True, work_dir=tmp_path / "work")
-        wf = _make_workflow(enabled=True)
+        wf = _make_workflow()
         connected = threading.Event()
 
         def _fast_fail(cmd, signals=None, cwd=None, progress_cb=None):
@@ -1710,9 +1360,7 @@ class TestExtFilesCleanupOnFailure:
         result: list = []
         # Les connexions doivent être établies avant le lancement du thread
         # pour ne pas manquer un signal émis avant processEvents().
-        with patch.object(EncodeWorkflow, "_shm_path",
-                          side_effect=lambda t, n, _: t / n), \
-             patch.object(wf._runner, "_run_cmd", side_effect=_fast_fail):
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fast_fail):
             sigs = wf._run_with_metadata_inject(config)
             sigs.failed.connect(lambda msg, _: result.append(msg),
                                 Qt.ConnectionType.QueuedConnection)
@@ -2534,16 +2182,19 @@ class TestMetadataInjectCopyCodec:
     """
 
     def _run_inject_copy(self, tmp_path: Path, copy_dv: bool, copy_hdr10plus: bool):
-        """Lance le workflow copy+inject et retourne (cmds_run, snapshots)."""
+        """Lance le workflow copy+inject et retourne (cmds_run, snapshots).
+
+        Copy ne traite le Dolby Vision qu'en normalisation P8.1 (route d'injection réelle) : sans elle, RPU, EL et
+        record de la piste copiée restent intacts (HDR10+ généré seul)."""
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\x00" * 200_000)
         config = _make_config(
             source=src, output=tmp_path / "output.mkv",
             video=_make_video_settings(codec="copy"),
-            copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus,
+            copy_dv=copy_dv, copy_hdr10plus=copy_hdr10plus, dovi_profile="2" if copy_dv else "0",
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cmds_run: list[list[str]] = []
         snapshots: list[list[str]] = []
 
@@ -2563,11 +2214,9 @@ class TestMetadataInjectCopyCodec:
                 snapshots.append(names[:])
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path",
-                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                sigs = wf._run_with_metadata_inject(config)
-                _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_with_metadata_inject(config)
+            _collect_signals(sigs)
 
         return cmds_run, snapshots
 
@@ -2667,7 +2316,7 @@ class TestMetadataInjectCopyCodec:
             ),
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         calls: list[tuple[Path, Path, str, str]] = []
         logs: list[tuple[str, str]] = []
         wf.log_message.connect(lambda level, message: logs.append((str(level), str(message))))
@@ -2693,14 +2342,13 @@ class TestMetadataInjectCopyCodec:
                 preserved_access_units=0,
             )
 
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                with patch(
-                    "core.workflows.encode.runtime.metadata_inject.inject_static_hdr_sei_file",
-                    side_effect=_fake_static_patch,
-                ):
-                    sigs = wf._run_with_metadata_inject(config)
-                    _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            with patch(
+                "core.workflows.encode.runtime.metadata_inject.inject_static_hdr_sei_file",
+                side_effect=_fake_static_patch,
+            ):
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
 
         assert len(calls) == 1
         assert config.video is not None
@@ -2740,7 +2388,7 @@ class TestMetadataInjectCopyCodec:
             video_tracks=[video],
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         commands: list[list[str]] = []
         ready: list[tuple[str, object]] = []
         wf.static_hdr_estimate_ready.connect(
@@ -2813,6 +2461,91 @@ class TestMetadataInjectCopyCodec:
         assert Path(estimate_mock.call_args.args[0]).name == "enc.hevc"
         assert ready == [("video-p5", estimate)]
 
+    @pytest.mark.parametrize("override, analysed", [(None, True), ({"mode": "manual", "max_cll": "2000,500"}, False),
+                                                     ({"mode": "off"}, False)])
+    def test_inherited_p5_analysis_runs_only_without_a_later_static_choice(self, tmp_path, override, analysed):
+        """Audit 13 : job CLI (source DV P5, P8.1, ``estimate`` par défaut) résolu puis exécuté : l'estimateur du
+        runtime n'est appelé que si aucune couche suivante n'a fixé le HDR10 (saisie, ``off``)."""
+        from core.inspector import HDRType
+        from core.jobs.encode import resolve_encode
+        from core.service.schemas.encode import EncodeBlock
+        from tests.test_encode_request import SRC, _job
+
+        remux, infos = _job(HDRType.DOLBY_VISION)
+        infos[str(SRC)].video_tracks[0].dovi_profile = 5
+        video_block: dict[str, Any] = {"default": {"codec": "libx265", "dolby_vision": {"mode": "copy", "profile": "2"},
+                                                   "static_hdr": {"estimate": "precise"}}}
+        if override is not None:
+            video_block["tracks"] = [{"select": {"stream": 0}, "static_hdr": override}]
+        resolved = resolve_encode(EncodeBlock.from_dict({"video": video_block}), remux, infos=infos,
+                                  config=SimpleNamespace(work_dir=tmp_path / "work", aac_bitrate_per_channel_kbps=96,
+                                                         eac3_bitrate_per_channel_kbps=96)).config.video_tracks[0]
+        src = tmp_path / "source.mkv"
+        src.write_bytes(b"\x00" * 200_000)
+        video = _make_video_settings(
+            codec="libx265", copy_dv=True, dovi_profile="2", track_entry_id="video-p5",
+            inject_hdr_meta=resolved.inject_hdr_meta, master_display=resolved.master_display,
+            max_cll=resolved.max_cll,
+            static_hdr_metadata_analysis_request=resolved.static_hdr_metadata_analysis_request,
+        )
+        config = _make_config(source=src, output=tmp_path / "output.mkv", video=video, video_tracks=[video],
+                              work_dir=tmp_path / "work")
+        wf = _make_workflow()
+        estimate = StaticHdrEstimate(
+            master_display="G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)", max_cll="900,300",
+            confidence="medium", sample_count=80, coverage=0.8, mode="precise",
+            analysis_method="linear_grayf32le", active_sample_count=80,
+        )
+
+        def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
+            for arg in reversed(cmd):
+                path = Path(str(arg))
+                if path.suffix.lower() in {".hevc", ".mkv", ".bin", ".json"}:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"\x00" * 100_000)
+                    break
+            return ""
+
+        written: list[tuple[str, str]] = []
+
+        def _fake_static_patch(src_path, dst_path, *, master_display, max_cll):
+            written.append((master_display, max_cll))
+            dst_path.write_bytes(b"patched")
+            from core.workflows.hevc_static_hdr_metadata import StaticHdrSeiInjectionResult
+            return StaticHdrSeiInjectionResult(access_units=10, targeted_access_units=2, injected_access_units=2,
+                                               preserved_access_units=0)
+
+        decision = P7RoutingDecision(conversion_needed=True, sub_profile=DoviSubProfile.P5, convert_mode="3",
+                                     reason="Source P5 détectée.")
+        module = "core.workflows.encode.runtime.metadata_inject"
+        finalize = "core.workflows.common.matroska_finalize"
+        with patch(f"{module}.DoviP7Router.analyze", return_value=decision), \
+                patch.object(wf._runner, "_run_cmd", side_effect=_fake_run), \
+                patch.object(wf._static_hdr_estimator, "estimate_converted_static_hdr",
+                             return_value=estimate) as estimate_mock, \
+                patch(f"{module}.inject_static_hdr_sei_file", side_effect=_fake_static_patch), \
+                patch(f"{finalize}.validate_matroska_output", return_value=[]), \
+                patch(f"{finalize}.validate_final_output"), \
+                patch(f"{finalize}.publish_candidate",
+                      side_effect=lambda candidate, output: Path(output).write_bytes(b"mkv")):
+            # Fichiers simulés : contrôle final du conteneur neutralisé, pour une fin réellement réussie.
+            signals = wf._run_with_metadata_inject(config)
+            outcome: list[str] = []
+            signals.finished.connect(lambda *_: outcome.append("finished"), Qt.ConnectionType.QueuedConnection)
+            signals.failed.connect(lambda *a: outcome.append(f"failed {a}"), Qt.ConnectionType.QueuedConnection)
+            _collect_signals(signals)
+        assert outcome == ["finished"]  # fin réussie : pas un test qui passe grâce à un arrêt prématuré
+        # ``estimate_converted_static_hdr`` : analyse P5→P8.1 du BL final (l'estimation depuis le RPU des champs
+        # restés vides est distincte).
+        assert estimate_mock.called is analysed
+        assert (resolved.static_hdr_metadata_analysis_request != "") is analysed
+        if override == {"mode": "off"}:
+            assert not resolved.inject_hdr_meta and written == []  # « off » reste désactivé
+        elif override is not None:
+            assert written and written[-1][1] == "2000,500" and resolved.static_hdr_light_level_source == "manual"
+        else:
+            assert written and written[-1][1] == "900,300"  # valeurs de l'analyse écrites
+
     def test_p7_copy_normalize_takes_timing_from_source_track(self, tmp_path):
         """Copy + P8.1 : timing de la piste d'origine (annexB sans horodatage), flux converti injecté."""
         src = tmp_path / "source.mkv"
@@ -2822,7 +2555,7 @@ class TestMetadataInjectCopyCodec:
             source=src, output=tmp_path / "output.mkv", video=video, video_tracks=[video],
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         commands: list[list[str]] = []
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -3740,7 +3473,7 @@ class TestMetadataInjectAudio:
             copy_dv=True,
             work_dir=tmp_path / "work",
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cmds_run: list[list[str]] = []
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -3754,11 +3487,9 @@ class TestMetadataInjectAudio:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path",
-                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                sigs = wf._run_with_metadata_inject(config)
-                _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_with_metadata_inject(config)
+            _collect_signals(sigs)
 
         return cmds_run
 
@@ -3973,7 +3704,7 @@ class TestEncodeFileTitleCommand:
             work_dir=tmp_path / "work",
             file_title=file_title,
         )
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cmds_run: list[list[str]] = []
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -3987,11 +3718,9 @@ class TestEncodeFileTitleCommand:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path",
-                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                sigs = wf._run_with_metadata_inject(config)
-                _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_with_metadata_inject(config)
+            _collect_signals(sigs)
 
         recon = [c for c in cmds_run if c[0] == "ffmpeg" and _targets_output(c, "output.mkv")]
         assert len(recon) == 1, f"Commande de reconstitution introuvable. Cmds: {cmds_run}"
@@ -4038,7 +3767,6 @@ class TestInjectPathIntegratedPostproc:
             dovi_tool_bin="dovi_tool",
             hdr10plus_bin="hdr10plus_tool",
             writing_application="MuxiveoMuxApp",
-            ram_buffer_enabled=False,
         )
 
         cmds_run: list[list[str]] = []
@@ -4054,10 +3782,9 @@ class TestInjectPathIntegratedPostproc:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                sigs = wf._run_with_metadata_inject(config)
-                _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_with_metadata_inject(config)
+            _collect_signals(sigs)
         return cmds_run
 
     def _get_recon_cmd(self, cmds: list[list[str]]) -> list[str]:
@@ -4100,7 +3827,6 @@ class TestInjectPathIntegratedPostproc:
             dovi_tool_bin="dovi_tool",
             hdr10plus_bin="hdr10plus_tool",
             writing_application="MuxiveoMuxApp",
-            ram_buffer_enabled=False,
         )
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -4113,11 +3839,10 @@ class TestInjectPathIntegratedPostproc:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path", side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                with patch.object(wf._muxing_post_action, "apply_if_mkv") as patch_hook:
-                    sigs = wf._run_with_metadata_inject(config)
-                    _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            with patch.object(wf._muxing_post_action, "apply_if_mkv") as patch_hook:
+                sigs = wf._run_with_metadata_inject(config)
+                _collect_signals(sigs)
 
         assert patch_hook.called
 
@@ -4403,7 +4128,7 @@ class TestEncodeExtraAttachments:
             work_dir=tmp_path / "work",
             extra_attachments=extras,
         )
-        wf = _make_workflow(enabled=False, ffmpeg_threads=ffmpeg_threads)
+        wf = _make_workflow(ffmpeg_threads=ffmpeg_threads)
         cmds_run: list[list[str]] = []
 
         def _fake_run(cmd, signals=None, cwd=None, progress_cb=None):
@@ -4417,11 +4142,9 @@ class TestEncodeExtraAttachments:
                     break
             return ""
 
-        with patch.object(EncodeWorkflow, "_shm_path",
-                          side_effect=lambda tmp_dir, name, _size: tmp_dir / name):
-            with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
-                sigs = wf._run_with_metadata_inject(config)
-                _collect_signals(sigs)
+        with patch.object(wf._runner, "_run_cmd", side_effect=_fake_run):
+            sigs = wf._run_with_metadata_inject(config)
+            _collect_signals(sigs)
 
         return cmds_run
 
@@ -4675,7 +4398,7 @@ class TestEncodeRuntimeMultiSourceSync:
         src_alt.write_bytes(b"\x00" * 100_000)
         sync_audio.touch()
 
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cfg = _make_config(
             source=src_main,
             output=out,
@@ -4737,7 +4460,7 @@ class TestEncodeRuntimeMultiSourceSync:
         src_alt.write_bytes(b"\x00" * 100_000)
         sync_audio.touch()
 
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cfg = _make_config(
             source=src_main,
             output=out,
@@ -4842,15 +4565,44 @@ class TestEncodeRuntimeMultiSourceSync:
         assert calls["file"] == 0
         assert live is not None
         assert strict is True
-        assert sync_inputs == [sync_audio]
+        assert [item.path for item in sync_inputs] == [sync_audio]
         assert remap[(src_alt, 1, "audio")] == (2, 0)
+
+    def test_live_sync_fifo_is_read_in_its_written_container(self, tmp_path, monkeypatch):
+        """FIFO live POSIX écrite en NUT : l'encodage la lit en ``-f nut``, jamais en Matroska."""
+        from core.workflows.remux_timeline_sync import SyncPreparedInput
+
+        src_main = tmp_path / "main.mkv"
+        src_alt = tmp_path / "alt.mkv"
+        src_main.touch()
+        src_alt.touch()
+        fifo = tmp_path / "sync_audio.fifo"
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main, tmp_path / "out.mkv", video=_make_video_settings(codec="copy"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt)],
+            subtitle_tracks=[(src_main, 3)],
+        )
+
+        class _FakeSyncer:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start_live_demux_session(self, **_kwargs):
+                return SimpleNamespace(inputs=[SyncPreparedInput((1, 1, "audio"), fifo, 2, container_format="nut")])
+
+        monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
+        _remap, sync_inputs, _live, _strict = wf._prepare_multisource_sync(
+            config=cfg, all_sources=[src_main, src_alt], sync_base_input_idx=2, work_dir=tmp_path, allow_live=True,
+        )
+        cmd: list[str] = []
+        wf._append_sync_inputs(cmd, sync_inputs)
+        assert cmd == ["-f", "nut", "-i", str(fifo)]
 
     def test_prepare_multisource_sync_fallback_uses_workspace(self, tmp_path, monkeypatch):
         src_main = tmp_path / "main.mkv"
         src_alt = tmp_path / "alt.mkv"
         out = tmp_path / "out.mkv"
-        ram_dir = tmp_path / "ram"
-        ram_dir.mkdir()
         sync_audio = tmp_path / "sync_audio.mka"
         src_main.touch()
         src_alt.touch()
@@ -4885,7 +4637,6 @@ class TestEncodeRuntimeMultiSourceSync:
 
 
         monkeypatch.setattr("core.workflows.encode.workflow.FfmpegTimelineSync", _FakeSyncer)
-        monkeypatch.setattr(EncodeWorkflow, "_ram_buffer_dir", staticmethod(lambda: ram_dir))
 
         remap, sync_inputs, live, strict = wf._prepare_multisource_sync(
             config=cfg,
@@ -4898,7 +4649,7 @@ class TestEncodeRuntimeMultiSourceSync:
         assert calls == [tmp_path]
         assert live is None
         assert strict is True
-        assert sync_inputs == [sync_audio]
+        assert [item.path for item in sync_inputs] == [sync_audio]
         assert remap[(src_alt, 1, "audio")] == (2, 0)
 
     def test_runtime_single_pass_copy_subtitles_uses_sync_remap_when_resolved(self, tmp_path):
@@ -4969,9 +4720,34 @@ class TestEncodeRuntimeMultiSourceSync:
             cmd, _live, _cleanup = wf._build_runtime_single_pass_with_sync(cfg)
 
         map_values = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        inputs = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-i"]
         assert "0:s?" in map_values
-        assert "1:s?" in map_values
+        # Source audio secondaire : ses sous-titres lus par une entrée rouverte (2), jamais par
+        # celle de l'audio (1), qui avancerait l'audio de plusieurs minutes devant la vidéo.
+        assert inputs[:3] == [str(src_main), str(src_alt), str(src_alt)]
+        assert "2:s?" in map_values and "1:s?" not in map_values
         assert "-c:s" in cmd and cmd[cmd.index("-c:s") + 1] == "copy"
+
+    def test_direct_encode_isolates_subtitles_sharing_the_audio_input_only(self, tmp_path):
+        """Vidéo d'une source, audio + sous-titres d'une autre (cas MVO) : sous-titres sur une entrée à part ;
+        sous-titres de la source vidéo laissés sur son entrée (un seul démultiplexeur, ordre du fichier)."""
+        src_main = tmp_path / "main.mp4"
+        src_alt = tmp_path / "alt.mkv"
+        src_main.touch()
+        src_alt.touch()
+        wf = _make_workflow()
+        cfg = _make_config(
+            src_main, tmp_path / "out.mkv", video=_make_video_settings(codec="libx265"),
+            audio_tracks=[AudioTrackSettings(stream_index=1, codec="copy", source_path=src_alt),
+                          AudioTrackSettings(stream_index=1, codec="copy", source_path=src_main)],
+            subtitle_tracks=[(src_alt, 3), (src_main, 2)], copy_subtitles=False,
+        )
+        cmd = wf._build_single_pass(cfg)
+        inputs = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-i"]
+        maps = [cmd[i + 1] for i, tok in enumerate(cmd[:-1]) if tok == "-map"]
+        assert inputs[:3] == [str(src_main), str(src_alt), str(src_alt)]
+        assert "2:3" in maps and "1:3" not in maps
+        assert "0:2" in maps
 
     def test_build_single_pass_applies_video_audio_subtitle_offsets(self, tmp_path):
         src = tmp_path / "src.mkv"
@@ -5519,7 +5295,7 @@ class TestEncodeRuntimeMultiSourceSync:
         src.touch()
 
         video_a = _make_video_settings(codec="libx264", source_path=src, stream_index=0)
-        video_b = _make_video_settings(codec="libx265", source_path=src, stream_index=1)
+        video_b = _make_video_settings(codec="libx264", source_path=src, stream_index=1)
         cfg = _make_config(
             src,
             out,
@@ -5548,7 +5324,7 @@ class TestEncodeRuntimeMultiSourceSync:
         assert commands_by_label["ffmpeg-video-1"][commands_by_label["ffmpeg-video-1"].index("-threads") + 1] == "12"
         assert commands_by_label["ffmpeg-video-2"][commands_by_label["ffmpeg-video-2"].index("-threads") + 1] == "12"
 
-    def test_run_multi_video_pipeline_caps_x265_threads_only(self, tmp_path):
+    def test_run_multi_video_pipeline_x265_uses_frame_threads_setting(self, tmp_path):
         src = tmp_path / "src.mkv"
         out = tmp_path / "out.mkv"
         src.touch()
@@ -5579,9 +5355,9 @@ class TestEncodeRuntimeMultiSourceSync:
         ):
             wf._run_multi_video_pipeline(cfg, cleanup_paths=[], prep_signals=TaskSignals())
 
-        # libx265 : frame-threads borné à 16 (refus d'ouverture au-delà) ; libx264 et le muxage inchangés
+        # libx265 : frame-threads automatique (réglage à 0) ; libx264 et le muxage gardent les threads FFmpeg
         assert commands_by_label["ffmpeg-video-1"][commands_by_label["ffmpeg-video-1"].index("-threads") + 1] == "24"
-        assert commands_by_label["ffmpeg-video-2"][commands_by_label["ffmpeg-video-2"].index("-threads") + 1] == "16"
+        assert commands_by_label["ffmpeg-video-2"][commands_by_label["ffmpeg-video-2"].index("-threads") + 1] == "0"
         assert commands_by_label["ffmpeg-multi-video"][commands_by_label["ffmpeg-multi-video"].index("-threads") + 1] == "24"
 
     def test_prepare_multisource_sync_disables_live_when_foreign_offset(self, tmp_path, monkeypatch):
@@ -6526,7 +6302,7 @@ class TestPreparedVideoSubtitleIsolation:
 
         src = tmp_path / "source.mkv"
         src.write_bytes(b"\0" * 200_000)
-        wf = _make_workflow(enabled=False)
+        wf = _make_workflow()
         cfg = _make_config(
             src, tmp_path / "output.mkv", work_dir=tmp_path,
             video=_make_video_settings(codec="copy" if route == "multi_video" else "libx265"),
@@ -6608,3 +6384,36 @@ class TestPreparedVideoSubtitleIsolation:
             if subtitles in {"explicit", "auto"}:
                 sub_input = int(maps[2].split(":")[0])
                 assert cmd[input_positions[sub_input] - 2:input_positions[sub_input]] == ["-ss", "0.080"]
+
+
+def test_set_metadata_tools_applies_configured_dovi_and_hdr10plus_tools():
+    """Chemins enregistrés dans Paramètres : valent pour le traitement suivant, sans redémarrage."""
+    wf = _make_workflow()
+    estimator = wf._static_hdr_estimator
+    wf.set_metadata_tools("/opt/dovi_tool", "/opt/hdr10plus_tool")
+    assert wf._bins["dovi_tool"] == "/opt/dovi_tool"
+    assert wf._bins["hdr10plus_tool"] == "/opt/hdr10plus_tool"
+    assert wf._static_hdr_estimator is not estimator
+    same = wf._static_hdr_estimator
+    wf.set_metadata_tools("/opt/dovi_tool", "/opt/hdr10plus_tool")
+    assert wf._static_hdr_estimator is same
+
+
+def test_merge_dovi_set_tool_bins_updates_known_tools_only():
+    from core.workflows.merge_dovi import MergeDoviWorkflow
+
+    wf = MergeDoviWorkflow()
+    wf.set_tool_bins(dovi_tool="/opt/dovi_tool", hdr10plus_tool="/opt/hdr10plus_tool", unknown="x")
+    assert wf._bins["dovi_tool"] == "/opt/dovi_tool"
+    assert wf._bins["hdr10plus_tool"] == "/opt/hdr10plus_tool"
+    assert "unknown" not in wf._bins
+
+
+def test_tool_change_forgets_dovi_detection_and_threshold_follows_settings():
+    wf = _make_workflow()
+    wf.__dict__["_dovi_sub_profile_cache"] = {("a", 0, 1, 1): object()}
+    wf.__dict__["_dovi_tool_fallback_done"] = {("a", 0, 1, 1)}
+    wf.set_metadata_tools("/opt/dovi_tool", "/opt/hdr10plus_tool")
+    assert "_dovi_sub_profile_cache" not in wf.__dict__ and "_dovi_tool_fallback_done" not in wf.__dict__
+    wf.set_ram_buffer_threshold_pct(30)
+    assert wf._video_preparation_policy_service()._cb.ram_buffer_threshold_pct == 30

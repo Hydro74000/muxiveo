@@ -6,6 +6,8 @@ par plan Dolby Vision. Ce module en tire, plan par plan, les métadonnées HDR10
 JSON de ``hdr10plus_tool`` (profil A : sans courbe de Bézier, la TV construit son tone mapping
 depuis les statistiques), et les MaxCLL/MaxFALL exacts de la sortie.
 
+MaxScl : maximum du plan des pics de chaque image plafonnés aux pixels isolés (``maxscl_cap``).
+
 Distribution (9 valeurs, convention de la spécification HDR10+ LLC) : percentiles de maxRGB
 1, 25, 50, 75, 90, 95 % (moyenne sur le plan des percentiles de chaque image) et 99,98 % (leur
 maximum) ; la position « 5 » porte DistributionY99 (maximum sur le plan du percentile 99,99 % de
@@ -16,10 +18,22 @@ vérifiées face au HDR10+ d'un disque UHD (même définition appliquée à sa B
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 DISTRIBUTION_INDEX = (1, 5, 10, 25, 50, 75, 90, 95, 99)
+#: MaxScl : pic de chaque canal plafonné à max(plancher, facteur × percentile 99,98 % de maxRGB, Y 99,99 %) de chaque
+#: image avant le maximum du plan. Les pixels isolés au-delà (< 0,02 %) ne font plus tasser les hautes lumières du plan
+#: par la TV ; le plancher garde les points lumineux sur fond sombre (ciel étoilé). Banc 2026-11-21 (6 titres WEB) :
+#: tassement > 0,15 EV sur écran 600 nits de 0–12 % des images (pic absolu) à 0 %, MaxScl à 0,03–0,67 EV du HDR10+ livré.
+MAXSCL_PEAK_FACTOR = 2.0
+MAXSCL_PEAK_FLOOR_NITS = 1000.0
 # Ordre des percentiles de maxRGB émis par le plugin (1, 25, 50, 75, 90, 95, 99,98 %).
 _PERCENTILE_INDEX = (1, 25, 50, 75, 90, 95, 99)
 _BINS = 1024
@@ -39,18 +53,46 @@ def fel_statistics_path(video: object) -> Path | None:
 
 
 def hdr10plus_recomputed(video: object) -> bool:
-    """HDR10+ recalculé sur l'image reconstruite : statistiques du plugin et choix « recompute ».
+    """HDR10+ recalculé sur l'image reconstruite : statistiques du plugin et choix « recompute », ou HDR10+ généré
+    depuis le Dolby Vision (toujours l'image produite, quel que soit l'ancien choix FEL).
 
     Les statistiques peuvent aussi servir aux seuls MaxCLL/MaxFALL (HDR10+ de la source conservé).
     """
-    return bool(fel_statistics_path(video) is not None and getattr(video, "copy_hdr10plus", False)
-                and getattr(video, "fel_hdr10plus", "recompute") == "recompute")
+    return fel_statistics_path(video) is not None and wants_recomputed_hdr10plus(video)
+
+
+def wants_recomputed_hdr10plus(video: object) -> bool:
+    """HDR10+ à recalculer sur l'image produite (statistiques fournies par l'appelant) : généré depuis le Dolby
+    Vision, ou copie HDR10+ avec le choix « recompute »."""
+    if getattr(video, "generate_hdr10plus", False):
+        return True
+    return bool(getattr(video, "copy_hdr10plus", False) and getattr(video, "fel_hdr10plus", "recompute") == "recompute")
+
+
+#: Provenances des MaxCLL/MaxFALL mesurés pendant l'encodage (statistiques de l'image produite).
+MEASURED_LIGHT_LEVEL_SOURCES = frozenset({"fel_frame_statistics", "restore_frame_statistics"})
+
+
+def restore_statistics_path(video: object) -> Path | None:
+    """Statistiques de l'image débruitée (moteur muxiveo-rife ``--frame-statistics``) ; None sans mesure."""
+    statistics = getattr(video, "restore_statistics", None)
+    return statistics if isinstance(statistics, Path) else None
+
+
+def light_level_statistics_path(video: object) -> Path | None:
+    """Statistiques des MaxCLL/MaxFALL : image restaurée (dernière transformation), sinon image reconstruite (FEL)."""
+    return restore_statistics_path(video) or fel_statistics_path(video)
+
+
+def light_level_origin(video: object) -> str:
+    """Image mesurée, pour le journal."""
+    return "l'image débruitée" if restore_statistics_path(video) is not None else "l'image reconstruite"
 
 
 def deferred_light_levels(video: object) -> bool:
     """MaxCLL/MaxFALL différés jusqu'aux statistiques (aucune valeur transmise à l'encodeur)."""
     return bool(getattr(video, "inject_hdr_meta", False)
-                and getattr(video, "static_hdr_light_level_source", "") == "fel_frame_statistics")
+                and getattr(video, "static_hdr_light_level_source", "") in MEASURED_LIGHT_LEVEL_SOURCES)
 
 
 def pq_eotf(signal: float) -> float:
@@ -125,6 +167,143 @@ def read_frame_statistics(path: Path) -> FrameStatistics:
     return FrameStatistics(int(lines[0]["width"]), int(lines[0]["height"]), tuple(frames), tuple(scenes))
 
 
+def _light_pair(value: str) -> tuple[int, int] | None:
+    """MaxCLL,MaxFALL lus ; None si absents ou nuls (0,0 : inconnus)."""
+    parts = [part.strip() for part in str(value or "").split(",")]
+    if len(parts) != 2 or not all(part.isdigit() for part in parts) or not int(parts[0]):
+        return None
+    return int(parts[0]), int(parts[1])
+
+
+def invisible_light_change(source: tuple[float, float, float], restored: tuple[float, float, float]) -> bool:
+    """Vrai si la Restauration ne change pas la lumière à l'œil, d'après (pic, percentile 99,98 % de maxRGB,
+    moyenne) en nits de la source et de l'image débruitée. Mêmes tolérances que le réalignement du HDR Studio
+    (``core/hdr_inspection/realign.py``) : pic à 10 % près ou dépassé par moins de 0,02 % des pixels (pixels isolés,
+    critère d'écrêtage visible) ; moyenne à 10 % près, au moins 5 nits."""
+    from core.hdr_inspection.realign import TOLERANCE
+
+    (source_peak, source_high, source_fall), (restored_peak, restored_high, restored_fall) = source, restored
+    higher_high, lower_peak = ((source_high, restored_peak) if source_peak >= restored_peak
+                               else (restored_high, source_peak))
+    peak = abs(restored_peak - source_peak) <= TOLERANCE * source_peak or higher_high <= lower_peak
+    return peak and abs(restored_fall - source_fall) <= max(5.0, TOLERANCE * source_fall)
+
+
+def _film_light(statistics: FrameStatistics) -> tuple[float, float, float]:
+    return (max(max(frame.max_nits) for frame in statistics.frames),
+            max(frame.percentiles[-1] for frame in statistics.frames),
+            max(frame.avg_nits for frame in statistics.frames))
+
+
+def _frame_light(frame: FrameRecord) -> tuple[float, float, float]:
+    return max(frame.max_nits), frame.percentiles[-1], frame.avg_nits
+
+
+def isolated_light_level_change(source: FrameStatistics, restored: FrameStatistics) -> bool:
+    """Vrai si la Restauration ne change MaxCLL / MaxFALL qu'invisiblement (``invisible_light_change`` sur le film :
+    pic, percentile 99,98 % le plus haut, moyenne la plus haute)."""
+    return invisible_light_change(_film_light(source), _film_light(restored))
+
+
+def _restore_statistics_pair(video: object) -> tuple[FrameStatistics, FrameStatistics] | None:
+    """(source, image restaurée) mesurées par le moteur ; None sans mesure. Lève FrameStatisticsError."""
+    restored_path, source_path = restore_statistics_path(video), getattr(video, "restore_source_statistics", None)
+    if restored_path is None or not isinstance(source_path, Path):
+        return None
+    return read_frame_statistics(source_path), read_frame_statistics(restored_path)
+
+
+def dynamic_metadata_adequacy(video: object, ratio: Fraction | int = 1) -> tuple[str, str] | None:
+    """Restauration avec copie Dolby Vision / HDR10+ : (niveau, message) du contrôle d'adéquation (D-e).
+
+    Les métadonnées copiées (ou générées depuis la source) décrivent la source image par image ; elles restent
+    adéquates si la Restauration ne change pas la lumière à l'œil (``invisible_light_change`` par image, trame
+    d'entrée du moteur de chaque trame produite comme muxiveo-rife). ``ratio`` : trames encodées par trame source
+    (métadonnées) ; le moteur, qui reçoit les images désentrelacées, en applique la part d'interpolation. Plus de 2 %
+    des images changées (seuil du HDR Studio) : avertissement.
+    None : pas de copie dynamique ou pas de mesure.
+    """
+    from core.hdr_inspection.realign import DYNAMIC_SHARE
+    from core.workflows.encode.interpolation import frame_repeats
+
+    copied = " / ".join(name for name, on in (("Dolby Vision", getattr(video, "copy_dv", False)),
+                                              ("HDR10+", getattr(video, "copy_hdr10plus", False)
+                                               or getattr(video, "generate_hdr10plus", False))) if on)
+    if not copied:
+        return None
+    # Le moteur reçoit les images désentrelacées (filtres en amont) : son rapport entrée → sortie exclut le
+    # multiplicateur de champs (YADIF une image par champ) que ``ratio`` compte (interpolation, ou ``deint=all``).
+    interpolates = getattr(video, "interpolates", None)
+    filters = getattr(video, "filters", None)
+    multiplier = filters.field_rate_multiplier() if filters is not None else 1
+    if not (callable(interpolates) and interpolates()) and str(getattr(filters, "yadif_deint", "all")) == "interlaced":
+        multiplier = 1
+    ratio = Fraction(ratio) / multiplier
+    try:
+        pair = _restore_statistics_pair(video)
+    except FrameStatisticsError as exc:
+        return "WARN", f"MVO-R2 : contrôle des métadonnées {copied} copiées impossible ({exc})."
+    if pair is None:
+        return None
+    source, restored = pair
+    expected = sum(frame_repeats(index, ratio) for index in range(len(source.frames)))
+    if expected != len(restored.frames):
+        return "WARN", (f"MVO-R2 : contrôle des métadonnées {copied} copiées impossible ({len(restored.frames)} "
+                        f"images mesurées pour {expected} attendues).")
+    changed, produced = 0, iter(restored.frames)
+    for index, frame in enumerate(source.frames):
+        light = _frame_light(frame)
+        for _ in range(frame_repeats(index, ratio)):
+            changed += not invisible_light_change(light, _frame_light(next(produced)))
+    share = changed / len(restored.frames)
+    percent = f"{100 * share:.1f}".replace(".", ",")
+    if share > DYNAMIC_SHARE:
+        return "WARN", (f"MVO-R2 : métadonnées {copied} copiées de la source, lumière visiblement changée sur "
+                        f"{percent} % des images (pic ou moyenne) : à vérifier dans le HDR Studio.")
+    return "INFO", (f"MVO-R2 : métadonnées {copied} copiées de la source, adéquates (lumière visiblement changée "
+                    f"sur {percent} % des images).")
+
+
+def written_light_levels(video: object, statistics: FrameStatistics) -> tuple[str, str]:
+    """MaxCLL,MaxFALL à écrire après l'encodage et message du journal.
+
+    Image reconstruite (FEL) : toujours la mesure (les valeurs de la source décrivent la BL). Image restaurée : les
+    valeurs de la source restent intactes si la Restauration ne les change pas à l'œil
+    (``isolated_light_level_change``, trames lues mesurées par le moteur avant la Restauration) ; sinon, ou sans
+    valeurs dans la source, la mesure de l'image débruitée.
+    """
+    exact = statistics.static_light_levels()
+    declared = _light_pair(getattr(video, "restore_source_light_levels", ""))
+    source_path = getattr(video, "restore_source_statistics", None)
+    if restore_statistics_path(video) is None or declared is None or not isinstance(source_path, Path):
+        return exact, f"MaxCLL/MaxFALL exacts de {light_level_origin(video)} : {exact}."
+    kept = f"{declared[0]},{declared[1]}"
+    try:
+        source = read_frame_statistics(source_path)
+    except FrameStatisticsError as exc:
+        return exact, f"MaxCLL/MaxFALL exacts de l'image débruitée : {exact} (source non comparée : {exc})."
+    measured_source = source.static_light_levels()
+    if isolated_light_level_change(source, statistics):
+        return kept, (f"MaxCLL/MaxFALL de la source conservés : {kept} (image restaurée {exact}, source mesurée "
+                      f"{measured_source} : écart invisible).")
+    return exact, (f"MaxCLL/MaxFALL exacts de l'image débruitée : {exact} (source mesurée {measured_source} : "
+                   "écart visible).")
+
+
+def maxscl_cap(p9998_nits: float, y9999_nits: float) -> float:
+    """Plafond du pic d'un canal pour MaxScl (nits) : voir ``MAXSCL_PEAK_FACTOR``."""
+    return max(MAXSCL_PEAK_FLOOR_NITS, MAXSCL_PEAK_FACTOR * p9998_nits, y9999_nits)
+
+
+def maxscl_peaks(max_rgb: object, p9998: object, y9999: object) -> np.ndarray:
+    """Pic plafonné de chaque image (nits, plus grand canal), vectorisé : règle de MaxScl appliquée à une mesure."""
+    import numpy as np
+
+    cap = np.maximum(np.maximum(MAXSCL_PEAK_FLOOR_NITS, MAXSCL_PEAK_FACTOR * np.asarray(p9998, dtype=np.float64)),
+                     np.asarray(y9999, dtype=np.float64))
+    return np.minimum(np.asarray(max_rgb, dtype=np.float64).max(axis=1), cap)
+
+
 def _tenths(nits: float) -> int:
     return max(0, min(100000, round(nits * 10)))
 
@@ -145,37 +324,66 @@ def scene_parameters(statistics: FrameStatistics, scene: SceneRecord) -> dict:
             "DistributionIndex": list(DISTRIBUTION_INDEX),
             "DistributionValues": [values[index] for index in DISTRIBUTION_INDEX],
         },
-        "MaxScl": [_tenths(max(frame.max_nits[channel] for frame in frames)) for channel in range(3)],
+        "MaxScl": [_tenths(max(min(frame.max_nits[channel], maxscl_cap(frame.percentiles[-1], frame.y9999_nits))
+                               for frame in frames)) for channel in range(3)],
     }
 
 
-def hdr10plus_document(statistics: FrameStatistics) -> dict:
-    """Document HDR10+ (profil A) : une entrée par image, valeurs constantes sur chaque plan."""
-    scene_info: list[dict] = []
+#: Outil inscrit dans ``ToolInfo`` : HDR10+ recalculé sur l'image reconstruite (FEL).
+FEL_TOOL = "Muxiveo (mvo-fel)"
+
+
+def _check(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise InterruptedError
+
+
+_CHECK_FRAMES = 2048
+
+
+def _scene_entries(statistics: FrameStatistics, cancelled: Callable[[], bool] | None):
+    """Entrées ``SceneInfo`` image par image ; annulation contrôlée à chaque plan et toutes les 2048 images."""
     for scene_id, scene in enumerate(statistics.scenes):
+        _check(cancelled)
         parameters = scene_parameters(statistics, scene)
         for offset in range(scene.frames):
-            scene_info.append({
+            if offset and offset % _CHECK_FRAMES == 0:
+                _check(cancelled)
+            yield {
                 "LuminanceParameters": parameters,
                 "NumberOfWindows": 1,
                 "TargetedSystemDisplayMaximumLuminance": 0,
                 "SceneFrameIndex": offset,
                 "SceneId": scene_id,
                 "SequenceFrameIndex": scene.first + offset,
-            })
+            }
+
+
+def _summary(statistics: FrameStatistics) -> dict:
     return {
-        "JSONInfo": {"HDR10plusProfile": "A", "Version": "1.0"},
-        "SceneInfo": scene_info,
-        "SceneInfoSummary": {
-            "SceneFirstFrameIndex": [scene.first for scene in statistics.scenes],
-            "SceneFrameNumbers": [scene.frames for scene in statistics.scenes],
-        },
-        "ToolInfo": {"Tool": "Muxiveo (mvo-fel)", "Version": "1.0"},
+        "SceneFirstFrameIndex": [scene.first for scene in statistics.scenes],
+        "SceneFrameNumbers": [scene.frames for scene in statistics.scenes],
     }
 
 
-def statistics_from_measurement(measurement: object, scene_starts: object) -> FrameStatistics:
-    """Statistiques par image d'une mesure du HDR Studio (``ImageMeasurement``), découpées en ``scene_starts``."""
+def hdr10plus_document(statistics: FrameStatistics, *, tool: str = FEL_TOOL,
+                       cancelled: Callable[[], bool] | None = None) -> dict:
+    """Document HDR10+ (profil A) : une entrée par image, valeurs constantes sur chaque plan.
+
+    ``cancelled`` vrai : ``InterruptedError``."""
+    return {
+        "JSONInfo": {"HDR10plusProfile": "A", "Version": "1.0"},
+        "SceneInfo": list(_scene_entries(statistics, cancelled)),
+        "SceneInfoSummary": _summary(statistics),
+        "ToolInfo": {"Tool": tool, "Version": "1.0"},
+    }
+
+
+def statistics_from_measurement(measurement: object, scene_starts: object, *,
+                                cancelled: Callable[[], bool] | None = None) -> FrameStatistics:
+    """Statistiques par image d'une mesure du HDR Studio (``ImageMeasurement``), découpées en ``scene_starts``.
+
+    ``cancelled`` vrai : ``InterruptedError`` (contrôlé toutes les 8192 images)."""
     import numpy as np
 
     max_rgb = np.asarray(getattr(measurement, "max_rgb"), dtype=np.float64)
@@ -188,20 +396,41 @@ def statistics_from_measurement(measurement: object, scene_starts: object) -> Fr
     if not count or percentiles.shape != (count, len(_PERCENTILE_INDEX)):
         raise FrameStatisticsError("Mesure de l'image incomplète.")
     first = set(starts)
-    frames = tuple(FrameRecord(index in first, (float(max_rgb[index, 0]), float(max_rgb[index, 1]),
-                                                float(max_rgb[index, 2])), float(average[index]),
-                               float(y9999[index]), float(y100[index]), tuple(float(v) for v in percentiles[index]))
-                   for index in range(count))
+    records: list[FrameRecord] = []
+    for index in range(count):
+        if index % 8192 == 0:
+            _check(cancelled)
+        records.append(FrameRecord(index in first, (float(max_rgb[index, 0]), float(max_rgb[index, 1]),
+                                                    float(max_rgb[index, 2])), float(average[index]),
+                                   float(y9999[index]), float(y100[index]),
+                                   tuple(float(v) for v in percentiles[index])))
+    frames = tuple(records)
     bounds = [*starts, count]
     scenes = tuple(SceneRecord(start, end - start) for start, end in zip(bounds, bounds[1:]))
     window = getattr(measurement, "window", (0, 0, 0, 0))
     return FrameStatistics(int(window[2]), int(window[3]), frames, scenes)
 
 
-def write_hdr10plus_json(statistics: FrameStatistics, output: Path) -> int:
-    """Écrit le JSON HDR10+ ; renvoie le nombre de plans."""
-    document = hdr10plus_document(statistics)
-    Path(output).write_text(json.dumps(document, separators=(",", ":")), encoding="utf-8")
+def write_hdr10plus_json(statistics: FrameStatistics, output: Path, *, tool: str = FEL_TOOL,
+                         cancelled: Callable[[], bool] | None = None) -> int:
+    """Écrit le JSON HDR10+ en flux (même document que :func:`hdr10plus_document`) ; renvoie le nombre de plans.
+
+    Annulation (``InterruptedError``) ou erreur : fichier incomplet supprimé."""
+    def compact(value: object) -> str:
+        return json.dumps(value, separators=(",", ":"))
+
+    try:
+        with Path(output).open("w", encoding="utf-8") as out:
+            out.write('{"JSONInfo":' + compact({"HDR10plusProfile": "A", "Version": "1.0"})
+                      + ',"SceneInfo":[')
+            for index, entry in enumerate(_scene_entries(statistics, cancelled)):
+                out.write(("," if index else "") + compact(entry))
+            _check(cancelled)
+            out.write('],"SceneInfoSummary":' + compact(_summary(statistics))
+                      + ',"ToolInfo":' + compact({"Tool": tool, "Version": "1.0"}) + "}")
+    except BaseException:
+        Path(output).unlink(missing_ok=True)
+        raise
     return len(statistics.scenes)
 
 

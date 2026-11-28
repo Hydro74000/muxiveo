@@ -143,42 +143,85 @@ def test_appimage_rife_network_error_keeps_optional_behaviour(tmp_path, monkeypa
     assert appimage_mod.TOOL_MANIFEST.entries == []
 
 
+_MASTER = {"build": "N-129166-gae9f4540cb-20261121", "version_line": "ffmpeg version N-129166-gae9f4540cb-20261121",
+           "libavformat": "63.21.100", "libavcodec": "63.28.100"}
+
+
+def _fake_details(calls: list | None = None, build: str = _MASTER["build"]):
+    def details(binary, *, launcher=(), env=None, timeout=60):
+        if calls is not None:
+            calls.append((Path(binary).name, tuple(launcher)))
+        return {**_MASTER, "build": build}
+    return details
+
+
 def test_appimage_ffmpeg_verified_against_github_digest(tmp_path, monkeypatch):
     archive = _tar({"ffmpeg-master/bin/ffmpeg": b"ff", "ffmpeg-master/bin/ffprobe": b"fp"}, mode="w:xz")
-    url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-    asset = ReleaseAsset("BtbN/FFmpeg-Builds", "latest", Path(url).name, url, _sha(archive))
+    url = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+    asset = ReleaseAsset("FFmpeg-Builds/FFmpeg-Builds", "latest", Path(url).name, url, _sha(archive),
+                         "2026-11-21T04:12:00Z")
     monkeypatch.setattr(appimage_mod, "github_release_asset", lambda *_a: asset)
+    monkeypatch.setattr(appimage_mod, "ffmpeg_build_details", _fake_details())
     _serve(monkeypatch, appimage_mod, "_download", {url: archive})
     appimage_mod.TOOL_MANIFEST.entries.clear()
     appimage_mod._dl_ffmpeg(tmp_path, "x86_64")
     entry = appimage_mod.TOOL_MANIFEST.entries[-1]
     assert entry["verification"] == "github-digest"
     assert entry["files"] == {"ffmpeg": _sha(b"ff"), "ffprobe": _sha(b"fp")}
+    # Build réelle consignée, pas seulement « latest ».
+    assert entry["version"] == _MASTER["build"]
+    assert entry["details"]["release"] == "FFmpeg-Builds/FFmpeg-Builds@latest"
+    assert entry["details"]["asset_updated_at"] == "2026-11-21T04:12:00Z"
+    assert entry["details"]["libavformat"] == "63.21.100"
+    assert entry["details"]["ffprobe_build"] == _MASTER["build"]
 
 
 # ---------------------------------------------------------------------------
 # Windows
 # ---------------------------------------------------------------------------
 
-def test_windows_ffmpeg_gyan_fallback_checked_by_published_sum(tmp_path, monkeypatch):
-    archive = _zip({"ffmpeg/bin/ffmpeg.exe": b"ff", "ffmpeg/bin/ffprobe.exe": b"fp"})
-
+def test_windows_ffmpeg_master_only_without_fallback(tmp_path, monkeypatch):
     def offline(*_args):
-        raise urllib.error.URLError("BtbN indisponible")
+        raise urllib.error.URLError("FFmpeg-Builds indisponible")
 
     monkeypatch.setattr(package_mod, "github_release_asset", offline)
-    _serve(monkeypatch, package_mod, "_download_file", {package_mod._GYAN_FFMPEG_URL: archive})
-    monkeypatch.setattr(package_mod, "published_checksum", lambda url: _sha(archive))
+    package_mod.TOOL_MANIFEST.entries.clear()
+    with pytest.raises(RuntimeError, match="FFmpeg master .* indisponible"):
+        package_mod._dl_windows_ffmpeg(tmp_path)
+    assert not (tmp_path / "ffmpeg.exe").exists()
+    assert not hasattr(package_mod, "_GYAN_FFMPEG_URL")
+
+
+def test_windows_ffmpeg_build_probed_through_wine_when_cross_building(tmp_path, monkeypatch):
+    archive = _zip({"ffmpeg/bin/ffmpeg.exe": b"ff", "ffmpeg/bin/ffprobe.exe": b"fp"})
+    url = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+    asset = ReleaseAsset("FFmpeg-Builds/FFmpeg-Builds", "latest", Path(url).name, url, _sha(archive), "2026-11-21")
+    calls: list = []
+    monkeypatch.setattr(package_mod, "github_release_asset", lambda *_a: asset)
+    monkeypatch.setattr(package_mod, "ffmpeg_build_details", _fake_details(calls))
+    monkeypatch.setattr(package_mod.os, "name", "posix")
+    monkeypatch.setattr(package_mod.shutil, "which", lambda name: "/usr/bin/wine" if name == "wine" else None)
+    _serve(monkeypatch, package_mod, "_download_file", {url: archive})
     package_mod.TOOL_MANIFEST.entries.clear()
     package_mod._dl_windows_ffmpeg(tmp_path)
-    assert (tmp_path / "ffmpeg.exe").read_bytes() == b"ff"
-    assert package_mod.TOOL_MANIFEST.entries[-1]["verification"] == "published-checksum"
+    assert calls == [("ffmpeg.exe", ("wine",)), ("ffprobe.exe", ("wine",))]
+    entry = package_mod.TOOL_MANIFEST.entries[-1]
+    assert entry["version"] == _MASTER["build"]
+    assert entry["details"]["asset_updated_at"] == "2026-11-21"
 
+
+def test_windows_preexisting_ffmpeg_must_be_master(tmp_path, monkeypatch):
     for name in ("ffmpeg.exe", "ffprobe.exe"):
-        (tmp_path / name).unlink()
-    monkeypatch.setattr(package_mod, "published_checksum", lambda url: "0" * 64)
-    with pytest.raises(RuntimeError, match="SHA-256 invalide"):
+        (tmp_path / name).write_bytes(b"old")
+    monkeypatch.setattr(package_mod, "ffmpeg_build_details", _fake_details(build="8.1"))
+    package_mod.TOOL_MANIFEST.entries.clear()
+    with pytest.raises(RuntimeError, match="pas en build master"):
         package_mod._dl_windows_ffmpeg(tmp_path)
+    monkeypatch.setattr(package_mod, "ffmpeg_build_details", _fake_details())
+    package_mod._dl_windows_ffmpeg(tmp_path)
+    entry = package_mod.TOOL_MANIFEST.entries[-1]
+    assert entry["verification"] == "preexisting"
+    assert entry["version"] == _MASTER["build"]
 
 
 def test_windows_rife_verified_and_manifest_written(tmp_path, monkeypatch):

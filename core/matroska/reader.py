@@ -12,6 +12,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from io import BytesIO
 import mmap
+import os
 from pathlib import Path
 import struct
 from typing import BinaryIO, Iterable, Iterator, overload
@@ -24,49 +25,114 @@ _CONTENT_ENCRYPTION_ID = bytes.fromhex("5035")
 _INFO_DURATION_ID = bytes.fromhex("4489")
 
 
-class _MappedInput:
-    """Projection glissante : mémoire résidente bornée, offsets de fichier absolus.
+#: Enfants de BlockGroup représentés par :class:`MatroskaBlock` (Block, ReferenceBlock,
+#: BlockDuration, DiscardPadding, CodecState, BlockAdditions ; Void et CRC-32 neutres).
+_REPRESENTED_GROUP_IDS = frozenset({0xA1, 0xFB, 0x9B, 0x75A2, 0xA4, 0x75A1, 0xEC, 0xBF})
 
-    Les slices retournent des bytes indépendants du mapping, donc les paquets
-    déjà lus restent valides après remapping. Une frame plus grande que la
-    fenêtre reste lisible, comme avec le lecteur tamponné.
+#: Lecture positionnelle sans position de fichier partagée (POSIX) ; sinon poignée dédiée au fil.
+_PREAD = getattr(os, "pread", None)
+
+
+class _WindowedInput:
+    """Fenêtre glissante lue par blocs : mémoire bornée, offsets de fichier absolus.
+
+    Parcours séquentiel des paquets : de grandes lectures contiguës, et la
+    fenêtre suivante lue par un fil pendant le traitement de la courante. Une
+    projection mmap y payait une faute de page synchrone par petite zone (MKV
+    de 9 Go à froid : 11,2 s contre 3,6 s, débit du disque) ; une lecture
+    synchrone par fenêtre laissait encore le disque inactif pendant le
+    traitement (``POSIX_FADV_WILLNEED`` sans effet mesuré). Les slices sont des
+    bytes indépendants de la fenêtre, donc les paquets déjà lus restent valides
+    après son remplacement. Une frame plus grande que la fenêtre reste lisible.
+    Mémoire : deux fenêtres au plus.
     """
 
-    _WINDOW_BYTES = 32 * 1024 * 1024
+    _WINDOW_BYTES = 8 * 1024 * 1024
 
-    def __init__(self, fh: BinaryIO, size: int) -> None:
+    def __init__(self, fh: BinaryIO, size: int, path: Path | None = None) -> None:
         self._fh = fh
         self._size = size
-        self._mapping: mmap.mmap | None = None
+        self._path = path
+        self._buffer: bytes | None = None
         self._start = self._end = 0
+        self._pool: ThreadPoolExecutor | None = None
+        self._ahead: Future[bytes] | None = None
+        self._ahead_start = 0
+        self._ahead_fh: BinaryIO | None = None
         self._ensure(0, min(1, size))
 
     def __len__(self) -> int:
         return self._size
 
     def element_header(self, cursor: int, limit: int) -> tuple[int, int, int | None]:
-        mapping = self._ensure(cursor, min(cursor + 16, limit))
-        element_id, payload, size = _memory_element_header(mapping, cursor - self._start, limit - self._start)
+        buffer = self._ensure(cursor, min(cursor + 16, limit))
+        element_id, payload, size = _memory_element_header(buffer, cursor - self._start, limit - self._start)
         return element_id, payload + self._start, size
 
-    def block_data(self, start: int, end: int) -> tuple[mmap.mmap, int, int]:
-        mapping = self._ensure(start, end)
-        return mapping, start - self._start, end - self._start
+    def block_data(self, start: int, end: int) -> tuple[bytes, int, int]:
+        buffer = self._ensure(start, end)
+        return buffer, start - self._start, end - self._start
 
-    def _ensure(self, start: int, end: int) -> mmap.mmap:
-        if self._mapping is not None and self._start <= start and end <= self._end:
-            return self._mapping
-        self.close()
-        self._start = start - start % mmap.ALLOCATIONGRANULARITY
-        length = min(self._size - self._start, max(self._WINDOW_BYTES, end - self._start))
-        self._mapping = mmap.mmap(self._fh.fileno(), length, access=mmap.ACCESS_READ, offset=self._start)
-        self._end = self._start + length
-        if hasattr(mmap, "MADV_SEQUENTIAL"):
-            try:
-                self._mapping.madvise(mmap.MADV_SEQUENTIAL)
-            except (OSError, ValueError):
-                pass
-        return self._mapping
+    def _ensure(self, start: int, end: int) -> bytes:
+        if self._buffer is not None and self._start <= start and end <= self._end:
+            return self._buffer
+        taken = self._take_ahead(start, end)
+        if taken is not None:
+            self._start, self._buffer = taken
+        else:
+            self._buffer = None
+            self._start = start
+            self._fh.seek(start)
+            # Bornée à la fin du fichier : un accès au-delà échoue comme sur le fichier.
+            self._buffer = self._fh.read(max(0, min(self._size - start, max(self._WINDOW_BYTES, end - start))))
+        self._end = self._start + len(self._buffer)
+        self._schedule_ahead()
+        return self._buffer
+
+    def _take_ahead(self, start: int, end: int) -> tuple[int, bytes] | None:
+        """Fenêtre suivante déjà lue, raccordée à la fin utile de la courante ; ``None`` sinon."""
+        future, self._ahead = self._ahead, None
+        if future is None:
+            return None
+        try:
+            ahead = future.result()
+        except (OSError, ValueError):
+            return None  # relue de façon synchrone : l'erreur éventuelle y est levée
+        ahead_start = self._ahead_start
+        ahead_end = ahead_start + len(ahead)
+        if self._buffer is None or not (self._start <= start <= ahead_end and end <= ahead_end):
+            return None
+        if start >= ahead_start:
+            return ahead_start, ahead
+        # Élément à cheval sur les deux fenêtres : fin de la courante + suivante.
+        return start, self._buffer[start - self._start:] + ahead
+
+    def _schedule_ahead(self) -> None:
+        if self._end >= self._size or (_PREAD is None and self._path is None):
+            return
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="matroska-window")
+        self._ahead_start = self._end
+        self._ahead = self._pool.submit(self._read_at, self._end, min(self._WINDOW_BYTES, self._size - self._end))
+
+    def _read_at(self, position: int, length: int) -> bytes:
+        """Lecture de la fenêtre suivante, dans le fil (aucune position partagée avec ``fh``)."""
+        if _PREAD is not None:
+            chunks: list[bytes] = []
+            while length > 0:
+                chunk = _PREAD(self._fh.fileno(), length, position)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                position += len(chunk)
+                length -= len(chunk)
+            return chunks[0] if len(chunks) == 1 else b"".join(chunks)
+        if self._ahead_fh is None:
+            if self._path is None:
+                raise RuntimeError("Lecture anticipée sans chemin de fichier.")
+            self._ahead_fh = self._path.open("rb")
+        self._ahead_fh.seek(position)
+        return self._ahead_fh.read(length)
 
     @overload
     def __getitem__(self, key: int) -> int: ...
@@ -76,17 +142,24 @@ class _MappedInput:
 
     def __getitem__(self, key: int | slice) -> int | bytes:
         if isinstance(key, int):
-            mapping = self._ensure(key, key + 1)
-            return mapping[key - self._start]
+            buffer = self._ensure(key, key + 1)
+            return buffer[key - self._start]
         start = 0 if key.start is None else key.start
         end = self._size if key.stop is None else key.stop
-        mapping = self._ensure(start, end)
-        return mapping[start - self._start:end - self._start]
+        buffer = self._ensure(start, end)
+        return buffer[start - self._start:end - self._start]
 
     def close(self) -> None:
-        if self._mapping is not None:
-            self._mapping.close()
-            self._mapping = None
+        self._buffer = None
+        future, self._ahead = self._ahead, None
+        if future is not None:
+            future.cancel()
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
+        if self._ahead_fh is not None:
+            self._ahead_fh.close()
+            self._ahead_fh = None
 
 
 @dataclass(frozen=True)
@@ -115,7 +188,7 @@ def _read_exact(fh: BinaryIO, count: int) -> bytes:
     return value
 
 
-def _read_vint_value(data: bytes | mmap.mmap | _MappedInput, offset: int = 0) -> tuple[int, int]:
+def _read_vint_value(data: bytes | mmap.mmap | _WindowedInput, offset: int = 0) -> tuple[int, int]:
     if offset >= len(data):
         raise ValueError("VINT absent")
     first = data[offset]
@@ -127,7 +200,7 @@ def _read_vint_value(data: bytes | mmap.mmap | _MappedInput, offset: int = 0) ->
     return int.from_bytes(data[offset:offset + length], "big") & ((1 << (7 * length)) - 1), length
 
 
-def _memory_element_header(data: mmap.mmap, cursor: int, limit: int) -> tuple[int, int, int | None]:
+def _memory_element_header(data: bytes | mmap.mmap, cursor: int, limit: int) -> tuple[int, int, int | None]:
     """ID entier, début du payload et taille, avec les mêmes bornes que read_element."""
     first = data[cursor]
     id_len = 1 if first & 0x80 else _vint_length(first)
@@ -339,6 +412,7 @@ class MatroskaReader:
     SEEK_POSITION_ID = bytes.fromhex("53ac")
     CUES_ID = bytes.fromhex("1c53bb6b")
     CUE_POINT_ID = bytes.fromhex("bb")
+    CUE_TIME_ID = bytes.fromhex("b3")
     CUE_TRACK_POSITIONS_ID = bytes.fromhex("b7")
     CUE_TRACK_ID = bytes.fromhex("f7")
     CUE_CLUSTER_POSITION_ID = bytes.fromhex("f1")
@@ -722,8 +796,23 @@ class MatroskaReader:
             end: int | None = None
             displays: list[tuple[str, str]] = []
             children: list[MatroskaChapter] = []
+            hidden, enabled = False, True
+            segment_uid: bytes | None = None
+            segment_edition_uid: int | None = None
+            tracks: list[int] = []
             for element_id, value in payload_children(payload):
-                if element_id == self.CHAPTER_UID_ID:
+                if element_id == bytes.fromhex("98"):        # ChapterFlagHidden
+                    hidden = bool(int.from_bytes(value, "big"))
+                elif element_id == bytes.fromhex("4598"):    # ChapterFlagEnabled
+                    enabled = bool(int.from_bytes(value, "big"))
+                elif element_id == bytes.fromhex("6e67"):    # ChapterSegmentUID
+                    segment_uid = bytes(value)
+                elif element_id == bytes.fromhex("6ebc"):    # ChapterSegmentEditionUID
+                    segment_edition_uid = int.from_bytes(value, "big")
+                elif element_id == bytes.fromhex("8f"):      # ChapterTrack
+                    tracks += [int.from_bytes(track, "big") for track_id, track in payload_children(value)
+                               if track_id == bytes.fromhex("89")]
+                elif element_id == self.CHAPTER_UID_ID:
                     uid = int.from_bytes(value, "big")
                 elif element_id == self.CHAPTER_TIME_START_ID:
                     start = int.from_bytes(value, "big")
@@ -740,7 +829,8 @@ class MatroskaReader:
                     displays.append((name, language))
                 elif element_id == self.CHAPTER_ATOM_ID:
                     children.append(parse_atom(value))
-            return MatroskaChapter(uid, start, end, tuple(displays), tuple(children))
+            return MatroskaChapter(uid, start, end, tuple(displays), tuple(children), hidden, enabled, segment_uid,
+                                   segment_edition_uid, tuple(tracks))
 
         for raw in self.raw_top_level(self.CHAPTERS_ID):
             for element_id, value in payload_children(self._raw_payload(raw)):
@@ -748,12 +838,15 @@ class MatroskaReader:
                     continue
                 uid = 0
                 chapters: list[MatroskaChapter] = []
+                flags = {"hidden": False, "default": False, "ordered": False}
                 for edition_id, edition_value in payload_children(value):
                     if edition_id == self.EDITION_UID_ID:
                         uid = int.from_bytes(edition_value, "big")
                     elif edition_id == self.CHAPTER_ATOM_ID:
                         chapters.append(parse_atom(edition_value))
-                editions.append(MatroskaEdition(uid, tuple(chapters)))
+                    elif edition_id in _EDITION_FLAGS:
+                        flags[_EDITION_FLAGS[edition_id]] = bool(int.from_bytes(edition_value, "big"))
+                editions.append(MatroskaEdition(uid, tuple(chapters), **flags))
         return tuple(editions)
 
     @staticmethod
@@ -1037,7 +1130,7 @@ class MatroskaReader:
 
     @staticmethod
     def _decode_block(
-        raw: bytes | mmap.mmap | _MappedInput,
+        raw: bytes | mmap.mmap | _WindowedInput,
         cluster_timestamp: int,
         *,
         duration_ms: int | None = None,
@@ -1052,9 +1145,10 @@ class MatroskaReader:
         first_lace_only: bool = False,
         raw_offset: int = 0,
         raw_end: int | None = None,
+        unrepresented_group_elements: bool = False,
     ) -> Iterator["MatroskaBlock"]:
         end = len(raw) if raw_end is None else raw_end
-        if isinstance(raw, _MappedInput):
+        if isinstance(raw, _WindowedInput):
             raw, raw_offset, end = raw.block_data(raw_offset, end)
         track_no, length = _read_vint_value(raw, raw_offset)
         if end - raw_offset < length + 3:
@@ -1091,6 +1185,7 @@ class MatroskaReader:
                 encoded_frames_payload=encoded_frames_payload,
                 is_keyframe=bool(flags & 0x80) if is_keyframe is None else is_keyframe,
                 payload_bytes=len(frame),
+                unrepresented_group_elements=unrepresented_group_elements,
             )
 
     @classmethod
@@ -1173,22 +1268,22 @@ class MatroskaReader:
         if read_payload:
             with self.path.open("rb") as fh:
                 try:
-                    mapped = _MappedInput(fh, self.path.stat().st_size)
+                    mapped = _WindowedInput(fh, self.path.stat().st_size, self.path)
                 except (OSError, ValueError, OverflowError):
                     mapped = None
                 if mapped is not None:
                     with closing(mapped):
                         # Les erreurs de parsing ne déclenchent jamais un
                         # second parcours qui dupliquerait les paquets émis.
-                        yield from self._blocks_mmap(mapped, track_numbers, first_lace_only)
+                        yield from self._blocks_windowed(mapped, track_numbers, first_lace_only)
                     return
         yield from self._blocks_stream(
             track_numbers=track_numbers, read_payload=read_payload,
             first_lace_only=first_lace_only,
         )
 
-    def _blocks_mmap(
-        self, data: _MappedInput, track_numbers: set[int] | None, first_lace_only: bool,
+    def _blocks_windowed(
+        self, data: _WindowedInput, track_numbers: set[int] | None, first_lace_only: bool,
     ) -> Iterator["MatroskaBlock"]:
         scale_ns = self.timestamp_scale_ns()
         segment = self.segment()
@@ -1255,6 +1350,7 @@ class MatroskaReader:
                     values: dict[int, list[bytes]] = {}
                     for part_id, start, end in parts:
                         values.setdefault(part_id, []).append(data[start:end])
+                    unrepresented = any(part_id not in _REPRESENTED_GROUP_IDS for part_id in values)
                     references = tuple(int.from_bytes(item, "big", signed=True) for item in values.get(0xFB, []))
                     duration_ticks = int.from_bytes((values.get(0x9B) or [b""])[0], "big")
                     yield from self._decode_block(
@@ -1268,6 +1364,7 @@ class MatroskaReader:
                         discard_padding_ns=int.from_bytes((values.get(0x75A2) or [b""])[0], "big", signed=True),
                         codec_state=(values.get(0xA4) or [b""])[0],
                         block_additions=(values.get(0x75A1) or [b""])[0],
+                        unrepresented_group_elements=unrepresented,
                     )
 
     def _blocks_stream(
@@ -1447,15 +1544,27 @@ class MatroskaReader:
         sans Cues, ou si une entrée de ces pistes n'a pas de
         CueRelativePosition (bloc inadressable sans lire tout le Cluster).
         """
+        index = self.cue_block_index(track_numbers)
+        return None if index is None else {number: set(entries) for number, entries in index.items()}
+
+    def cue_block_index(self, track_numbers: set[int]) -> dict[int, dict[tuple[int, int], int]] | None:
+        """Comme :meth:`cue_block_positions`, avec le CueTime de chaque position.
+
+        ``{piste: {(cluster, position relative): CueTime}}``, CueTime en unités
+        de TimestampScale (horodatage absolu du bloc indexé).
+        """
         cues = [item for item in self._metadata_elements() if item.element_id == self.CUES_ID]
         if not cues:
             return None
-        positions: dict[int, set[tuple[int, int]]] = {number: set() for number in track_numbers}
+        positions: dict[int, dict[tuple[int, int], int]] = {number: {} for number in track_numbers}
         for element in cues:
             for point_id, point in payload_children(self.payload(element)):
                 if point_id != self.CUE_POINT_ID:
                     continue
-                for entry_id, entry in payload_children(point):
+                children = list(payload_children(point))
+                cue_time = next((int.from_bytes(value, "big") for child_id, value in children
+                                 if child_id == self.CUE_TIME_ID), 0)
+                for entry_id, entry in children:
                     if entry_id != self.CUE_TRACK_POSITIONS_ID:
                         continue
                     fields = dict(payload_children(entry))
@@ -1464,11 +1573,102 @@ class MatroskaReader:
                         continue
                     if self.CUE_CLUSTER_POSITION_ID not in fields or self.CUE_RELATIVE_POSITION_ID not in fields:
                         return None
-                    positions[number].add((
+                    positions[number].setdefault((
                         int.from_bytes(fields[self.CUE_CLUSTER_POSITION_ID], "big"),
                         int.from_bytes(fields[self.CUE_RELATIVE_POSITION_ID], "big"),
-                    ))
+                    ), cue_time)
         return positions
+
+    def indexed_blocks(
+        self, positions: Iterable[tuple[int, int]], *, first_lace_only: bool = False, ordered: bool = False,
+    ) -> Iterator["MatroskaBlock"]:
+        """Blocs complets (horodatage, durée, références) aux positions de Cues.
+
+        Dans l'ordre du fichier, ou dans l'ordre fourni avec ``ordered`` (doublons
+        ignorés). Comme :meth:`blocks_at`, seuls l'en-tête du Cluster, son
+        Timestamp et le bloc visé sont lus : quelques lectures par bloc, jamais de
+        parcours des Clusters. Une position qui ne désigne pas un bloc lève ``ValueError``.
+        """
+        segment = self.segment()
+        size = self.path.stat().st_size
+        segment_end = segment.end if segment.end is not None else size
+        scale_ns = self.timestamp_scale_ns()
+        clusters: dict[int, tuple[int, int, int]] = {}
+        with self.path.open("rb", buffering=self._SKIPPING_READ_BUFFER) as fh:
+            for position in (dict.fromkeys(positions) if ordered else sorted(set(positions))):
+                cluster_position, relative = position
+                bounds = clusters.get(cluster_position)
+                if bounds is None:
+                    fh.seek(segment.payload_offset + cluster_position)
+                    cluster = read_element(fh, limit=segment_end)
+                    if cluster is None or cluster.element_id != self.CLUSTER_ID:
+                        raise ValueError("Cue vers un élément qui n'est pas un Cluster")
+                    cluster_end = cluster.end if cluster.end is not None else segment_end
+                    # Timestamp en tête du Cluster, après un éventuel CRC-32 ou Void.
+                    timestamp_element = read_element(fh, limit=cluster_end)
+                    while (
+                        timestamp_element is not None and timestamp_element.size is not None
+                        and timestamp_element.element_id in (b"\xbf", b"\xec")
+                    ):
+                        fh.seek(timestamp_element.payload_offset + timestamp_element.size)
+                        timestamp_element = read_element(fh, limit=cluster_end)
+                    if timestamp_element is None or timestamp_element.element_id != self.TIMESTAMP_ID:
+                        raise ValueError("Cluster sans Timestamp en tête")
+                    timestamp = int.from_bytes(_read_exact(fh, timestamp_element.size or 0), "big")
+                    bounds = (cluster.payload_offset, cluster_end, timestamp)
+                    clusters[cluster_position] = bounds
+                start, end, timestamp = bounds
+                if start + relative >= end:
+                    raise ValueError("Cue hors du Cluster")
+                fh.seek(start + relative)
+                element = read_element(fh, limit=end)
+                if element is None or element.size is None:
+                    raise ValueError("Bloc indexé illisible")
+                data = _read_exact(fh, element.size)
+                if element.element_id == self.SIMPLE_BLOCK_ID:
+                    yield from self._decode_block(
+                        data, timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+                    )
+                    continue
+                if element.element_id != self.BLOCK_GROUP_ID:
+                    raise ValueError("Cue vers un élément qui n'est pas un bloc")
+                yield from self.decode_block_group(
+                    data, timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+                )
+
+    @classmethod
+    def decode_block_group(
+        cls, data: bytes, cluster_timestamp: int, *, timestamp_scale_ns: int, first_lace_only: bool = False,
+    ) -> Iterator["MatroskaBlock"]:
+        """Blocs d'un BlockGroup (payload complet) : Block, durée, références et compléments."""
+        scale_ns = timestamp_scale_ns
+        values: dict[bytes, list[bytes]] = {}
+        for child_id, child in payload_children(data):
+            values.setdefault(child_id, []).append(child)
+        blocks = values.get(cls.BLOCK_ID)
+        if not blocks:
+            raise ValueError("BlockGroup sans Block")
+        unrepresented = any(
+            int.from_bytes(child_id, "big") not in _REPRESENTED_GROUP_IDS
+            for child_id in values if child_id != cls.BLOCK_ID
+        )
+        references = tuple(int.from_bytes(item, "big", signed=True)
+                           for item in values.get(cls.REFERENCE_BLOCK_ID, []))
+        duration_ticks = int.from_bytes((values.get(cls.BLOCK_DURATION_ID) or [b""])[0], "big")
+        yield from cls._decode_block(
+            blocks[0], cluster_timestamp, timestamp_scale_ns=scale_ns, first_lace_only=first_lace_only,
+            duration_ms=round(duration_ticks * scale_ns / 1_000_000) if duration_ticks else None,
+            duration_ns=duration_ticks * scale_ns if duration_ticks else None,
+            references=tuple(round(value * scale_ns / 1_000_000) for value in references),
+            references_ns=tuple(value * scale_ns for value in references),
+            is_keyframe=not references,
+            discard_padding_ns=int.from_bytes(
+                (values.get(cls.DISCARD_PADDING_ID) or [b""])[0], "big", signed=True,
+            ),
+            codec_state=(values.get(cls.CODEC_STATE_ID) or [b""])[0],
+            block_additions=(values.get(cls.BLOCK_ADDITIONS_ID) or [b""])[0],
+            unrepresented_group_elements=unrepresented,
+        )
 
     def blocks_at(self, positions: Iterable[tuple[int, int]]) -> Iterator[tuple[tuple[int, int], int, tuple[bytes, ...]]]:
         """Blocs désignés par des positions de Cues, dans l'ordre du fichier.
@@ -1598,6 +1798,8 @@ class MatroskaReader:
                     elem_size: int,
                     cluster_timestamp: int,
                     duration_ns: int | None,
+                    cluster_offset: int = -1,
+                    has_timestamp: bool = True,
                 ) -> "MatroskaBlockSummary":
                     probe_size = min(elem_size, 256)
                     header = mm[payload_offset:payload_offset + probe_size]
@@ -1624,12 +1826,15 @@ class MatroskaReader:
                         duration_ns=duration_ns,
                         frame_count=frame_count,
                         payload_bytes=max(0, elem_size - header_bytes),
+                        cluster_offset=cluster_offset,
+                        cluster_timestamp_ns=cluster_timestamp * scale_ns if has_timestamp else None,
                     )
 
                 for cluster in clusters:
                     cur = cluster.payload_offset
                     limit = cluster.end if cluster.end is not None else size
                     cluster_timestamp = 0
+                    has_timestamp = False
                     while cur < limit:
                         first = mm[cur]
                         id_len = _vint_length(first)
@@ -1655,8 +1860,12 @@ class MatroskaReader:
                             cluster_timestamp = int.from_bytes(
                                 mm[payload_offset:child_end], "big",
                             )
+                            has_timestamp = True
                         elif elem_id == self.SIMPLE_BLOCK_ID:
-                            yield block_summary_mem(payload_offset, size_val, cluster_timestamp, None)
+                            yield block_summary_mem(
+                                payload_offset, size_val, cluster_timestamp, None,
+                                cluster.offset, has_timestamp,
+                            )
                         elif elem_id == self.BLOCK_GROUP_ID:
                             bg_cur = payload_offset
                             block_payload_offset = None
@@ -1692,6 +1901,8 @@ class MatroskaReader:
                                 block_size_val,
                                 cluster_timestamp,
                                 duration_ticks * scale_ns if duration_ticks else None,
+                                cluster.offset,
+                                has_timestamp,
                             )
 
     def _scan_clusters_stream(
@@ -1714,6 +1925,8 @@ class MatroskaReader:
                 element: EbmlElement,
                 cluster_timestamp: int,
                 duration_ns: int | None,
+                cluster_offset: int = -1,
+                has_timestamp: bool = True,
             ) -> "MatroskaBlockSummary":
                 if element.size is None:
                     raise ValueError("Block Matroska de taille inconnue")
@@ -1745,10 +1958,13 @@ class MatroskaReader:
                     duration_ns=duration_ns,
                     frame_count=frame_count,
                     payload_bytes=max(0, element.size - header_bytes),
+                    cluster_offset=cluster_offset,
+                    cluster_timestamp_ns=cluster_timestamp * scale_ns if has_timestamp else None,
                 )
 
             for cluster in clusters:
                 timestamp = 0
+                has_timestamp = False
                 fh.seek(cluster.payload_offset)
                 for child in iter_children(fh, cluster, file_size=size):
                     if child.size is None:
@@ -1757,8 +1973,9 @@ class MatroskaReader:
                         timestamp = int.from_bytes(
                             read_at(child.payload_offset, child.size), "big",
                         )
+                        has_timestamp = True
                     elif child.element_id == self.SIMPLE_BLOCK_ID:
-                        yield block_summary(child, timestamp, None)
+                        yield block_summary(child, timestamp, None, cluster.offset, has_timestamp)
                     elif child.element_id == self.BLOCK_GROUP_ID:
                         block: EbmlElement | None = None
                         duration_ticks = 0
@@ -1778,6 +1995,8 @@ class MatroskaReader:
                             block,
                             timestamp,
                             duration_ticks * scale_ns if duration_ticks else None,
+                            cluster.offset,
+                            has_timestamp,
                         )
 
 
@@ -1815,6 +2034,10 @@ class MatroskaBlockSummary:
     duration_ns: int | None
     frame_count: int
     payload_bytes: int
+    #: Position du Cluster d'appartenance (identifie un changement de Cluster).
+    cluster_offset: int = -1
+    #: Timestamp du Cluster en ns ; ``None`` si le Cluster n'en a pas avant ce bloc.
+    cluster_timestamp_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1838,6 +2061,9 @@ class MatroskaBlock:
     # SimpleBlock: bit keyframe. BlockGroup: absence de ReferenceBlock.
     is_keyframe: bool | None = None
     payload_bytes: int = 0
+    #: BlockGroup portant un élément non représenté ici (ReferencePriority,
+    #: ReferenceVirtual, Slices…) : une copie fidèle doit le refuser.
+    unrepresented_group_elements: bool = False
 
 
 @dataclass(frozen=True)
@@ -1866,12 +2092,28 @@ class MatroskaChapter:
     end_ns: int | None
     displays: tuple[tuple[str, str], ...]
     children: tuple["MatroskaChapter", ...] = ()
+    #: ChapterFlagHidden / ChapterFlagEnabled (défauts Matroska : visible, actif).
+    hidden: bool = False
+    enabled: bool = True
+    #: Références à un autre segment / une autre édition (ChapterSegmentUID / ChapterSegmentEditionUID) et pistes
+    #: ciblées (ChapterTrack → ChapterTrackUID).
+    segment_uid: bytes | None = None
+    segment_edition_uid: int | None = None
+    tracks: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
 class MatroskaEdition:
     uid: int
     chapters: tuple[MatroskaChapter, ...]
+    #: EditionFlagHidden / EditionFlagDefault / EditionFlagOrdered.
+    hidden: bool = False
+    default: bool = False
+    ordered: bool = False
+
+
+#: Drapeaux d'une édition de chapitres (EditionFlagHidden, EditionFlagDefault, EditionFlagOrdered).
+_EDITION_FLAGS = {bytes.fromhex("45bd"): "hidden", bytes.fromhex("45db"): "default", bytes.fromhex("45dd"): "ordered"}
 
 
 @dataclass(frozen=True)

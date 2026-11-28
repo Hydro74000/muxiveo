@@ -196,3 +196,28 @@ def test_apply_translations_escapes_tabwidget_ampersands(qt_app):
     apply_translations(root)
 
     assert tabs.tabText(0) == "Sources && Audio"
+
+
+def test_template_with_repeated_placeholder_matches_same_value() -> None:
+    """Un paramètre répété dans un gabarit ne doit pas casser la compilation des motifs du catalogue."""
+    from core.i18n import _compiled_pattern
+
+    pattern = _compiled_pattern("Base {kind} attendue, Film 1 en {other} : choisissez {kind}.")
+    assert pattern is not None
+    match = pattern.fullmatch("Base HLG attendue, Film 1 en PQ : choisissez HLG.")
+    assert match is not None and match.groupdict() == {"kind": "HLG", "other": "PQ"}
+    assert pattern.fullmatch("Base HLG attendue, Film 1 en PQ : choisissez SDR.") is None
+
+
+def test_catalog_patterns_are_compiled_once(monkeypatch) -> None:
+    """Les motifs des gabarits à paramètres sont compilés une fois pour tout le catalogue : un cache borné plus
+    petit que le catalogue recompilait tout à chaque traduction (démarrage de plusieurs secondes)."""
+    import core.i18n as i18n
+
+    i18n._pattern_templates()                           # catalogue compilé
+    calls: list[str] = []
+    original = i18n._compiled_pattern
+    monkeypatch.setattr(i18n, "_compiled_pattern", lambda template: calls.append(template) or original(template))
+    for _ in range(3):
+        i18n.translate_text("Texte absent du catalogue 1234")
+    assert calls == []

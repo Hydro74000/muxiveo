@@ -1,5 +1,6 @@
 """
-ui/plugin_controller.py — état et opérations des extensions (interpolation mvo-rife, accélération NVIDIA mvo-rife-trt).
+ui/plugin_controller.py — état et opérations des extensions (interpolation mvo-rife, accélération NVIDIA mvo-rife-trt,
+FEL) et de l'extension externe NVEncC (rigaya/NVEnc, ``core/nvencc_install.py``).
 
 Un contrôleur par extension, propriété de la fenêtre principale : la page Extensions, le tableau de bord et le
 panneau Encodage lisent son état. Flux des versions publiées, téléchargement, installation, préparation des
@@ -16,8 +17,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from core import plugins
-from core.config import AppConfig
+from core import nvencc_install, plugins
+from core.config import AppConfig, bundled_tools_dir
 from core.i18n import translate_text
 from core.workflows.encode.interpolation import TrtCapability
 
@@ -88,6 +89,8 @@ class PluginController(QObject):
     log_message = Signal(str, str)        # (niveau, message)
     probe_requested = Signal()            # nouvelle sonde du GPU (moteur ou extension changé)
     workflow_changed = Signal()           # outil ou dossier de l'extension à transmettre aux encodages
+    mutation_finished = Signal()          # installation / mise à jour / suppression terminée (toute issue)
+    auto_update_ready = Signal()          # mise à jour automatique à admettre par la fenêtre (fil Qt)
 
     spec: plugins.PluginSpec
     label = ""                            # nom affiché (traduit à l'affichage)
@@ -101,6 +104,12 @@ class PluginController(QObject):
         self._auto_update_done = False
         self._auto_update_settled = False     # mise à jour automatique de ce lancement décidée (faite ou non)
         self._feed_known = False
+        self._update_gated = False            # vrai : la fenêtre admet la mise à jour automatique (auto_update_ready)
+
+    def set_update_gate(self, gated: bool) -> None:
+        """Mise à jour automatique confiée à la fenêtre (``auto_update_ready``) au lieu d'être lancée ici :
+        elle attend la fin des traitements qui utilisent les extensions."""
+        self._update_gated = bool(gated)
 
     # ------------------------------------------------------------------ état
 
@@ -148,7 +157,10 @@ class PluginController(QObject):
                 "{label} : mise à jour automatique vers la version {version}.",
                 label=translate_text(self.label), version=self._state.target,
             ))
-            self.update()
+            if self._update_gated:
+                self.auto_update_ready.emit()
+            else:
+                self.update()
         # Après le lancement éventuel (état « occupé » déjà posé) : pas de point vert fugitif.
         self._auto_update_settled = True
 
@@ -158,21 +170,36 @@ class PluginController(QObject):
 
     # ------------------------------------------------------------ opérations
 
-    def install(self) -> None:
-        self._start("install")
+    def install(self) -> bool:
+        """Lance l'installation ; faux si rien n'a démarré (opération déjà en cours, version inconnue)."""
+        return self._start("install")
 
-    def update(self) -> None:
-        self._start("update")
+    def update(self) -> bool:
+        return self._start("update")
 
     def cancel(self) -> None:
         self._cancel.set()
 
-    def _start(self, op: str) -> None:
+    def _start(self, op: str) -> bool:
         if self._state.busy:
-            return
+            return False
         self._cancel.clear()
         self._set_state(busy=op, progress=0, message="")
-        self._executor.submit(self._install_job, op)
+        self._executor.submit(self._guarded_job, self._install_job, op)
+        return True
+
+    def _guarded_job(self, job, *args: object) -> None:
+        """Tâche de mutation : « occupé » toujours levé et ``mutation_finished`` toujours émis, même sur une
+        exception imprévue (suppression d'un fichier refusée, contrôle en échec)."""
+        try:
+            job(*args)
+        except Exception as exc:  # noqa: BLE001 — l'état « occupé » doit toujours être levé
+            self._finish(translate_text("{label} : échec ({reason}).", label=translate_text(self.label),
+                                        reason=str(exc) or exc.__class__.__name__), level="ERROR")
+        finally:
+            if self._state.busy:
+                self._set_state(busy="", progress=-1)
+            self.mutation_finished.emit()
 
     def _progress(self, done: int, total: int) -> None:
         percent = int(done * 100 / total) if total > 0 else -1
@@ -210,11 +237,13 @@ class PluginController(QObject):
         """Contrôle de bon fonctionnement après installation ; message d'avertissement, "" si correct."""
         return ""
 
-    def remove(self) -> None:
+    def remove(self) -> bool:
+        """Lance la suppression ; faux si rien n'a démarré."""
         if self._state.busy:
-            return
+            return False
         self._set_state(busy="remove", progress=-1, message="")
-        self._executor.submit(self._remove_job)
+        self._executor.submit(self._guarded_job, self._remove_job)
+        return True
 
     def _remove_job(self) -> None:
         label = translate_text(self.label)
@@ -252,11 +281,11 @@ class FelPluginController(PluginController):
         super().__init__(config, PluginState(installed=plugins.installed_plugin(self.spec),
                                             target=""), parent)
 
-    def _start(self, op: str) -> None:
+    def _start(self, op: str) -> bool:
         if not self._state.target:
             self._set_state(message=translate_text("Version publiée indisponible."))
-            return
-        super()._start(op)
+            return False
+        return super()._start(op)
 
     def _verify(self, installed: plugins.InstalledPlugin) -> str:
         from core.fel.engine import FelEngine, FelError
@@ -268,10 +297,10 @@ class FelPluginController(PluginController):
 
 
 class RifePluginController(PluginController):
-    """Extension d'interpolation d'images (mvo-rife) : moteur muxiveo-rife, modèles, préréglages."""
+    """Moteur vidéo MVO (mvo-rife) : moteur muxiveo-rife (débruitage, interpolation), modèles, préréglages."""
 
     spec = plugins.RIFE
-    label = "Interpolation d'images (MVO-RIFE)"
+    label = "Moteur vidéo MVO (débruitage, interpolation)"
 
     def __init__(self, config: AppConfig, parent: QObject | None = None) -> None:
         installed = plugins.installed_plugin(plugins.RIFE)
@@ -337,3 +366,185 @@ class TrtPluginController(PluginController):
             "Accélération NVIDIA (TensorRT) installée, mais inutilisable sur cette machine ({reason}) : "
             "l'interpolation reste sur Vulkan.", reason="; ".join(failures[:2]),
         )
+
+
+_NVENCC_METHOD_LABELS = {
+    nvencc_install.METHOD_APT: "paquet système (apt, mot de passe administrateur demandé)",
+    nvencc_install.METHOD_DNF: "paquet système (dnf, mot de passe administrateur demandé)",
+    nvencc_install.METHOD_USER: "dossier utilisateur, sans droits administrateur",
+    nvencc_install.METHOD_WINDOWS: "dossier utilisateur, sans droits administrateur",
+}
+
+
+def nvencc_method_label(method: str) -> str:
+    """Libellé (à traduire) de la méthode d'installation de NVEncC."""
+    return _NVENCC_METHOD_LABELS.get(method, method)
+
+
+@dataclass(frozen=True)
+class NvenccState:
+    """Extension externe NVEncC : outil résolu, machine, dernière version publiée, opération en cours."""
+
+    tool: nvencc_install.NvenccTool | None = None
+    supported: bool = True           # Linux ou Windows x86-64
+    nvidia: bool | None = None       # None : sonde pas encore faite
+    method: str = ""                 # méthode d'installation prévue (core/nvencc_install.plan_method)
+    target: str = ""                 # dernière version publiée (rigaya/NVEnc)
+    busy: str = ""                   # "" | "install" | "update" | "remove"
+    progress: int = -1
+    message: str = ""
+
+    @property
+    def installed(self) -> nvencc_install.NvenccTool | None:
+        return self.tool
+
+    @property
+    def managed(self) -> bool:
+        """Installation faite par Muxiveo dans le dossier utilisateur : mise à jour et suppression possibles."""
+        return self.tool is not None and self.tool.provenance == nvencc_install.PROVENANCE_USER
+
+    @property
+    def compatible(self) -> bool:
+        return self.supported and bool(self.nvidia)
+
+    @property
+    def update_available(self) -> bool:
+        return (
+            self.managed and bool(self.target) and self.tool is not None and bool(self.tool.version)
+            and plugins.version_key(self.tool.version) < plugins.version_key(self.target)
+        )
+
+
+class NvenccController(QObject):
+    """NVEncC, extension externe : sonde (GPU NVIDIA, outil résolu, version publiée), installation, suppression.
+
+    Jobs hors du thread de l'interface ; ``tool_changed`` demande à la fenêtre de résoudre à nouveau
+    ``AppConfig.tool_nvencc`` (thread principal) puis d'appeler :meth:`refresh`.
+    """
+
+    state_changed = Signal(object)        # NvenccState
+    log_message = Signal(str, str)        # (niveau, message)
+    tool_changed = Signal()
+    mutation_finished = Signal()          # installation / mise à jour / suppression terminée (toute issue)
+
+    plugin_id = "nvencc"
+    label = "NVEncC (encodeur NVIDIA)"
+
+    def __init__(self, config: AppConfig, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._config = config
+        self._state = NvenccState(supported=nvencc_install.supported_platform())
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nvencc")
+        self._cancel = threading.Event()
+
+    def state(self) -> NvenccState:
+        return self._state
+
+    def _set_state(self, **changes: object) -> None:
+        self._state = replace(self._state, **changes)  # type: ignore[arg-type]
+        self.state_changed.emit(self._state)
+
+    @property
+    def manual_update_pending(self) -> bool:
+        """Nouvelle version d'une installation faite par Muxiveo (jamais mise à jour automatiquement)."""
+        return self._state.update_available and not self._state.busy
+
+    def refresh(self, *, fetch_target: bool = False) -> None:
+        """Sonde en arrière-plan l'outil résolu et le GPU ; ``fetch_target`` : dernière version publiée aussi."""
+        tool = str(getattr(self._config, "tool_nvencc", "") or "")
+        self._executor.submit(self._refresh_job, tool, fetch_target)
+
+    def _refresh_job(self, tool: str, fetch_target: bool) -> None:
+        supported = self._state.supported
+        described = nvencc_install.describe(tool, bundled_tools_dir())
+        self._set_state(
+            tool=described,
+            nvidia=nvencc_install.nvidia_present() if supported else False,
+            method=nvencc_install.plan_method() if supported else "",
+        )
+        if fetch_target and supported:
+            self._set_state(target=nvencc_install.latest_version())
+
+    def install(self) -> bool:
+        """Lance l'installation ; faux si rien n'a démarré (opération déjà en cours, version inconnue)."""
+        return self._start("install")
+
+    def update(self) -> bool:
+        return self._start("update")
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def _start(self, op: str) -> bool:
+        if self._state.busy:
+            return False
+        self._cancel.clear()
+        self._set_state(busy=op, progress=0, message="")
+        self._executor.submit(self._guarded_job, self._install_job, op)
+        return True
+
+    def _guarded_job(self, job, *args: object) -> None:
+        """Tâche de mutation : « occupé » toujours levé et ``mutation_finished`` toujours émis, même sur une
+        exception imprévue (suppression d'un fichier refusée, contrôle en échec)."""
+        try:
+            job(*args)
+        except Exception as exc:  # noqa: BLE001 — l'état « occupé » doit toujours être levé
+            self._finish(translate_text("{label} : échec ({reason}).", label=translate_text(self.label),
+                                        reason=str(exc) or exc.__class__.__name__), level="ERROR")
+        finally:
+            if self._state.busy:
+                self._set_state(busy="", progress=-1)
+            self.mutation_finished.emit()
+
+    def _progress(self, done: int, total: int) -> None:
+        percent = int(done * 100 / total) if total > 0 else -1
+        if percent != self._state.progress:
+            self._set_state(progress=percent)
+
+    def _log(self, level: str, message: str) -> None:
+        self.log_message.emit(level, message)
+
+    def _install_job(self, op: str) -> None:
+        label = translate_text(self.label)
+        # Mise à jour : même méthode que l'installation existante (dossier utilisateur, Windows compris).
+        method = nvencc_install.METHOD_USER if op == "update" and self._state.managed else None
+        try:
+            installed = nvencc_install.install(
+                method, progress=self._progress, cancel=self._cancel, log=self._log, interactive=False,
+            )
+        except nvencc_install.NvenccCancelled:
+            self._finish(translate_text("Installation annulée."), level="WARN")
+            return
+        except Exception as exc:  # noqa: BLE001 — l'état « occupé » doit toujours être levé
+            self._finish(translate_text("{label} : échec ({reason}).", label=label, reason=str(exc)), level="ERROR")
+            return
+        done = "mise à jour" if op == "update" else "installée"
+        self._finish(translate_text(
+            "{label} {done} : {path}.", label=label, done=translate_text(done), path=str(installed),
+        ), level="OK")
+
+    def remove(self) -> bool:
+        """Lance la suppression de la copie utilisateur ; faux si rien n'a démarré."""
+        if self._state.busy or not self._state.managed:
+            return False
+        self._set_state(busy="remove", progress=-1, message="")
+        self._executor.submit(self._guarded_job, self._remove_job)
+        return True
+
+    def _remove_job(self) -> None:
+        label = translate_text(self.label)
+        if nvencc_install.remove_user():
+            self._finish(translate_text("{label} supprimée.", label=label), level="OK")
+        else:
+            self._finish(translate_text(
+                "{label} : suppression impossible, fichiers encore utilisés (encodage en cours ?).", label=label,
+            ), level="WARN")
+
+    def _finish(self, message: str, level: str) -> None:
+        self._set_state(busy="", progress=-1, message=message)
+        self.log_message.emit(level, message)
+        self.tool_changed.emit()
+
+    def shutdown(self) -> None:
+        self._cancel.set()
+        self._executor.shutdown(wait=False, cancel_futures=True)

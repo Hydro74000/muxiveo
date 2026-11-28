@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import configparser
 import sys
 
 from PySide6.QtCore import QCoreApplication
@@ -9,6 +10,7 @@ from PySide6.QtCore import QCoreApplication
 from core.config import AppConfig
 from core.version import APP_NAME
 from core.runner import ToolNotFoundError
+from core.service.errors import ApiError
 
 from cli.constants import EXIT_TOOL, EXIT_WORKFLOW
 from cli.errors import CliError
@@ -48,16 +50,33 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     logger = Logger(fmt=args.log_format)
     try:
-        config = AppConfig()
+        try:
+            config = AppConfig()
+        except (configparser.Error, UnicodeError) as exc:
+            # Entrées de l'API sans autorisation (call, serve) : config.ini illisible rendu sans son contenu, qui
+            # peut contenir un secret ; commandes historiques et autorisées : diagnostic d'origine.
+            if args.command in ("call", "serve") and not getattr(args, "allow_privileged", False):
+                from core.config import config_syntax_message
+
+                raise CliError(config_syntax_message(exc), EXIT_WORKFLOW) from None
+            raise
         for warning in getattr(config, "load_warnings", []):
             logger.emit("warning", warning)
+        persist_migrations = getattr(config, "persist_load_migrations", None)
+        for notice in persist_migrations() if callable(persist_migrations) else []:
+            logger.emit("info", notice)
         return int(args.func(args, config, logger))
     except ToolNotFoundError as exc:
         logger.emit("error", str(exc))
         return EXIT_TOOL
     except CliError as exc:
-        logger.emit("error", str(exc))
+        if not exc.logged:
+            logger.emit("error", str(exc))
         return exc.exit_code
+    except ApiError as exc:
+        from cli.service_adapter import render_api_error
+
+        return render_api_error(logger, exc)
     except KeyboardInterrupt:
         logger.emit("error", "Interrompu.")
         return EXIT_WORKFLOW

@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+import threading
 import sys
 import shutil
 from functools import lru_cache
@@ -33,7 +34,8 @@ from pathlib import Path
 
 from core.bluray import append_ffmpeg_input_args
 from core.workflows.encode.catalog import hdr_capabilities
-from core.subprocess_utils import subprocess_text_kwargs
+from core.subprocess_utils import run_detection, subprocess_text_kwargs
+from core.workflows.common.ffmpeg_runtime import matroska_output_args
 from core.workflows.encode.models import (
     VideoCropSettings,
     VideoEncodeSettings,
@@ -191,11 +193,12 @@ _CHECK_HW_HEADER_RE = re.compile(r"^\s*(?:avaliable|available)\s+codec\(s\)\s*:?
 _FEATURES_CODEC_RE = re.compile(r"^\s*Codec\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
-def _run_nvencc_probe(nvencc_bin: str, option: str) -> str | None:
-    """Exécute une sonde NVEncC ; None si l'outil ou le GPU/pilote NVIDIA est inutilisable."""
+def _run_nvencc_probe(nvencc_bin: str, option: str, cancel_event: threading.Event | None = None) -> str | None:
+    """Exécute une sonde NVEncC ; None si l'outil ou le GPU/pilote NVIDIA est inutilisable (annulation : remonte)."""
     try:
-        proc = subprocess.run(
+        proc = run_detection(
             [nvencc_bin, option],
+            cancel_event=cancel_event,
             capture_output=True,
             check=False,
             timeout=15,
@@ -239,7 +242,8 @@ def _parse_supported_codecs(output: str) -> set[str]:
     return supported
 
 
-def detect_nvencc_available(nvencc_bin: str | None) -> tuple[bool, set[str]]:
+def detect_nvencc_available(nvencc_bin: str | None,
+                            cancel_event: threading.Event | None = None) -> tuple[bool, set[str]]:
     """
     Détecte si NVEncC est utilisable et liste les codecs supportés par le GPU.
 
@@ -258,7 +262,7 @@ def detect_nvencc_available(nvencc_bin: str | None) -> tuple[bool, set[str]]:
         return False, set()
     supported: set[str] = set()
     for option in ("--check-hw", "--check-features"):
-        output = _run_nvencc_probe(nvencc_bin, option)
+        output = _run_nvencc_probe(nvencc_bin, option, cancel_event)
         if output is None:
             # Échec d'exécution (binaire absent, pas de GPU) : inutile d'insister.
             return False, set()
@@ -342,8 +346,8 @@ def build_decode_pipe_cmd(
 
 
 def nvencc_requires_ffmpeg_filter_pipe(video: VideoEncodeSettings) -> bool:
-    """True when NVEncC must read a y4m pipe (FFmpeg prefilters or RIFE interpolation)."""
-    return nvencc_requires_ffmpeg_prefilter(video) or video.interpolates()
+    """True when NVEncC must read a y4m pipe (FFmpeg prefilters or muxiveo-rife: interpolation, Restauration)."""
+    return nvencc_requires_ffmpeg_prefilter(video) or video.uses_engine()
 
 
 def nvencc_requires_ffmpeg_prefilter(video: VideoEncodeSettings) -> bool:
@@ -977,7 +981,7 @@ def build_nvencc_command(
 
     cmd: list[str] = [str(nvencc_bin), "-c", codec_flag]
     if input_path is None:
-        if video.fel_context is not None and not video.interpolates():
+        if video.fel_context is not None and not video.uses_engine():
             # Le NUT conserve les PTS du producteur FEL, même en cadence variable.
             # Analyse d'entrée courte : le NUT décrit son flux, et l'analyse par défaut (5 s)
             # accumule ~100 images brutes UHD avant la première image encodée (7 à 10 s perdues).
@@ -1055,7 +1059,8 @@ def build_nvencc_command(
         else:
             compatible.extend(item)
     extra_args = compatible
-    if getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False):
+    if getattr(video, "copy_dv", False) or getattr(video, "copy_hdr10plus", False) \
+            or getattr(video, "generate_hdr10plus", False):
         kept = strip_nvencc_latency_args(strip_nvencc_parallel_args(extra_args))
         removed.extend(_tokens_not_kept(extra_args, kept))
         extra_args = kept
@@ -1152,6 +1157,7 @@ def build_remux_cmd(
     cmd.extend(["-c", "copy"])
     if extra_args:
         cmd.extend(extra_args)
+    cmd.extend(matroska_output_args(ffmpeg_bin, output))
     cmd.append(str(output))
     return cmd
 

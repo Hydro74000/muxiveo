@@ -64,19 +64,25 @@ from typing import Any, Iterable
 from core.file_types import ACCEPTED_EXTENSIONS, build_desktop_mime_type_string
 from core.github_release import (
     github_release_asset,
-    published_checksum,
     release_asset,
     verify_download,
-    verify_sha256,
 )
-from core.python_requirements import read_requirements, unsatisfied_requirements
+from core.python_requirements import (
+    BUILD_REQUIREMENTS_FILE,
+    read_requirements,
+    rejection_lines,
+    unsatisfied_requirements,
+)
 from core.tool_manifest import (
     LOCAL_ARCHIVE,
+    MANIFEST_NAME,
     PREEXISTING,
     RECORDED_ONLY,
     VERIFIED_GITHUB_DIGEST,
-    VERIFIED_PUBLISHED_CHECKSUM,
     ToolManifest,
+    python_inventory,
+    ffmpeg_build_details,
+    is_master_build,
 )
 from core.version import (
     APP_APPSTREAM_ID,
@@ -103,10 +109,10 @@ _WIN_PY_VER   = "3.11.9"
 _WIN_PY_URL   = f"https://www.python.org/ftp/python/{_WIN_PY_VER}/python-{_WIN_PY_VER}-amd64.exe"
 # Chemin de python.exe à l'intérieur du préfixe Wine
 _WIN_PY_EXE   = _WINE_PREFIX / "drive_c" / "Python311" / "python.exe"
-# Version PySide6 figée pour le build cross Wine.
-# Un override ponctuel reste possible via l'environnement si besoin de tester
-# une autre release sans modifier le dépôt.
-_WIN_PYSIDE6_VER = os.environ.get("MUXIVEO_WINE_PYSIDE6_VERSION", "6.10.2").strip() or "6.10.2"
+# PySide6 du build croisé Wine : contrainte de requirements.txt, comme les autres builds (décision DE, aucun
+# verrouillage). Runtime Qt + ICU vérifié sous Wine par _verify_wine_pyside6_runtime ; une version précise reste
+# imposable ponctuellement par l'environnement (essai d'une release) sans modifier le dépôt.
+_WIN_PYSIDE6_VER = os.environ.get("MUXIVEO_WINE_PYSIDE6_VERSION", "").strip()
 # Runtime ICU Windows utilisé pour satisfaire les dépendances Qt sous Wine.
 _WIN_ICU_NUGET_VERSION = os.environ.get("MUXIVEO_WINE_ICU_VERSION", "72.1.0.3").strip() or "72.1.0.3"
 _WIN_ICU_NUGET_URL = (
@@ -667,16 +673,26 @@ def _copy_final_file_if_requested(src: Path, dest: str | None, version_tag: str 
 
 def _ensure_pyinstaller() -> None:
     requirements = read_requirements()
-    unsatisfied = {requirement.distribution for requirement, _ in unsatisfied_requirements(requirements)}
+    rejected = unsatisfied_requirements(requirements)
+    unsatisfied = {requirement.distribution for requirement, _ in rejected}
     missing: list[str] = []
-    if importlib.util.find_spec("PyInstaller") is None:
-        missing.append("pyinstaller")
+    # Outils de build : requirements-build.txt (mêmes règles que requirements.txt, aucune version figée) ;
+    # PyInstaller non importable : toujours réinstallé.
+    build_requirements = read_requirements(BUILD_REQUIREMENTS_FILE)
+    build_rejected = unsatisfied_requirements(build_requirements)
+    build_unsatisfied = {requirement.distribution for requirement, _ in build_rejected}
+    for requirement in build_requirements:
+        absent = requirement.distribution.lower() == "pyinstaller" and importlib.util.find_spec("PyInstaller") is None
+        if requirement.distribution in build_unsatisfied or absent:
+            missing.append(requirement.spec)
     for requirement in requirements:
         if requirement.distribution in unsatisfied or importlib.util.find_spec(requirement.module) is None:
             missing.append(requirement.spec)
     if not missing:
         _ok("Dépendances de packaging Python disponibles")
         return
+    for line in rejection_lines([*build_rejected, *rejected]):
+        _info(line)
     _info(f"Installation des dépendances absentes ou incompatibles : {', '.join(missing)}")
     _run([sys.executable, "-m", "pip", "install", *missing])
 
@@ -1378,10 +1394,6 @@ def _build_pyinstaller(onefile: bool) -> Path:
         "--hidden-import", "PySide6.QtSvg",
         "--hidden-import", "PySide6.QtMultimedia",
         "--hidden-import", "pymediainfo",
-        # Collecte ciblée PySide6 : évite le scan des scripts de déploiement
-        # (PySide6.scripts.deploy_lib) qui déclenche des warnings inutiles.
-        "--collect-binaries", "PySide6",
-        "--collect-data", "PySide6",
         "--collect-all", "pymediainfo",
         "--collect-data", "certifi",
         # Modules du projet
@@ -1392,6 +1404,12 @@ def _build_pyinstaller(onefile: bool) -> Path:
         # Exclusions
         *[arg for mod in EXCLUDED_MODULES for arg in ("--exclude-module", mod)],
     ]
+
+    if OS != "Darwin":
+        cmd += ["--collect-binaries", "PySide6", "--collect-data", "PySide6"]
+    # Sur macOS, les hooks Qt des modules importés collectent le runtime requis.
+    # Collecter tout PySide6 ajoute les outils Qt (.app) et objets de compilation
+    # (.o) : liens de bundles cassés et code non signé empêchent alors codesign.
 
     if OS == "Windows":
         _ensure_windows_runtime_dlls_available()
@@ -2647,12 +2665,39 @@ def _setup_wine_vcruntime() -> None:
     _ok("vcrun2019 installé")
 
 
+def _windows_bundle_inventory(bundle_dir: Path) -> list[dict[str, str]]:
+    """Inventaire Python d'un bundle Windows réutilisé (``--skip-wine``) : manifeste existant, sinon préfixe Wine ;
+    jamais l'interpréteur Linux du packaging (inventaire faux)."""
+    for manifest in (bundle_dir / "tools" / MANIFEST_NAME, bundle_dir / MANIFEST_NAME):
+        try:
+            python = json.loads(manifest.read_text(encoding="utf-8")).get("python")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(python, list) and python:
+            return python
+    if _WIN_PY_EXE.is_file():
+        return python_inventory(["wine", str(_WIN_PY_EXE)], env=_wine_env("-all"))
+    raise SystemExit("--skip-wine : inventaire Python du bundle Windows introuvable (ni manifeste ni préfixe Wine).")
+
+
+def _wine_python_specs() -> list[str]:
+    """Dépendances du préfixe Wine : requirements-build.txt et requirements.txt (Python 3.11 du préfixe), PySide6
+    compris ; ``MUXIVEO_WINE_PYSIDE6_VERSION`` impose une version précise (essai ponctuel)."""
+    runtime = [f"PySide6=={_WIN_PYSIDE6_VER}" if _WIN_PYSIDE6_VER and r.distribution == "PySide6" else r.spec
+               for r in read_requirements(python_version=(3, 11))]
+    build = [r.spec for r in read_requirements(BUILD_REQUIREMENTS_FILE, python_version=(3, 11))]
+    return [*build, *runtime]
+
+
 def _ensure_wine_deps() -> None:
-    """Installe PyInstaller + dépendances Python dans le préfixe Wine."""
-    _info(f"Installation des dépendances Python dans Wine (PySide6=={_WIN_PYSIDE6_VER})…")
-    _wine_pip("pyinstaller", f"PySide6=={_WIN_PYSIDE6_VER}", "pymediainfo>=6.1.0", "numpy>=1.24", "certifi")
+    """Installe PyInstaller + dépendances Python dans le préfixe Wine ; inventaire du préfixe au manifeste."""
+    specs = _wine_python_specs()
+    _info(f"Installation des dépendances Python dans Wine ({', '.join(specs)})…")
+    _wine_pip(*specs)
     _ensure_wine_qt_icu_runtime()
     _verify_wine_pyside6_runtime()
+    # Build croisé : inventaire des distributions du préfixe Wine (et non de l'interpréteur Linux du packaging).
+    TOOL_MANIFEST.python = python_inventory(["wine", str(_WIN_PY_EXE)], env=_wine_env("-all"))
     _ok("Dépendances Python Windows installées")
 
 
@@ -2818,32 +2863,57 @@ def _mediainfo_latest_windows_version() -> str:
     return versions[0]
 
 
-_GYAN_FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+def _windows_tool_launcher() -> tuple[tuple[str, ...], dict[str, str] | None]:
+    """Exécution d'un outil Windows embarqué : directe sous Windows, via Wine pour le build croisé."""
+    if os.name == "nt":
+        return (), None
+    if shutil.which("wine"):
+        return ("wine",), _wine_env("-all")
+    return (), None
+
+
+def _windows_ffmpeg_details(tools_dir: Path) -> dict[str, str]:
+    """Build réelle de ffmpeg.exe / ffprobe.exe embarqués (« inconnue » si non exécutables)."""
+    launcher, env = _windows_tool_launcher()
+    details = ffmpeg_build_details(tools_dir / "ffmpeg.exe", launcher=launcher, env=env, timeout=180)
+    details["ffprobe_build"] = ffmpeg_build_details(
+        tools_dir / "ffprobe.exe", launcher=launcher, env=env, timeout=180,
+    )["build"]
+    return details
 
 
 def _dl_windows_ffmpeg(tools_dir: Path) -> None:
+    """FFmpeg master de FFmpeg-Builds, comme la CI : aucune autre source acceptée.
+
+    Binaires déjà présents (dossier réutilisé) : conservés seulement s'ils sont une
+    build master vérifiable ; sinon refus explicite (les supprimer pour retélécharger).
+    """
     binaries = [tools_dir / "ffmpeg.exe", tools_dir / "ffprobe.exe"]
     if all(path.is_file() for path in binaries):
-        _ok("ffmpeg.exe et ffprobe.exe déjà présents dans tools/")
-        TOOL_MANIFEST.add("ffmpeg", version="?", source=str(tools_dir), verification=PREEXISTING, files=binaries)
+        details = _windows_ffmpeg_details(tools_dir)
+        if not (is_master_build(details["build"]) and is_master_build(details["ffprobe_build"])):
+            raise RuntimeError(
+                f"ffmpeg.exe / ffprobe.exe déjà présents dans {tools_dir} mais pas en build master vérifiable "
+                f"(ffmpeg {details['build']}, ffprobe {details['ffprobe_build']}) : supprimez-les pour "
+                "télécharger la build master de FFmpeg-Builds."
+            )
+        _ok(f"ffmpeg.exe et ffprobe.exe déjà présents dans tools/ (build {details['build']})")
+        TOOL_MANIFEST.add(
+            "ffmpeg", version=details["build"], source=str(tools_dir), verification=PREEXISTING,
+            files=binaries, details=details,
+        )
         return
-    _step("Téléchargement FFmpeg + FFprobe Windows (BtbN master GPL static)")
+    _step("Téléchargement FFmpeg + FFprobe Windows (FFmpeg-Builds master GPL static)")
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / "ffmpeg.zip"
+        # Release roulante « latest » : SHA-256 publié par l'API GitHub. Aucun repli
+        # (autre build = autre comportement que celui testé en CI) : échec explicite.
         try:
-            # Release roulante « latest » : SHA-256 publié par l'API GitHub.
-            asset = github_release_asset("BtbN/FFmpeg-Builds", "latest", "ffmpeg-master-latest-win64-gpl.zip")
+            asset = github_release_asset("FFmpeg-Builds/FFmpeg-Builds", "latest", "ffmpeg-master-latest-win64-gpl.zip")
             _download_file(asset.url, archive, timeout=180)
-            version, url, verification = f"{asset.repo}@{asset.tag}", asset.url, VERIFIED_GITHUB_DIGEST
         except (OSError, urllib.error.URLError) as exc:
-            # Repli réseau uniquement ; l'archive Gyan est vérifiée par sa somme publiée.
-            _warn(f"Échec BtbN ({exc}), tentative fallback Gyan...")
-            url = _GYAN_FFMPEG_URL
-            _download_file(url, archive, timeout=180)
-            verify_sha256(archive, published_checksum(url + ".sha256"), Path(url).name)
-            version, verification = "gyan.dev release-essentials", VERIFIED_PUBLISHED_CHECKSUM
-        else:
-            verify_download(asset, archive)
+            raise RuntimeError(f"FFmpeg master (FFmpeg-Builds) indisponible : {exc}") from exc
+        verify_download(asset, archive)
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 base_name = Path(name).name.lower()
@@ -2851,10 +2921,15 @@ def _dl_windows_ffmpeg(tools_dir: Path) -> None:
                     data = zf.read(name)
                     dest = tools_dir / Path(name).name
                     dest.write_bytes(data)
+        details = _windows_ffmpeg_details(tools_dir)
+        details["release"] = f"{asset.repo}@{asset.tag}"
+        if asset.updated_at:
+            details["asset_updated_at"] = asset.updated_at
         TOOL_MANIFEST.add(
-            "ffmpeg", version=version, source=url, verification=verification, archive=archive, files=binaries,
+            "ffmpeg", version=details["build"], source=asset.url, verification=VERIFIED_GITHUB_DIGEST,
+            archive=archive, files=binaries, details=details,
         )
-    _ok("ffmpeg.exe et ffprobe.exe installés dans tools/")
+    _ok(f"ffmpeg.exe et ffprobe.exe installés dans tools/ (build {details['build']})")
 
 
 def _dl_windows_mediainfo(tools_dir: Path) -> None:
@@ -3025,26 +3100,44 @@ def _dl_windows_nvencc(tools_dir: Path) -> None:
     _ok("NVEncC64.exe et dépendances installés dans tools/")
 
 
-def bundle_windows_licenses(bundle_dir: Path) -> None:
-    """Copie LICENSE, NOTICE, SOURCES.md et le dossier LICENSES/ dans le bundle Windows."""
+def _bundle_license_files(dest: Path, *, txt_copies: bool) -> None:
+    """Copie LICENSE, NOTICE, SOURCES.md et le dossier LICENSES/ dans ``dest`` (``txt_copies`` : doublons
+    ``.txt`` lisibles sous Windows)."""
     for fname in ("LICENSE", "NOTICE", "SOURCES.md"):
         src = ROOT / fname
         if src.is_file():
-            shutil.copy2(src, bundle_dir / fname)
-            if not fname.endswith(".txt") and not fname.endswith(".md"):
-                shutil.copy2(src, bundle_dir / f"{fname}.txt")
+            shutil.copy2(src, dest / fname)
+            if txt_copies and not fname.endswith(".txt") and not fname.endswith(".md"):
+                shutil.copy2(src, dest / f"{fname}.txt")
 
     licenses_src = ROOT / "LICENSES"
     if licenses_src.is_dir():
-        licenses_dest = bundle_dir / "LICENSES"
+        licenses_dest = dest / "LICENSES"
         if licenses_dest.exists():
             shutil.rmtree(licenses_dest)
         shutil.copytree(licenses_src, licenses_dest)
-    _ok(f"Fichiers de licence embarqués dans {bundle_dir}")
+    _ok(f"Fichiers de licence embarqués dans {dest}")
 
 
-def bundle_windows_tools(bundle_dir: Path) -> Path:
-    """Télécharge et embarque tous les outils externes pour Windows dans bundle_dir/tools."""
+def bundle_windows_licenses(bundle_dir: Path) -> None:
+    """Copie LICENSE, NOTICE, SOURCES.md et le dossier LICENSES/ dans le bundle Windows."""
+    _bundle_license_files(bundle_dir, txt_copies=True)
+
+
+def bundle_macos_licenses(app_path: Path) -> None:
+    """Copie LICENSE, NOTICE, SOURCES.md et LICENSES/ dans ``Contents/Resources`` du bundle macOS (avant la
+    signature : un ajout ensuite invaliderait le sceau)."""
+    resources = app_path / "Contents" / "Resources"
+    resources.mkdir(parents=True, exist_ok=True)
+    _bundle_license_files(resources, txt_copies=False)
+
+
+def bundle_windows_tools(bundle_dir: Path, nvencc: bool = True) -> Path:
+    """Télécharge et embarque les outils externes pour Windows dans bundle_dir/tools.
+
+    ``nvencc=False`` : variante AllInc NoVidia (marqueur ``_ALLINC_NOVIDIA``) ; NVEncC est installé au premier
+    lancement si un GPU NVIDIA est détecté. :func:`add_windows_nvencc` le complète ensuite pour l'AllInc.
+    """
     _title("Embarquement des outils externes Windows (--allinc)")
     tools_dir = bundle_dir / "tools"
     tools_dir.mkdir(parents=True, exist_ok=True)
@@ -3054,7 +3147,8 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
     _dl_windows_mediainfo(tools_dir)
     _dl_windows_dovi_tool(tools_dir)
     _dl_windows_hdr10plus_tool(tools_dir)
-    _dl_windows_nvencc(tools_dir)
+    if nvencc:
+        _dl_windows_nvencc(tools_dir)
     _dl_windows_muxiveo_rife(tools_dir)
     bundle_windows_licenses(bundle_dir)
     manifest = TOOL_MANIFEST.write(tools_dir)
@@ -3062,8 +3156,59 @@ def bundle_windows_tools(bundle_dir: Path) -> Path:
 
     # Pose le marqueur _ALLINC à côté de l'exécutable
     (bundle_dir / "_ALLINC").touch()
-    _ok(f"Tous les outils Windows embarqués dans {tools_dir} (mode AllInc activé)")
+    novidia_marker = bundle_dir / "_ALLINC_NOVIDIA"
+    if nvencc:
+        novidia_marker.unlink(missing_ok=True)
+        _ok(f"Tous les outils Windows embarqués dans {tools_dir} (mode AllInc activé)")
+    else:
+        novidia_marker.touch()
+        _ok(f"Outils Windows embarqués sans NVEncC dans {tools_dir} (mode AllInc NoVidia activé)")
     return tools_dir
+
+
+def add_windows_nvencc(bundle_dir: Path) -> None:
+    """Complète un bundle AllInc NoVidia avec NVEncC : bundle AllInc (manifeste réécrit, marqueur retiré)."""
+    tools_dir = bundle_dir / "tools"
+    _dl_windows_nvencc(tools_dir)
+    TOOL_MANIFEST.write(tools_dir)
+    (bundle_dir / "_ALLINC_NOVIDIA").unlink(missing_ok=True)
+    _ok("NVEncC ajouté au bundle AllInc")
+
+
+def _build_windows_allinc_installers(
+    bundle_dir: Path,
+    dest: str | None,
+    version_tag: str | None,
+    *,
+    allinc: bool,
+    allinc_novidia: bool,
+) -> tuple[Path | None, Path | None]:
+    """Installeurs AllInc NoVidia puis AllInc sur le même bundle (outils téléchargés une fois).
+
+    Retourne ``(installeur AllInc, installeur AllInc NoVidia)``, ``None`` pour une variante non demandée.
+    """
+    final_allinc: Path | None = None
+    final_novidia: Path | None = None
+    if allinc_novidia:
+        bundle_windows_tools(bundle_dir, nvencc=False)
+        novidia_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
+        final_novidia = _copy_final_file_if_requested(novidia_installer, dest, version_tag=version_tag)
+        if allinc:
+            add_windows_nvencc(bundle_dir)
+    elif allinc:
+        bundle_windows_tools(bundle_dir)
+    if allinc:
+        allinc_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
+        final_allinc = _copy_final_file_if_requested(allinc_installer, dest, version_tag=version_tag)
+    return final_allinc, final_novidia
+
+
+def _ensure_full_allinc_bundle(bundle_dir: Path) -> None:
+    """Bundle AllInc complet (NVEncC compris) pour l'archive portable, seule variante publiée en ZIP."""
+    if not (bundle_dir / "_ALLINC").exists():
+        bundle_windows_tools(bundle_dir)
+    elif (bundle_dir / "_ALLINC_NOVIDIA").exists():
+        add_windows_nvencc(bundle_dir)
 
 
 def _build_windows_portable_zip(bundle_dir: Path, version_tag: str | None = None) -> Path:
@@ -3189,7 +3334,13 @@ def _build_nsis_installer(bundle_dir: Path, version_tag: str | None = None) -> P
     _title("Étape NSIS — Installateur Windows")
 
     is_allinc = (bundle_dir / "_ALLINC").exists()
-    base_name = f"{APP_NAME}-Setup-AllInc.exe" if is_allinc else f"{APP_NAME}-Setup.exe"
+    if is_allinc and (bundle_dir / "_ALLINC_NOVIDIA").exists():
+        # « _ » : jamais capté par le motif AllInc des installations existantes (core/update_install.py).
+        base_name = f"{APP_NAME}-Setup-AllInc_NoVidia.exe"
+    elif is_allinc:
+        base_name = f"{APP_NAME}-Setup-AllInc.exe"
+    else:
+        base_name = f"{APP_NAME}-Setup.exe"
     output = _versioned_output_path(ROOT / base_name, version_tag)
     nsi    = ROOT / "Muxiveo.nsi"
     win_icon = _resolve_windows_icon_ico()
@@ -3339,6 +3490,20 @@ def _patch_macos_info_plist(app_path: Path, version_tag: str | None) -> None:
     _ok(f"Info.plist mis à jour (version {version}, min macOS {_MACOS_MIN_VERSION})")
 
 
+def _sign_macos_bundle(app_path: Path) -> None:
+    """Scelle le bundle final après les renommages, l'icône et Info.plist.
+
+    PyInstaller signe déjà les binaires embarqués, mais les modifications du
+    bundle après son exécution invalident sa signature externe. Une signature
+    ad hoc conserve la distribution sans certificat Developer ID ; elle ne
+    remplace pas la notarisation Apple.
+    """
+    _title("Signature du bundle macOS final")
+    _run(["codesign", "--force", "--sign", "-", str(app_path)])
+    _run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app_path)])
+    _ok("Signature macOS vérifiée")
+
+
 def _build_macos_dmg(app_path: Path, version_tag: str | None) -> Path:
     """Crée un .dmg compressé depuis Muxiveo.app."""
     _title("Étape 3 — DMG")
@@ -3432,6 +3597,12 @@ def build_macos(dmg: bool, dest: str | None = None, version_tag: str | None = No
         shutil.copy2(icns_path, resources / "icon.icns")
 
     _patch_macos_info_plist(app_final, version_tag=version_tag)
+    # Licences et inventaire Python du build (tools-manifest.json) avant la signature : un ajout ensuite
+    # l'invaliderait.
+    bundle_macos_licenses(app_final)
+    resources = app_final / "Contents" / "Resources"
+    TOOL_MANIFEST.write(resources)
+    _sign_macos_bundle(app_final)
     _verify_macos_bundle(app_final)
 
     if dmg:
@@ -3455,6 +3626,7 @@ def build_windows(
     version_tag: str | None = None,
     allinc: bool = False,
     portable: bool = False,
+    allinc_novidia: bool = False,
 ) -> None:
     """Orchestre le build Windows cross depuis Linux."""
     _title("Build Windows (Wine + PyInstaller + NSIS)")
@@ -3465,6 +3637,7 @@ def build_windows(
     if skip_wine and _WIN_BUNDLE.exists():
         _info(f"--skip-wine : bundle existant réutilisé → {_WIN_BUNDLE}")
         bundle_dir = _WIN_BUNDLE
+        TOOL_MANIFEST.python = _windows_bundle_inventory(bundle_dir)
     else:
         _setup_wine_python()
         _setup_wine_vcruntime()
@@ -3473,20 +3646,18 @@ def build_windows(
 
     bundle_windows_licenses(bundle_dir)
 
+    TOOL_MANIFEST.write(bundle_dir)  # inventaire Python de l'installeur standard (aucun outil embarqué)
     installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
     final_std = _copy_final_file_if_requested(installer, dest, version_tag=version_tag)
 
-    final_allinc = None
     final_portable = None
 
-    if allinc:
-        bundle_windows_tools(bundle_dir)
-        allinc_installer = _build_nsis_installer(bundle_dir, version_tag=version_tag)
-        final_allinc = _copy_final_file_if_requested(allinc_installer, dest, version_tag=version_tag)
+    final_allinc, final_novidia = _build_windows_allinc_installers(
+        bundle_dir, dest, version_tag, allinc=allinc, allinc_novidia=allinc_novidia,
+    )
 
     if portable or allinc:
-        if not (bundle_dir / "_ALLINC").exists():
-            bundle_windows_tools(bundle_dir)
+        _ensure_full_allinc_bundle(bundle_dir)
         portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=version_tag)
         if dest:
             final_portable = _copy_final_file_if_requested(portable_zip, dest, version_tag=version_tag)
@@ -3495,11 +3666,15 @@ def build_windows(
     _ok(f"Installateur Standard : {final_std}")
     if final_allinc:
         _ok(f"Installateur AllInc   : {final_allinc}")
+    if final_novidia:
+        _ok(f"Installateur NoVidia  : {final_novidia}")
     if final_portable:
         _ok(f"Archive Portable      : {final_portable}")
     msg = f"\n  Distribuer :\n    {final_std.name} (standard, outils téléchargés au 1er lancement)\n"
     if final_allinc:
         msg += f"    {final_allinc.name} (AllInc avec ffmpeg, mediainfo, dovi_tool, hdr10plus_tool, nvencc embarqués)\n"
+    if final_novidia:
+        msg += f"    {final_novidia.name} (AllInc sans NVEncC, installé au 1er lancement si GPU NVIDIA)\n"
     if final_portable:
         msg += f"    {final_portable.name} (archive portable sans installation)\n"
     print(msg)
@@ -3633,6 +3808,15 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--allinc-novidia",
+        action="store_true",
+        help=(
+            "Variante AllInc sans NVEncC (installé au premier lancement si un GPU NVIDIA est détecté). "
+            "Sur Windows : Muxiveo-Setup-AllInc_NoVidia-<version>.exe, cumulable avec --allinc. "
+            "Sur Linux : délègue à package_appimage.py --allinc --novidia."
+        ),
+    )
+    p.add_argument(
         "--portable",
         action="store_true",
         help="Sur Windows : produit une archive ZIP portable contenant l'application complète sans installation.",
@@ -3694,8 +3878,8 @@ if __name__ == "__main__":
         store_metadata = _load_msix_store_metadata(Path(args.store_config) if args.store_config else None)
 
         if args.exe:
-            if args.allinc:
-                bundle_windows_tools(bundle_dir)
+            if args.allinc or args.allinc_novidia:
+                bundle_windows_tools(bundle_dir, nvencc=args.allinc)
             if args.onefile or args.dest:
                 final_exe = _copy_final_file_if_requested(
                     exe_path,
@@ -3711,8 +3895,10 @@ if __name__ == "__main__":
                 _ok(f"Dossier    : {bundle_dir}")
                 _ok(f"Exécutable : {exe_path}")
         elif args.msix or args.msixupload:
-            if args.allinc:
-                bundle_windows_tools(bundle_dir)
+            if args.allinc or args.allinc_novidia:
+                bundle_windows_tools(bundle_dir, nvencc=args.allinc)
+            else:
+                TOOL_MANIFEST.write(bundle_dir)  # inventaire Python du paquet Store (aucun outil embarqué)
             package_path = _build_msix_package(
                 bundle_dir,
                 version_tag=args.version,
@@ -3726,20 +3912,18 @@ if __name__ == "__main__":
             _ok(f"Artefact Windows Store : {final_file}")
         else:
             _ensure_makensis()
+            TOOL_MANIFEST.write(bundle_dir)  # inventaire Python de l'installeur standard (aucun outil embarqué)
             installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
             final_std = _copy_final_file_if_requested(installer, args.dest, version_tag=args.version)
 
-            final_allinc = None
             final_portable = None
 
-            if args.allinc:
-                bundle_windows_tools(bundle_dir)
-                allinc_installer = _build_nsis_installer(bundle_dir, version_tag=args.version)
-                final_allinc = _copy_final_file_if_requested(allinc_installer, args.dest, version_tag=args.version)
+            final_allinc, final_novidia = _build_windows_allinc_installers(
+                bundle_dir, args.dest, args.version, allinc=args.allinc, allinc_novidia=args.allinc_novidia,
+            )
 
             if args.portable or args.allinc:
-                if not (bundle_dir / "_ALLINC").exists():
-                    bundle_windows_tools(bundle_dir)
+                _ensure_full_allinc_bundle(bundle_dir)
                 portable_zip = _build_windows_portable_zip(bundle_dir, version_tag=args.version)
                 if args.dest:
                     final_portable = _copy_final_file_if_requested(portable_zip, args.dest, version_tag=args.version)
@@ -3748,6 +3932,8 @@ if __name__ == "__main__":
             _ok(f"Installateur Standard : {final_std}")
             if final_allinc:
                 _ok(f"Installateur AllInc   : {final_allinc}")
+            if final_novidia:
+                _ok(f"Installateur NoVidia  : {final_novidia}")
             if final_portable:
                 _ok(f"Archive Portable      : {final_portable}")
     elif args.windows:
@@ -3761,14 +3947,20 @@ if __name__ == "__main__":
             version_tag=args.version,
             allinc=args.allinc,
             portable=args.portable,
+            allinc_novidia=args.allinc_novidia,
         )
-    elif args.allinc:
-        # Délègue à package_appimage.py --allinc
+    elif args.allinc or args.allinc_novidia:
+        # Délègue à package_appimage.py --allinc (--novidia : variante sans NVEncC)
         script = ROOT / "package_appimage.py"
         if not script.exists():
             print(f"  package_appimage.py introuvable : {script}", file=sys.stderr)
             sys.exit(1)
         argv = [sys.executable, str(script), "--allinc"]
+        if args.allinc and args.allinc_novidia:
+            print("  Linux : --allinc et --allinc-novidia produisent deux AppImages, lancer deux builds.", file=sys.stderr)
+            sys.exit(1)
+        if args.allinc_novidia:
+            argv.append("--novidia")
         if args.dest:
             argv += ["--dest", args.dest]
         if args.version:

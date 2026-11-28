@@ -25,8 +25,10 @@ from types import ModuleType
 
 from PySide6.QtCore import QSettings, QStandardPaths
 
-from core import plugins
+from core import ini_syntax, plugins
+from core.atomic_io import atomic_rewrite_text
 from core.lang_tags import Rfc5646LanguageTags
+from core.nvencc_install import user_binary as nvencc_user_binary
 from core.subprocess_utils import subprocess_text_kwargs
 from core.ui_language import system_ui_language
 from core.update_check import DEFAULT_UPDATE_CHANNEL, normalize_update_channel
@@ -39,6 +41,7 @@ from core.workflows.common.ffmpeg_runtime import (
     default_ffmpeg_thread_count as _default_ffmpeg_thread_count,
     normalize_ffmpeg_thread_count as _normalize_ffmpeg_thread_count,
     normalize_max_parallel_video_encodes as _normalize_max_parallel_video_encodes,
+    normalize_x265_frame_threads as _normalize_x265_frame_threads,
 )
 from core.workdir import (
     active_process_dirs,
@@ -47,6 +50,7 @@ from core.workdir import (
     ensure_work_dir as ensure_work_dir_path,
     prepare_process_work_dir,
 )
+from core.tool_versions import ToolVersionReport, tool_version_report
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +90,8 @@ def _resolve_ini_path() -> Path:
 
 _INI_PATH = _resolve_ini_path()
 _MISSING = object()
+#: Marqueur QSettings : migration unique de l'ancien défaut FFmpeg du backend de muxage vers Auto.
+_MUX_BACKEND_AUTO_MIGRATION_KEY = "matroska/mux_backend_default_auto"
 
 # Fichier QSettings Windows, distinct de config.ini. QSettings (format INI de
 # Qt) interprète « \ » comme caractère d'échappement : pointé sur config.ini
@@ -113,7 +119,7 @@ def _repair_corrupted_windows_ini_paths(path: Path) -> list[str]:
     if not _is_windows() or not path.exists():
         return []
     text = path.read_text(encoding="utf-8-sig")
-    lines = text.splitlines()
+    lines = ini_syntax.ini_lines(text)
     legacy = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=("#",))
     legacy.read_string(text)
     # Ces clés étaient écrites uniquement par QSettings, jamais par setup.py
@@ -153,7 +159,7 @@ def _repair_corrupted_windows_ini_paths(path: Path) -> list[str]:
                     continue
         kept.append(line)
     if removed:
-        path.write_text("\n".join(kept).rstrip() + "\n", encoding="utf-8")
+        _write_ini_text(path, kept)
     return removed
 
 _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
@@ -162,7 +168,6 @@ _WINDOWS_TOOL_FILENAMES: dict[str, tuple[str, ...]] = {
     "mediainfo": ("MediaInfo.exe", "mediainfo.exe"),
     "dovi_tool": ("dovi_tool.exe",),
     "hdr10plus_tool": ("hdr10plus_tool.exe",),
-    "eac3to": ("eac3to.exe",),
     "nvencc": ("NVEncC64.exe", "NVEncC.exe"),
     "muxiveo_rife": ("muxiveo-rife.exe",),
 }
@@ -180,15 +185,26 @@ AUDIO_BITRATE_STEPS: list[int] = [
     128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640,
 ]
 
-_REMOVED_INI_KEYS: dict[str, set[str]] = {
+# Clé historique → clés qui la remplacent : retirée seulement quand une écriture les fournit
+# toutes (sinon une écriture partielle de la section perdrait le réglage sans le migrer).
+_REMOVED_INI_KEYS: dict[str, dict[str, frozenset[str]]] = {
     "audio_encoding": {
-        "default_bitrate_per_channel_kbps",
-        "bitrate_step_per_channel_kbps",
+        "default_bitrate_per_channel_kbps": frozenset(),
+        "bitrate_step_per_channel_kbps": frozenset(),
     },
     "ui": {
-        "verbose_file_logging",
+        "verbose_file_logging": frozenset({"enable_file_logging", "file_logging_level"}),
     },
+    # Options retirées, lues par aucun workflow.
+    "tools": {"eac3to": frozenset()},
+    "hdr": {"dovi_profile": frozenset(), "dovi_compat_id": frozenset(), "display_peak_nits": frozenset()},
+    "encoding": {"ram_buffer_enabled": frozenset()},
 }
+
+# Réglages de l'interface (QSettings) des options retirées : effacés à l'enregistrement.
+_REMOVED_SETTINGS_KEYS: tuple[str, ...] = (
+    "tools/eac3to", "hdr/dovi_profile", "hdr/dovi_compat_id", "encoding/ram_buffer_enabled",
+)
 
 
 def _load_ini() -> configparser.ConfigParser:
@@ -271,6 +287,11 @@ def _bundled_tools_dir() -> Path | None:
     return None
 
 
+def bundled_tools_dir() -> Path | None:
+    """Dossier des outils embarqués d'une distribution all-inclusive, ``None`` sinon."""
+    return _bundled_tools_dir()
+
+
 def _dedupe_paths(paths: list[Path]) -> list[Path]:
     seen: set[str] = set()
     unique: list[Path] = []
@@ -284,25 +305,7 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
 
 
 def _section_bounds(lines: list[str], section: str) -> tuple[int, int]:
-    start = -1
-    end = len(lines)
-    target = f"[{section.lower()}]"
-
-    for index, line in enumerate(lines):
-        if line.strip().lower() == target:
-            start = index
-            break
-
-    if start == -1:
-        return -1, len(lines)
-
-    for index in range(start + 1, len(lines)):
-        stripped = lines[index].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            end = index
-            break
-
-    return start, end
+    return ini_syntax.section_bounds(lines, section)
 
 
 def _normalize_windows_backslashes(value: str) -> str:
@@ -334,20 +337,13 @@ def _sanitize_windows_ini_lines(lines: list[str]) -> list[str]:
     if not _is_windows():
         return lines
 
-    current_section = ""
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            current_section = stripped[1:-1].strip().lower()
+    for option in ini_syntax.scan(lines)[1]:
+        if option.section not in {"paths", "tools"} or option.multiline:
             continue
-        if current_section not in {"paths", "tools"}:
-            continue
-        if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
-            continue
-        lhs, rhs = stripped.split("=", 1)
-        normalized = _normalize_ini_value(current_section, rhs.strip())
-        if normalized != rhs.strip():
-            lines[index] = f"{lhs.strip()} = {normalized}"
+        normalized = _normalize_ini_value(option.section, option.value)
+        if normalized != option.value:
+            line = lines[option.start]
+            lines[option.start] = f"{line[:len(line) - len(line.lstrip())]}{option.key} = {normalized}"
     return lines
 
 
@@ -356,11 +352,11 @@ def _sanitize_windows_ini_file(path: Path) -> None:
         return
 
     original = path.read_text(encoding="utf-8-sig")
-    lines = original.splitlines()
+    lines = ini_syntax.ini_lines(original)
     sanitized_lines = _sanitize_windows_ini_lines(lines.copy())
     sanitized = "\n".join(sanitized_lines).rstrip() + "\n"
     if sanitized != original:
-        path.write_text(sanitized, encoding="utf-8")
+        _write_ini_text(path, sanitized_lines)
 
 
 def rerun_application_setup() -> None:
@@ -431,9 +427,13 @@ def restart_application() -> bool:
         if sys.platform != "win32":
             popen_kwargs["start_new_session"] = True
         if getattr(sys, "frozen", False):
+            # Relance de l'application elle-même (interpréteur ou exécutable figé), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.Popen([sys.executable], **popen_kwargs)
         else:
             launcher_path = Path(__file__).parent.parent / "launcher.py"
+            # Relance de l'application elle-même (interpréteur ou exécutable figé), sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             subprocess.Popen([sys.executable, str(launcher_path)], **popen_kwargs)
         return True
     except Exception:
@@ -447,35 +447,23 @@ def _upsert_ini_section(
     *,
     replace_blank_only: bool = False,
 ) -> list[str]:
-    start, end = _section_bounds(lines, section)
-
-    if start == -1:
+    if _section_bounds(lines, section)[0] == -1:
         if lines and lines[-1].strip():
             lines.append("")
-        lines.extend([f"[{section}]"])
-        start = len(lines) - 1
-        end = len(lines)
+        lines.append(f"[{section}]")
 
-    insert_at = end
     for key, value in values.items():
-        rendered = _normalize_ini_value(section, value)
-        updated = False
-        for index in range(start + 1, end):
-            stripped = lines[index].strip()
-            if not stripped or stripped.startswith(("#", ";")) or "=" not in stripped:
-                continue
-            lhs, rhs = stripped.split("=", 1)
-            if lhs.strip().lower() != key.lower():
-                continue
-            if (not replace_blank_only) or (not rhs.strip()):
-                lines[index] = f"{key} = {rendered}"
-            updated = True
-            break
-
-        if not updated:
-            lines.insert(insert_at, f"{key} = {rendered}")
-            insert_at += 1
-            end += 1
+        normalized = _normalize_ini_value(section, value)
+        reason = ini_syntax.unwritable_reason(normalized)
+        if reason is not None:
+            raise ConfigIniWriteRefused(f"{section}.{key} : valeur impossible à écrire dans config.ini ({reason}).")
+        option = ini_syntax.find_option(lines, section, key)
+        if option is None:
+            lines.insert(_section_bounds(lines, section)[1], ini_syntax.option_line(lines, section, key, normalized))
+            continue
+        if not replace_blank_only or (not option.value and not option.multiline):
+            # Valeur remplacée avec ses lignes de continuation (sinon orphelines), même indentation.
+            lines[option.start:option.end] = [ini_syntax.option_line(lines, section, key, normalized, option)]
 
     return _sanitize_windows_ini_lines(lines)
 
@@ -483,52 +471,121 @@ def _upsert_ini_section(
 def _remove_ini_keys(lines: list[str], removed: dict[str, set[str]]) -> list[str]:
     updated = lines
     for section, keys in removed.items():
-        start, end = _section_bounds(updated, section)
-        if start == -1:
-            continue
-        lowered_keys = {key.lower() for key in keys}
-        kept_lines: list[str] = []
-        for line in updated[start + 1:end]:
-            stripped = line.strip()
-            if stripped and not stripped.startswith(("#", ";")) and "=" in stripped:
-                lhs, _rhs = stripped.split("=", 1)
-                if lhs.strip().lower() in lowered_keys:
-                    continue
-            kept_lines.append(line)
-        updated = updated[:start + 1] + kept_lines + updated[end:]
+        updated = ini_syntax.remove_options(updated, section, keys)
     return _sanitize_windows_ini_lines(updated)
 
 
 
+class ConfigIniWriteRefused(OSError):
+    """Réécriture de config.ini refusée : le chargeur ne pourrait plus lire le résultat."""
+
+
+def _write_ini_text(path: Path, lines: list[str]) -> None:
+    """Écrit ``config.ini`` atomiquement (jamais lu à moitié par un autre processus), droits existants conservés.
+
+    Un fichier que le chargeur lisait n'est jamais remplacé par un contenu qu'il refuserait.
+    """
+    text = "\n".join(lines).rstrip() + "\n"
+    try:
+        original: str | None = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        original = None
+    except (OSError, UnicodeDecodeError):
+        original = ""       # illisible : rien à préserver
+    reason = ini_syntax.rewrite_refusal(original, text) if original != "" else None
+    if reason is not None:
+        raise ConfigIniWriteRefused(f"config.ini non réécrit : {reason} ({path}).")
+    atomic_rewrite_text(path, text)
+
+
 def _update_ini_tools_section(path: Path, tool_values: dict[str, str]) -> None:
-    """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite."""
+    """Ajoute les chemins détectés dans [tools] sans écraser une valeur explicite.
+
+    Un chemin que config.ini relirait autrement (« # » d'un nom de dossier) n'est pas écrit :
+    il reste utilisé pour la session, l'autodétection le retrouve au lancement suivant.
+    """
+    tool_values = {key: value for key, value in tool_values.items() if ini_syntax.unwritable_reason(value) is None}
     if not tool_values:
         return
 
     text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
-    lines = text.splitlines()
+    lines = ini_syntax.ini_lines(text)
     lines = _upsert_ini_section(lines, "tools", tool_values, replace_blank_only=True)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _write_ini_text(path, _purge_removed_keys(lines, {"tools": tool_values}))
+
+
+def _purge_removed_keys(lines: list[str], section_values: dict[str, dict[str, str]]) -> list[str]:
+    """Retire les clés historiques des sections écrites (``_REMOVED_INI_KEYS``), une clé remplacée
+    seulement quand toutes ses remplaçantes sont écrites."""
+    removed_keys: dict[str, set[str]] = {}
+    for section, values in section_values.items():
+        written = {key.lower() for key in values}
+        obsolete = {key for key, replacements in _REMOVED_INI_KEYS.get(section, {}).items() if replacements <= written}
+        if obsolete:
+            removed_keys[section] = obsolete
+    return _remove_ini_keys(lines, removed_keys) if removed_keys else lines
+
+
+def config_syntax_message(exc: Exception) -> str:
+    """Erreur de lecture de config.ini rendue sans son contenu (qui peut contenir un secret coupé) : nature et
+    numéros de ligne (syntaxe) ou position de l'octet (encodage) seulement."""
+    if isinstance(exc, UnicodeDecodeError):
+        return f"config.ini illisible : {type(exc).__name__} (octet {exc.start}, encodage {exc.encoding})."
+    lineno = getattr(exc, "lineno", None)
+    lines = sorted({line for line, _text in getattr(exc, "errors", ())} | ({lineno} if isinstance(lineno, int)
+                                                                         else set()))
+    where = f" (ligne {', '.join(map(str, lines))})" if lines else ""
+    return f"config.ini illisible : {type(exc).__name__}{where}."
 
 
 def write_ini_settings(section_values: dict[str, dict[str, str]]) -> None:
     """Écrit des valeurs explicites dans config.ini en conservant les commentaires."""
     text = _INI_PATH.read_text(encoding="utf-8-sig") if _INI_PATH.exists() else ""
-    lines = text.splitlines()
+    lines = ini_syntax.ini_lines(text)
 
     for section, values in section_values.items():
         lines = _upsert_ini_section(lines, section, values)
-    removed_keys = {
-        section: _REMOVED_INI_KEYS[section]
-        for section in section_values
-        if section in _REMOVED_INI_KEYS
-    }
-    if removed_keys:
-        lines = _remove_ini_keys(lines, removed_keys)
+    _write_ini_text(_INI_PATH, _purge_removed_keys(lines, section_values))
 
-    _INI_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _INI_PATH.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+def remove_ini_settings(section_keys: dict[str, set[str]]) -> None:
+    """Retire des clés de config.ini (commentaires conservés) : le réglage revient à QSettings, sinon au défaut."""
+    if not _INI_PATH.exists():
+        return
+    lines = ini_syntax.ini_lines(_INI_PATH.read_text(encoding="utf-8-sig"))
+    lines = _remove_ini_keys(lines, {section: {key.lower() for key in keys} for section, keys in section_keys.items()})
+    _write_ini_text(_INI_PATH, lines)
+
+
+def _purge_obsolete_ini_keys(path: Path) -> None:
+    """Options retirées sans remplaçante (``_REMOVED_INI_KEYS``) : lignes retirées de config.ini à
+    l'enregistrement, fichier réécrit seulement s'il en contient."""
+    obsolete = {
+        section: {key for key, replacements in entries.items() if not replacements}
+        for section, entries in _REMOVED_INI_KEYS.items()
+    }
+    try:
+        # Lecture du chargeur (stricte : doublons refusés) ; un fichier qu'il refuse n'est jamais réécrit.
+        parser = configparser.ConfigParser(inline_comment_prefixes=("#",), default_section="DEFAULT")
+        parser.read_string(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        return      # illisible : signalé au chargement, jamais réécrit ici
+    present = {
+        section: {key for key in keys if parser.has_option(section, key)}
+        for section, keys in obsolete.items() if parser.has_section(section)
+    }
+    present = {section: keys for section, keys in present.items() if keys}
+    if not present:
+        return
+    lines = ini_syntax.ini_lines(path.read_text(encoding="utf-8-sig"))
+    _write_ini_text(path, _remove_ini_keys(lines, present))
+
+
+def config_ini_path() -> Path:
+    """Fichier config.ini des surcharges explicites."""
+    return _INI_PATH
 
 
 def _windows_user_tools_dir() -> Path:
@@ -594,9 +651,6 @@ def _windows_default_tool_candidates(tool_name: str) -> list[Path]:
             for folder in ("MediaInfo", "MediaInfo CLI", "MediaInfoCLI"):
                 for exe_name in exe_names:
                     candidates.append(base_dir / folder / exe_name)
-        elif tool_name == "eac3to":
-            for exe_name in exe_names:
-                candidates.append(base_dir / "eac3to" / exe_name)
 
     winget_root = _windows_winget_root()
     if winget_root.exists():
@@ -690,6 +744,8 @@ class ToolVersionRegistry:
 
     def _probe(self, command: str) -> ToolVersionInfo:
         try:
+            # Outil configuré, argv fixe, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
             result = subprocess.run(
                 [command, "--version"],
                 capture_output=True,
@@ -903,9 +959,8 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "mediainfo", "attr": "tool_mediainfo", "kind": "tool", "label": "MediaInfo", "description": "Binaire MediaInfo utilisé pour enrichir l'inspection."},
             {"key": "dovi_tool", "attr": "tool_dovi_tool", "kind": "tool", "label": "dovi_tool", "description": "Outil Dolby Vision utilisé pour les workflows DoVi."},
             {"key": "hdr10plus_tool", "attr": "tool_hdr10plus", "kind": "tool", "label": "hdr10plus_tool", "description": "Outil HDR10+ utilisé pour les workflows HDR."},
-            {"key": "eac3to", "attr": "tool_eac3to", "kind": "tool", "label": "eac3to", "description": "Option facultative sous Windows pour la conversion audio avancée."},
             {"key": "nvencc", "attr": "tool_nvencc", "kind": "tool", "label": "NVEncC", "description": "Wrapper NVIDIA NVENC standalone (rigaya) — encodage avancé. Détecté uniquement si un GPU NVIDIA est présent."},
-            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Interpolation d'images (MVO-RIFE) : chemin utilisé seulement sans l'extension Interpolation (page Extensions), prioritaire."},
+            {"key": "muxiveo_rife", "attr": "tool_muxiveo_rife", "kind": "tool", "label": "muxiveo-rife", "description": "Moteur vidéo MVO (débruitage MVO-R2, interpolation MVO-RIFE) : chemin utilisé seulement sans l'extension (page Extensions), prioritaire."},
         ),
     },
     {
@@ -917,28 +972,24 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
                 "attr": "ffmpeg_threads",
                 "kind": "int",
                 "label": "Nombre de threads FFmpeg",
-                "description": "Nombre de threads passé à FFmpeg via -threads. 0 laisse FFmpeg choisir automatiquement. La valeur par défaut est calculée à partir du nombre de coeurs × 1,5.",
+                "description": "Threads de calcul passés à FFmpeg (-threads) : décodage, filtres, et encodeurs qui s'en servent comme nombre de cœurs (x264, SVT-AV1…). Sans effet sur x265, qui a son propre réglage ci-dessous. 0 laisse FFmpeg choisir ; défaut : cœurs logiques × 0,75.",
             },
-        ),
-    },
-    {
-        "section": "hdr",
-        "title": "HDR",
-        "fields": (
-            # V42 : réglages historiques, lus par aucun workflow (Merge DoVi : liste de son
-            # panneau ; encodage : décision par piste). Conservés tant que leur retrait
-            # n'est pas validé ; libellés explicites pour ne pas laisser croire à un effet.
-            {"key": "dovi_profile", "attr": "dovi_profile", "kind": "text", "label": "Profil DoVi (inutilisé)", "description": "Réglage historique sans effet : Merge DoVi choisit le profil dans son panneau, l'encodage le décide piste par piste."},
-            {"key": "dovi_compat_id", "attr": "dovi_compat_id", "kind": "text", "label": "Compatibility ID DoVi (inutilisé)", "description": "Réglage historique sans effet : la compatibilité du record Dolby Vision suit le profil de sortie de chaque workflow."},
-            {"key": "display_peak_nits", "attr": "display_peak_nits", "kind": "int", "label": "Luminosité maximale de mon écran (nits)", "description": "Pic de luminance du téléviseur ou du moniteur HDR : HDR Studio simule son tone mapping (écrêtage, compression des hautes lumières) pour les MaxCLL/MaxFALL choisis."},
+            {
+                "key": "x265_frame_threads",
+                "attr": "x265_frame_threads",
+                "kind": "int",
+                "min": 0,
+                "max": 16,
+                "label": "Images en parallèle x265 (frame-threads)",
+                "description": "Nombre d'images que x265 encode en même temps (16 au plus), pas un nombre de cœurs : x265 occupe toujours tous les cœurs logiques, chaque image étant elle-même découpée en lignes traitées en parallèle (WPP). Plus d'images en parallèle n'accélère pas forcément, augmente la RAM (≈ +1,4 Go en 4K à 16) et réduit un peu l'efficacité de compression. 0 = choix automatique de x265 (recommandé : 6 en 4K sur 32 threads). Pour limiter les cœurs de x265 : paramètre pools=N dans les paramètres x265 de la piste.",
+            },
         ),
     },
     {
         "section": "encoding",
         "title": "Encodage",
         "fields": (
-            {"key": "ram_buffer_enabled", "attr": "ram_buffer_enabled", "kind": "bool", "label": "Buffer RAM activé", "description": "Active le buffer RAM pour les fichiers HEVC intermédiaires quand le seuil le permet."},
-            {"key": "ram_buffer_threshold_pct", "attr": "ram_buffer_threshold_pct", "kind": "int", "label": "Seuil buffer RAM (%)", "description": "Pourcentage minimal de RAM libre à conserver."},
+            {"key": "ram_buffer_threshold_pct", "attr": "ram_buffer_threshold_pct", "kind": "int", "label": "Réserve de RAM libre (%)", "description": "Part de la RAM totale qui doit rester libre pour lancer un encodage vidéo de plus en parallèle (pipeline multi-pistes). 0 = aucune réserve."},
             {"key": "max_parallel_video_encodes", "attr": "max_parallel_video_encodes", "kind": "int", "label": "Encodages vidéo parallèles max", "description": "Nombre maximal de pistes vidéo encodées simultanément dans le pipeline multi-pistes. 1 = séquentiel (défaut)."},
         ),
     },
@@ -946,7 +997,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
         "section": "matroska",
         "title": "Muxage Matroska",
         "fields": (
-            {"key": "mux_backend", "attr": "matroska_mux_backend", "kind": "choice", "label": "Backend de muxage", "description": "Assembleur final Matroska des workflows remux et encodage. FFmpeg par défaut ; Auto sélectionne le muxeur natif quand le plan le permet et journalise le repli ; Natif n'autorise aucun repli.", "options": (("ffmpeg", "FFmpeg"), ("native", "Natif Matroska"), ("auto", "Auto"))},
+            {"key": "mux_backend", "attr": "matroska_mux_backend", "kind": "choice", "label": "Backend de muxage", "description": "Assembleur final Matroska des workflows remux et encodage. Auto par défaut : muxeur natif pour toute sortie .mkv que le plan permet (entrelacement exact, échelle de temps 1 ms), FFmpeg sinon, repli journalisé ; Natif n'autorise aucun repli ; FFmpeg garde le muxage FFmpeg.", "options": (("auto", "Auto"), ("native", "Natif Matroska"), ("ffmpeg", "FFmpeg"))},
             {"key": "regenerate_statistics", "attr": "matroska_regenerate_statistics", "kind": "bool", "label": "Régénérer les statistiques de pistes (BPS, frames, octets)", "description": "Calcule et écrit les balises statistiques Matroska (BPS, DURATION, NUMBER_OF_FRAMES, NUMBER_OF_BYTES) par piste pour MediaInfo. Activé par défaut."},
         ),
     },
@@ -1004,7 +1055,7 @@ INI_FIELD_GROUPS: tuple[dict[str, Any], ...] = (
             {"key": "startup_panel", "attr": "startup_panel", "kind": "choice", "label": "Panneau à afficher au démarrage", "description": "Panneau chargé en premier au lancement de l'application.", "options": UI_STARTUP_PANEL_CHOICES},
             {"key": "startup_menu_compact", "attr": "startup_menu_compact", "kind": "bool", "label": "Démarrer avec le menu en mode Compact", "description": "Si activé, le menu latéral est réduit en mode icônes au lancement."},
             {"key": "startup_logs_expanded", "attr": "startup_logs_expanded", "kind": "bool", "label": "Ouvrir les logs au démarrage de l'application", "description": "Si activé, le panneau de logs est déplié au lancement."},
-            {"key": "check_updates", "attr": "check_updates", "kind": "bool", "label": "Vérifier les mises à jour au démarrage", "description": "Interroge GitHub (au plus une fois par 24 h) et signale une nouvelle version dans le menu latéral."},
+            {"key": "check_updates", "attr": "check_updates", "kind": "bool", "label": "Vérifier les mises à jour au démarrage", "description": "Interroge GitHub à chaque démarrage et signale une nouvelle version dans le menu latéral."},
             {"key": "update_popup", "attr": "update_popup", "kind": "bool", "label": "Afficher une popup quand une mise à jour est disponible", "description": "Au démarrage, une fenêtre présente la nouvelle version, ses notes de version (repliées) et propose de l'installer. Sinon, la nouvelle version est seulement signalée en bas du menu latéral. Également désactivable depuis la popup (« Ne plus afficher de popup de mise à jour »)."},
             {"key": "update_channel", "attr": "update_channel", "kind": "choice", "label": "Canal de mise à jour", "description": "Stable : releases publiées depuis main. Unstable : pré-versions de développement (devel-cli), plus récentes mais moins testées.", "options": (("stable", "Stable"), ("unstable", "Unstable"))},
             {"key": "enable_file_logging", "attr": "enable_file_logging", "kind": "bool", "label": "Activer le logging fichier", "description": "Si activé, les logs applicatifs sont aussi écrits dans un fichier texte sous app_data/logs/."},
@@ -1106,7 +1157,10 @@ class AppConfig:
 
     def _persist_detected_windows_tools(self) -> None:
         if _is_windows() and self._detected_ini_tools:
-            _update_ini_tools_section(_INI_PATH, self._detected_ini_tools)
+            try:
+                _update_ini_tools_section(_INI_PATH, self._detected_ini_tools)
+            except OSError:
+                return      # persistance facultative : chemins détectés gardés pour la session
             self._ini = _load_ini()
 
     # ------------------------------------------------------------------
@@ -1229,6 +1283,30 @@ class AppConfig:
             "muxiveo-rife.exe" if _is_windows() else "muxiveo-rife",
         )
 
+    def _resolve_nvencc_tool(self) -> str:
+        """NVEncC : embarqué, config.ini, QSettings, système ; en dernier l'installation utilisateur faite par
+        Muxiveo (page Extensions, premier lancement de l'AllInc NoVidia, ``core/nvencc_install.py``)."""
+        if _is_windows():
+            resolved = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC64.exe")
+        else:
+            # Essai PascalCase d'abord (.deb), puis minuscules (.rpm).
+            resolved = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC")
+            if shutil.which(resolved) is None and not Path(resolved).is_file():
+                fallback = shutil.which("nvencc")
+                if fallback:
+                    resolved = fallback
+        if _command_path(resolved) is None:
+            installed = nvencc_user_binary()
+            if installed is not None:
+                return str(installed)
+        return resolved
+
+    def refresh_nvencc_tool(self) -> str:
+        """Nouvelle résolution de NVEncC après installation ou suppression (page Extensions)."""
+        self.tool_nvencc = self._resolve_nvencc_tool()
+        self.refresh_tool_versions()
+        return self.tool_nvencc
+
     def refresh_rife_tool(self) -> str:
         """Nouvelle résolution de muxiveo-rife après installation ou suppression de l'extension mvo-rife."""
         self.tool_muxiveo_rife = self._resolve_rife_tool()
@@ -1275,34 +1353,29 @@ class AppConfig:
         self.tool_mediainfo = self._resolve_tool_value("mediainfo", "tools/mediainfo", "mediainfo")
         self.tool_dovi_tool = self._resolve_tool_value("dovi_tool", "tools/dovi_tool", "dovi_tool")
         self.tool_hdr10plus = self._resolve_tool_value("hdr10plus_tool", "tools/hdr10plus_tool", "hdr10plus_tool")
-        self.tool_eac3to = self._resolve_tool_value("eac3to", "tools/eac3to", "eac3to")
         # NVEncC: nom du binaire varie selon plateforme et packaging :
         #   • Windows : NVEncC64.exe (rigaya release .7z)
         #   • Linux .deb (Debian/Ubuntu) : NVEncC (PascalCase, /usr/bin/NVEncC)
         #   • Linux .rpm (Fedora/RHEL) : nvencc (minuscules, /usr/bin/nvencc)
         # Pas de support macOS — sera résolu en None silencieusement si introuvable.
-        if _is_windows():
-            self.tool_nvencc = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC64.exe")
-        else:
-            # Essai PascalCase d'abord (.deb), puis minuscules (.rpm).
-            resolved = self._resolve_tool_value("nvencc", "tools/nvencc", "NVEncC")
-            if shutil.which(resolved) is None and not Path(resolved).is_file():
-                fallback = shutil.which("nvencc")
-                if fallback:
-                    resolved = fallback
-            self.tool_nvencc = resolved
+        self.tool_nvencc = self._resolve_nvencc_tool()
         self.tool_muxiveo_rife = self._resolve_rife_tool()
         self._tool_versions = ToolVersionRegistry(self.tool_commands())
 
         self.ffmpeg_threads = _normalize_ffmpeg_thread_count(
             self._resolve_int("ffmpeg", "threads", "ffmpeg/threads", _default_ffmpeg_thread_count())
         )
-        self.dovi_profile = self._resolve_text("hdr", "dovi_profile", "hdr/dovi_profile", "8")
-        self.dovi_compat_id = self._resolve_text("hdr", "dovi_compat_id", "hdr/dovi_compat_id", "1")
-        self.display_peak_nits = normalize_display_peak_nits(
-            self._resolve_int("hdr", "display_peak_nits", "hdr/display_peak_nits", 1000))
+        self.x265_frame_threads = _normalize_x265_frame_threads(
+            self._resolve_int("ffmpeg", "x265_frame_threads", "ffmpeg/x265_frame_threads", 0)
+        )
+        # Pic de l'écran simulé : choisi dans HDR Studio (onglet Luminance), retenu par l'interface
+        # seulement ; une ancienne clé [hdr] de config.ini est ignorée (elle masquait le choix du studio).
+        try:
+            stored_peak: int | None = int(str(self._settings.value("hdr/display_peak_nits", 1000)).strip())
+        except (TypeError, ValueError):
+            stored_peak = None
+        self.display_peak_nits = normalize_display_peak_nits(stored_peak)
 
-        self.ram_buffer_enabled = self._resolve_bool("encoding", "ram_buffer_enabled", "encoding/ram_buffer_enabled", True)
         self.ram_buffer_threshold_pct = self._resolve_int("encoding", "ram_buffer_threshold_pct", "encoding/ram_buffer_threshold_pct", 15)
         self.max_parallel_video_encodes = _normalize_max_parallel_video_encodes(
             self._resolve_int("encoding", "max_parallel_video_encodes", "encoding/max_parallel_video_encodes", 1)
@@ -1344,36 +1417,78 @@ class AppConfig:
         )
         # [matroska] mux_backend — réglage global unique pilotant le muxage
         # final des workflows remux ET encode. Priorité : choix explicite du
-        # job/panel/CLI > ce réglage > ffmpeg. Migration : l'ancien
+        # job/panel/CLI > ce réglage > auto. Migration : l'ancien
         # [remux] mux_backend n'est honoré que s'il est explicitement présent
-        # (config.ini ou QSettings) ; absent ou invalide → ffmpeg (avec
+        # (config.ini ou QSettings) ; absent ou invalide → auto (avec
         # avertissement pour une valeur invalide).
         self.load_warnings: list[str] = []
-        raw_mux_backend = self._resolve_text("matroska", "mux_backend", "matroska/mux_backend", "").lower()
-        if not raw_mux_backend:
+        #: Migrations calculées au chargement, sans écriture : persistées et
+        #: journalisées par :meth:`persist_load_migrations` (démarrage GUI / CLI).
+        self.load_notices: list[str] = []
+        self._pending_settings_writes: dict[str, object] = {}
+
+        def _setting_text(key: str) -> str:
+            value = self._settings.value(key, None)
+            return "" if value in (None, "") else str(value).strip().lower()
+
+        saved_backend = _setting_text("matroska/mux_backend")
+        legacy_saved_backend = _setting_text("remux/mux_backend")
+        if _setting_text(_MUX_BACKEND_AUTO_MIGRATION_KEY) not in {"1", "true", "yes"}:
+            # Défaut FFmpeg → Auto (2026-11) : ``save()`` écrivait toujours le
+            # backend, une valeur « ffmpeg » enregistrée avant ce marqueur est donc
+            # l'ancien défaut, pas un choix. La valeur enregistrée est migrée
+            # quelle que soit la surcharge de config.ini (qui reste prioritaire) ;
+            # un choix FFmpeg fait après la migration est respecté (marqueur).
+            if saved_backend == "ffmpeg":
+                saved_backend = "auto"
+                self._pending_settings_writes["matroska/mux_backend"] = "auto"
+            elif not saved_backend and legacy_saved_backend == "ffmpeg":
+                # Ancienne clé migrée en place : une surcharge [remux] de config.ini
+                # garde sa priorité (une nouvelle clé [matroska] la masquerait).
+                legacy_saved_backend = "auto"
+                self._pending_settings_writes["remux/mux_backend"] = "auto"
+            self._pending_settings_writes[_MUX_BACKEND_AUTO_MIGRATION_KEY] = True
+        ini_backend = self._ini_lookup("matroska", "mux_backend")
+        if ini_backend is not _MISSING:
+            # Clé présente (même vide → défaut Auto) : jamais l'ancienne clé [remux].
+            raw_mux_backend = str(ini_backend).lower()
+        elif saved_backend:
+            raw_mux_backend = saved_backend
+        else:
             legacy_ini = self._ini_lookup("remux", "mux_backend")
             if legacy_ini is not _MISSING and str(legacy_ini) != "":
                 raw_mux_backend = str(legacy_ini).lower()
             else:
-                legacy_settings = self._settings.value("remux/mux_backend", None)
-                if legacy_settings not in (None, ""):
-                    raw_mux_backend = str(legacy_settings).lower()
+                raw_mux_backend = legacy_saved_backend
+        migrated_key = next(
+            (key for key in ("matroska/mux_backend", "remux/mux_backend") if key in self._pending_settings_writes),
+            None,
+        )
+        legacy_ini_backend = self._ini_lookup("remux", "mux_backend")
+        if (
+            migrated_key is not None
+            and ini_backend is _MISSING
+            and (migrated_key == "matroska/mux_backend" or legacy_ini_backend in (_MISSING, ""))
+            and raw_mux_backend == "auto"
+        ):
+            self.load_notices.append(
+                "Backend de muxage : ancien défaut FFmpeg remplacé par Auto (assemblage Matroska natif "
+                "pour toute sortie .mkv) ; FFmpeg reste disponible dans les Paramètres."
+            )
         if raw_mux_backend in {"auto", "native", "ffmpeg"}:
             self.matroska_mux_backend = raw_mux_backend
         else:
             if raw_mux_backend:
                 self.load_warnings.append(
-                    f"[matroska] mux_backend invalide ({raw_mux_backend!r}) : retour au défaut 'ffmpeg'."
+                    f"[matroska] mux_backend invalide ({raw_mux_backend!r}) : retour au défaut 'auto'."
                 )
-            self.matroska_mux_backend = "ffmpeg"
+            self.matroska_mux_backend = "auto"
         self.matroska_regenerate_statistics = self._resolve_bool(
             "matroska",
             "regenerate_statistics",
             "matroska/regenerate_statistics",
             True,
         )
-        # Alias interne de compatibilité (à supprimer une fois les usages migrés).
-        self.remux_mux_backend = self.matroska_mux_backend
 
         self.language = _normalize_language_code(
             self._resolve_text("ui", "language", "ui/language", _default_language_code())
@@ -1450,6 +1565,32 @@ class AppConfig:
         self.plugins_auto_update = self._resolve_bool("plugins", "auto_update", "plugins/auto_update", True)
         self.trt_hint_shown = str(self._settings.value("plugins/tensorrt_hint_shown", "false") or "").lower() == "true"
 
+    def value_source(self, section: str, key: str) -> tuple[str, str | None, str | None]:
+        """Provenance d'un réglage : ``("ini" | "settings" | "default", valeur config.ini, valeur QSettings)``.
+
+        Une clé présente mais vide dans config.ini revient explicitement au défaut (provenance « ini »).
+        """
+        ini = self._ini_lookup(section, key)
+        ini_value = None if ini is _MISSING else str(ini)
+        settings_key = f"{section}/{key}"
+        settings_value = None
+        if self._settings is not None and self._settings.contains(settings_key):
+            raw = self._settings.value(settings_key)
+            settings_value = None if raw is None else str(raw)
+        if ini_value is not None:
+            return "ini", ini_value, settings_value
+        return ("settings" if settings_value not in (None, "") else "default"), None, settings_value
+
+    def forget_setting(self, section: str, key: str) -> None:
+        """Retire le réglage QSettings ``section/key`` (le défaut s'applique sans surcharge config.ini)."""
+        if self._settings is not None:
+            self._settings.remove(f"{section}/{key}")
+            self._settings.sync()
+
+    def settings_file(self) -> Path | None:
+        """Fichier QSettings (réglages de l'interface)."""
+        return Path(self._settings.fileName()) if self._settings is not None else None
+
     def reload(self) -> None:
         self._ini = _load_ini()
         self._detected_ini_tools = {}
@@ -1460,10 +1601,30 @@ class AppConfig:
     # Sauvegarde
     # ------------------------------------------------------------------
 
+    def persist_load_migrations(self) -> list[str]:
+        """Écrit une fois les migrations du chargement ; renvoie les messages à journaliser.
+
+        Appelée au démarrage de l'interface et du CLI, qui journalisent le
+        résultat. Une lecture de la configuration (aide du CLI, instantané de
+        service, Paramètres) n'écrit jamais rien d'elle-même.
+        """
+        if not self._pending_settings_writes:
+            return []
+        try:
+            for key, value in self._pending_settings_writes.items():
+                self._settings.setValue(key, value)
+        except Exception:  # persistance facultative : migration rejouée au prochain démarrage
+            return []
+        self._pending_settings_writes = {}
+        notices, self.load_notices = self.load_notices, []
+        return notices
+
     def save(self) -> None:
         """Persiste la configuration dans QSettings pour les fallbacks runtime."""
         s = self._settings
 
+        for key in _REMOVED_SETTINGS_KEYS:
+            s.remove(key)
         s.setValue("paths/work_dir", str(self.work_dir))
         s.setValue("paths/output_dir", str(self.output_dir))
         s.setValue("paths/release_group_tag_enabled", "true" if self.release_group_tag_enabled else "false")
@@ -1474,15 +1635,12 @@ class AppConfig:
         s.setValue("tools/mediainfo", self.tool_mediainfo)
         s.setValue("tools/dovi_tool", self.tool_dovi_tool)
         s.setValue("tools/hdr10plus_tool", self.tool_hdr10plus)
-        s.setValue("tools/eac3to", self.tool_eac3to)
 
         s.setValue("ffmpeg/threads", self.ffmpeg_threads)
+        s.setValue("ffmpeg/x265_frame_threads", self.x265_frame_threads)
 
-        s.setValue("hdr/dovi_profile", self.dovi_profile)
-        s.setValue("hdr/dovi_compat_id", self.dovi_compat_id)
         s.setValue("hdr/display_peak_nits", self.display_peak_nits)
 
-        s.setValue("encoding/ram_buffer_enabled", "true" if self.ram_buffer_enabled else "false")
         s.setValue("encoding/ram_buffer_threshold_pct", self.ram_buffer_threshold_pct)
         s.setValue("encoding/max_parallel_video_encodes", self.max_parallel_video_encodes)
 
@@ -1500,6 +1658,9 @@ class AppConfig:
         s.setValue("sync/cadence_audio_method", self.sync_cadence_audio_method)
         s.setValue("sync/quick_audio_check", "true" if self.sync_quick_audio_check else "false")
         s.setValue("matroska/mux_backend", self.matroska_mux_backend)
+        s.setValue(_MUX_BACKEND_AUTO_MIGRATION_KEY, True)
+        # Valeur effective et marqueur écrits : une migration en attente n'a plus d'objet.
+        self._pending_settings_writes = {}
         s.setValue(
             "matroska/regenerate_statistics",
             "true" if self.matroska_regenerate_statistics else "false",
@@ -1536,6 +1697,15 @@ class AppConfig:
         s.setValue("plugins/tensorrt_hint_shown", "true" if self.trt_hint_shown else "false")
         s.sync()
         _sanitize_windows_ini_file(_INI_PATH)
+        try:
+            _purge_obsolete_ini_keys(_INI_PATH)
+        except OSError:
+            pass        # entretien : config.ini non inscriptible, réglages de l'interface déjà enregistrés
+
+    def remember_display_peak(self, nits: int) -> None:
+        """Pic de l'écran choisi dans HDR Studio : retenu aussitôt (un rechargement ne le perd pas)."""
+        self.display_peak_nits = normalize_display_peak_nits(int(nits))
+        self._settings.setValue("hdr/display_peak_nits", self.display_peak_nits)
 
     def save_to_ini(self) -> None:
         write_ini_settings(self.to_ini_sections())
@@ -1574,7 +1744,6 @@ class AppConfig:
             "mediainfo": self.tool_mediainfo,
             "dovi_tool": self.tool_dovi_tool,
             "hdr10plus_tool": self.tool_hdr10plus,
-            "eac3to": self.tool_eac3to,
             "muxiveo-rife": getattr(self, "tool_muxiveo_rife", "muxiveo-rife"),
         }
 
@@ -1610,6 +1779,18 @@ class AppConfig:
 
     def all_tools_available(self) -> dict[str, bool]:
         return {name: _command_exists(cmd) for name, cmd in self.tool_commands().items()}
+
+    def tool_version_report(self, name: str, *, probe: bool = True) -> ToolVersionReport:
+        """Version et provenance d'un outil (manifeste des outils embarqués, sinon sonde ``--version``).
+
+        ``probe=False`` : aucun processus (interface au démarrage) ; un outil système
+        garde alors une version inconnue.
+        """
+        return tool_version_report(name, self.tool_commands().get(name), probe=probe)
+
+    def tool_version_reports(self, *, probe: bool = True) -> dict[str, ToolVersionReport]:
+        """:meth:`tool_version_report` de chaque outil configuré."""
+        return {name: self.tool_version_report(name, probe=probe) for name in self.tool_commands()}
 
     def ensure_work_dir(self) -> Path:
         """Crée le work_dir ; un chemin par défaut de l'application est marqué Muxiveo."""
@@ -1703,7 +1884,6 @@ class AppConfig:
                 "mediainfo": self.tool_mediainfo,
                 "dovi_tool": self.tool_dovi_tool,
                 "hdr10plus_tool": self.tool_hdr10plus,
-                "eac3to": self.tool_eac3to,
                 "muxiveo_rife": getattr(self, "tool_muxiveo_rife", ""),
             },
             "tool_versions": {
@@ -1715,14 +1895,12 @@ class AppConfig:
             },
             "ffmpeg": {
                 "threads": self.ffmpeg_threads,
+                "x265_frame_threads": self.x265_frame_threads,
             },
             "hdr": {
-                "dovi_profile": self.dovi_profile,
-                "dovi_compat_id": self.dovi_compat_id,
                 "display_peak_nits": self.display_peak_nits,
             },
             "encoding": {
-                "ram_buffer_enabled": self.ram_buffer_enabled,
                 "ram_buffer_threshold_pct": self.ram_buffer_threshold_pct,
                 "max_parallel_video_encodes": self.max_parallel_video_encodes,
             },

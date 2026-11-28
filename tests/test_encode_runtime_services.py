@@ -66,8 +66,6 @@ def test_ensure_inject_storage_available_raises_on_same_fs_shortfall(tmp_path):
             cfg,
             estimate_requirements=lambda _config: (10_000, 20_000),
             log_info=logs.append,
-            ram_buffer_enabled=False,
-            ram_buffer_dir=lambda: None,
             disk_usage=cast(Any, lambda _path: SimpleNamespace(total=100_000, used=90_000, free=25_000)),
             stat=cast(Any, lambda _path: SimpleNamespace(st_dev=42)),
             temp_dir=lambda: str(tmp_path / "tmp"),

@@ -532,7 +532,7 @@ def test_cli_inspection_accepts_explicit_bluray_playlist_id(
                 subtitle_tracks=[],
             )
 
-    monkeypatch.setattr("cli.inspection.FileInspector", FakeInspector)
+    monkeypatch.setattr("core.jobs.inspection.FileInspector", FakeInspector)
 
     sources, infos, tracks = inspect_sources(
         {"sources": [{"path": str(root), "playlist": 14}]},
@@ -570,7 +570,7 @@ def test_cli_inspection_auto_selects_longest_bluray_title_for_directory(
                 subtitle_tracks=[],
             )
 
-    monkeypatch.setattr("cli.inspection.FileInspector", FakeInspector)
+    monkeypatch.setattr("core.jobs.inspection.FileInspector", FakeInspector)
 
     sources, _infos, _tracks = inspect_sources(
         {"sources": [str(root)]},

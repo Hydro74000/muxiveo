@@ -1,0 +1,458 @@
+"""Opérations média : inspection des sources, validation, aperçu et exécution d'un job de remux."""
+
+from __future__ import annotations
+
+import copy
+import dataclasses
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+from core.inspector import AttachmentInfo, AudioTrack, FileInspector, HDRType, SubtitleTrack, VideoTrack
+from core.jobs.encode import ResolvedEncode, resolve_from_job
+from core.jobs.encode_runtime import checked_encode, encode_workflow, preview_encode, run_encode
+from core.jobs.inspection import config_template_from_info, encode_template_from_info
+from core.jobs.logging import EmitterLogger
+from core.jobs.options import CommonOptions
+from core.jobs.remux_config import build_remux_config
+from core.jobs.runtime import export_exact_job, remux_workflow, run_remux
+from core.jobs.serializers import serialize_file_info, serialize_remux_config
+from core.json_documents import resolve_document_paths
+from core.service.context import ExecutionContext
+from core.service.errors import ErrorCode
+from core.service.models import Model, dataclass_schema, field, list_of
+from core.service.schemas.documents import JOB_REF
+from core.service.operations import operation
+from core.workflows.preparation_cache import PreparationCache, PreparationContext
+from core.workflows.remux_models import RemuxConfig
+
+# ---------------------------------------------------------------------------
+# Inspection
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InspectRequest(Model):
+    """Inspection rapide (ffprobe + mediainfo) d'une ou plusieurs sources."""
+
+    inputs: tuple[Path, ...] = field(min_items=1, description="Fichiers à inspecter.")
+    config_template: bool = field(
+        default=False, description="Renvoyer un exact-job minimal de la première source au lieu des fiches.")
+    output: str | None = field(
+        default=None, description="Sortie inscrite dans le modèle de job (avec config_template).")
+    with_encode: bool = field(
+        default=False, description="Modèle de job avec un bloc `encode` (copie, HDR de la source).")
+
+
+#: Type HDR publié par son libellé (``HDRType.label``).
+_HDR_LABEL = {"enum": [kind.label() for kind in HDRType]}
+
+
+def _track_schema(cls: type, kind: str) -> dict[str, Any]:
+    """Piste publiée par ``serialize_file_info`` : champs de la dataclass (sans ``raw``) et ``type``."""
+    schema = dataclass_schema(cls, exclude=("raw",), overrides={"hdr_type": _HDR_LABEL})
+    schema["properties"]["type"] = {"const": kind}
+    schema["required"].append("type")
+    return schema
+
+
+@dataclass(frozen=True)
+class InspectedChapter(Model):
+    """Chapitre d'une source."""
+
+    timecode_s: float
+    timecode: str = field(description="HH:MM:SS.mmm")
+    name: str = field()
+
+
+@dataclass(frozen=True)
+class InspectedFile(Model):
+    """Fiche d'une source (``serialize_file_info``)."""
+
+    path: str
+    format: str
+    duration_s: float | None
+    duration: str = field(description="HH:MM:SS, « ? » si inconnue.")
+    size_bytes: int | None = field()
+    size: str = field(description="Taille lisible, « ? » si inconnue.")
+    bit_rate: int | None = field()
+    title: str = field()
+    hdr_type: str = field(schema=_HDR_LABEL)
+    frame_count: int | None = field(description="Nombre d'images validé par l'inspection, sinon null.")
+    tag_count: int = field()
+    global_tags: dict[str, str] = field()
+    tracks: tuple[dict[str, Any], ...] = field(schema={"type": "array", "items": {"oneOf": [
+        _track_schema(VideoTrack, "video"), _track_schema(AudioTrack, "audio"),
+        _track_schema(SubtitleTrack, "subtitle")]}})
+    attachments: tuple[dict[str, Any], ...] = field(schema=list_of(dataclass_schema(AttachmentInfo)))
+    chapters: tuple[InspectedChapter, ...] = field()
+
+
+@dataclass(frozen=True)
+class InspectResult(Model):
+    """Fiches des sources, ou modèle de job."""
+
+    files: tuple[dict[str, Any], ...] = field(default=(), description="Une fiche par source (pistes, HDR, chapitres…).",
+                                              schema=list_of(InspectedFile))
+    template: dict[str, Any] | None = field(default=None, description="Exact-job minimal (config_template).",
+                                            schema=JOB_REF)
+
+
+@operation(
+    "media.inspect",
+    request=InspectRequest,
+    result=InspectResult,
+    summary="Inspecter des sources : pistes, HDR, chapitres, pièces jointes ; ou générer un exact-job minimal.",
+    errors=(ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED),
+)
+def media_inspect(request: InspectRequest, ctx: ExecutionContext) -> InspectResult:
+    inspector = FileInspector(ffprobe_bin=ctx.tool("ffprobe"), mediainfo_bin=ctx.tool("mediainfo"),
+                              cancel_event=ctx.cancel.event)  # sondes en cours tuées par le jeton
+    infos = []
+    for path in request.inputs:
+        ctx.cancel.raise_if_cancelled()
+        infos.append(inspector.inspect(path))
+    if request.config_template:
+        template = config_template_from_info(infos[0], output=request.output or "")
+        if request.with_encode:
+            template["encode"] = encode_template_from_info(infos[0])
+        return InspectResult(template=template)
+    return InspectResult(files=tuple(serialize_file_info(info) for info in infos))
+
+
+# ---------------------------------------------------------------------------
+# Jobs de remux
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class JobOptions(Model):
+    """Options d'un job (équivalent des options communes du CLI ; outils : surcharges de l'appel)."""
+
+    verbose: bool = field(default=False, description="Publier la sortie brute des outils (ffmpeg…) au journal.")
+    nfo: bool | None = field(default=None, description="Écrire le NFO ; défaut : réglage [metadata] generate_nfo.")
+    writing_application: str = field(default="", description="Balise WritingApp de la sortie.")
+    auto_forced_subs: bool = field(default=False, description="Repérer les sous-titres forcés.")
+    forced_threshold: int = field(default=50, description="Seuil (nombre de sous-titres) des pistes forcées.")
+    auto_sdh: bool = field(default=False, description="Repérer les sous-titres SDH.")
+    remove_closed_captions: bool | None = field(
+        default=None, description="Retirer les sous-titres EIA-608/708 embarqués dans la vidéo.")
+    sync_mode: Literal["physical", "container"] | None = None
+    sync_subtitles: Literal["mirror", "none"] | None = None
+    clean_nfo: bool | None = None
+    crossfade_ms: int | None = field(default=None, description="Fondu aux raccords de synchro (ms).")
+    auto_sync: bool = field(default=False, description="Analyser la synchro de la source 1 face à la source 0.")
+    auto_sync_all: bool = field(
+        default=False, description="Analyser la synchro de chaque source ≥ 1 (sans bloc `sync`) face à la source 0.")
+    calibration: Path | None = field(default=None, description="Calibration de synchro explicite (JSON).")
+    detect_cuts: bool = field(default=False, description="Détecter coupures et ruptures (multi-segments).")
+    quick_sync_check: bool | None = field(default=None, description="Synchro rapide ; défaut : [sync] quick_audio_check.")
+    reject_coherent_sync: bool = field(
+        default=False, description="Refuser une synchro cohérente en partie non vérifiée.")
+    drift_threshold_ms: int = field(default=25, description="Seuil de dérive d'une coupure (ms).")
+    cadence_auto: bool | None = field(
+        default=None, description="Conversion de cadence PAL ↔ cinéma automatique ; défaut : activée.")
+    cadence_method: Literal["auto", "atempo", "asetrate"] | None = field(
+        default=None, description="Méthode audio de la conversion de cadence ; défaut : auto.")
+    keep_failed_work_dir: bool = field(
+        default=False, description="Encodage en échec : conserver le dossier de travail (fichiers produits).")
+
+    @classmethod
+    def from_common(cls, options: CommonOptions) -> dict[str, Any]:
+        """Charge utile JSON des options d'un ``CommonOptions`` (adaptateur CLI)."""
+        names = {item for item in cls.__dataclass_fields__}
+        payload = {name: getattr(options, name) for name in names}
+        return {key: value for key, value in payload.items() if value is not None or key in _NULLABLE}
+
+    def to_common(self, ctx: ExecutionContext, **extra: Any) -> CommonOptions:
+        """Options du job pour cet appel : surcharges d'outils, requête de l'API, dossier de référence."""
+        overrides = ctx.overrides
+        values = self.to_dict()
+        values["calibration"] = str(self.calibration) if self.calibration is not None else None
+        # Cadence absente : valeurs historiques (l'absence n'est distinguée que par l'hybridation, face à une recette).
+        values["cadence_auto"] = True if self.cadence_auto is None else self.cadence_auto
+        values["cadence_method"] = self.cadence_method or "auto"
+        return CommonOptions(
+            ffmpeg=overrides.ffmpeg,
+            ffprobe=overrides.ffprobe,
+            mediainfo=overrides.mediainfo,
+            threads=overrides.threads,
+            work_dir=str(overrides.work_dir) if overrides.work_dir is not None else None,
+            api=ctx.api,
+            base_dir=ctx.base_dir,
+            protected_paths=ctx.protected_paths,
+            **values,
+            **extra,
+        )
+
+
+_NULLABLE = {"nfo", "remove_closed_captions", "sync_mode", "sync_subtitles", "clean_nfo", "crossfade_ms",
+             "calibration", "quick_sync_check", "cadence_auto", "cadence_method"}
+
+
+@dataclass(frozen=True)
+class MediaJobRequest(Model):
+    """Job de remux : document (contrat v1 / exact-job) et options."""
+
+    job: dict[str, Any] = field(description="Document de job (sources, pistes, sortie…), contrat `schema --version 1`.",
+                                schema=JOB_REF)
+    options: JobOptions = field(default_factory=JobOptions, description="Options du job.")
+
+    @classmethod
+    def document_issues(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Clés du job absentes du contrat v1 / exact-job (bloc ``encode`` : lecture stricte propre)."""
+        from core.jobs.schema import unknown_job_keys
+        from core.service.schemas.encode import encode_block_issues
+
+        job = values.get("job")
+        issues = [(path, "clé inconnue du contrat de job") for path in unknown_job_keys(job)]
+        return issues + encode_block_issues(job.get("encode") if isinstance(job, dict) else None, "job.encode")
+
+    @classmethod
+    def document_errors(cls, values: dict[str, Any]) -> list[tuple[str, str]]:
+        """Écarts de valeurs du job au contrat v1 (types, énumérations, calibrations) et au schéma publié
+        (requête de l'API : verdict identique à celui du client), avec leur chemin."""
+        from core.jobs.contract import strict_job_errors, validate_job_contract
+        from core.jobs.errors import ContractError
+
+        job = values.get("job")
+        if not isinstance(job, dict):
+            return []
+        from core.service.schemas.encode import encode_block_errors
+
+        errors = strict_job_errors(job, path="job")
+        try:
+            validate_job_contract(job, path="job")
+        except ContractError as exc:
+            errors += exc.errors
+        found: list[tuple[str, str]] = [(path, message) for path, _sep, message in
+                                        (error.partition(": ") if ": " in error else ("job", "", error)
+                                         for error in errors)]
+        if not found:
+            # Écarts du schéma publiés seulement en l'absence d'erreur du contrat (même cause, déjà expliquée),
+            # un par cause (le plus précis).
+            from core.service.schemas.documents import job_schema_errors
+
+            found = job_schema_errors(job)
+        return found + encode_block_errors(job.get("encode"), "job.encode")  # détails bornés par Model.parse
+
+    @classmethod
+    def document_path_errors(cls, values: dict[str, Any], base_dir: Path | None) -> list[tuple[str, str]]:
+        """Requête de l'API : chemins du job utilisables ici, relatifs seulement avec un dossier de référence."""
+        from core.json_documents import document_path_errors
+
+        return document_path_errors(values.get("job"), base_dir, prefix="job")
+
+    @classmethod
+    def without_internal_keys(cls, values: dict[str, Any]) -> dict[str, Any]:
+        """Clés internes ``_…`` du job ignorées (``_batch_output_dir``… ne s'injectent pas par une requête)."""
+        from core.json_documents import without_internal_keys
+
+        return {**values, "job": without_internal_keys(values.get("job"))} if isinstance(values.get("job"), dict) \
+            else values
+
+    @classmethod
+    def resolve_relative_paths(cls, values: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+        """Chemins relatifs du document : depuis le dossier de la requête, comme un fichier ``--config``."""
+        if isinstance(values.get("job"), dict):
+            values = {**values, "job": resolve_document_paths(values["job"], base_dir)}
+        return values
+
+
+@dataclass(frozen=True)
+class MediaRunRequest(MediaJobRequest):
+    """Exécution d'un job de remux."""
+
+    force: bool = field(default=False, description="Remplacer une sortie existante.")
+    export_workflow: Path | None = field(
+        default=None, description="Enregistrer le job exact à cet emplacement au lieu d'exécuter.")
+    export_directory: bool = field(default=False, description="export_workflow désigne un dossier.")
+
+
+@dataclass(frozen=True)
+class MediaValidateResult(Model):
+    """Job résolu et écarts de validation."""
+
+    valid: bool
+    errors: tuple[str, ...] = ()
+    config: dict[str, Any] = field(default_factory=dict, description="Job résolu (sources, pistes, sortie…).")
+    encode: dict[str, Any] | None = field(default=None,
+                                          description="Encodage résolu (bloc `encode` du job) : pistes, avertissements.")
+
+
+@dataclass(frozen=True)
+class MediaPreviewResult(Model):
+    """Job résolu, écarts de validation et commandes prévues."""
+
+    valid: bool
+    errors: tuple[str, ...] = ()
+    config: dict[str, Any] = field(default_factory=dict, description="Job résolu (sources, pistes, sortie…).")
+    command: Any = field(default=None, description="Commande FFmpeg prévue (arguments).")
+    command_text: str | None = field(default=None, description="Commande(s) prévue(s), copiables.")
+    execution: dict[str, Any] | None = field(default=None, description="Plan d'exécution (backend, préparations…).")
+    encode: dict[str, Any] | None = field(default=None, description="Encodage résolu (bloc `encode` du job).")
+
+
+@dataclass(frozen=True)
+class MediaRunResult(Model):
+    """Fin d'un job."""
+
+    status: Literal["completed", "exported"]
+    output: str = field(description="Fichier produit (ou job exact enregistré).")
+    message: str = ""
+
+
+def _build(request: MediaJobRequest, ctx: ExecutionContext) -> tuple[RemuxConfig, CommonOptions]:
+    remux_config, options, _cache = _build_cached(request, ctx)
+    return remux_config, options
+
+
+def _build_cached(request: MediaJobRequest, ctx: ExecutionContext,
+                  **extra: Any) -> tuple[RemuxConfig, CommonOptions, PreparationCache]:
+    """Job de remux construit avec un cache d'inspection réutilisé par la résolution de l'encodage."""
+    options = request.options.to_common(ctx, **extra)
+    cache = PreparationCache()
+    remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
+                                      EmitterLogger(ctx.events),
+                                      context=PreparationContext(cache=cache, cancel_event=ctx.cancel.event))
+    return remux_config, options, cache
+
+
+def resolve_job_encode(request: MediaJobRequest, remux_config: RemuxConfig, options: CommonOptions,
+                       cache: PreparationCache, ctx: ExecutionContext) -> ResolvedEncode | None:
+    """Bloc ``encode`` du job résolu (règles du panneau Encodage) ; ``None`` sans bloc."""
+    return resolve_from_job(request.job.get("encode"), remux_config, config=ctx.config, options=options,
+                            logger=EmitterLogger(ctx.events), cache=cache, report_unknown=False,
+                            cancel_event=ctx.cancel.event)
+
+
+def encode_plan_payload(resolved: ResolvedEncode | None, checked: Any = None) -> dict[str, Any] | None:
+    """Plan publié ; ``checked`` : configuration contrôlée (recadrage DV + NVENC accepté), reprise dans le plan."""
+    if resolved is None:
+        return None
+    video = list(resolved.video)
+    if checked is not None and checked is not resolved.config:
+        tracks = list(checked.video_tracks) or ([checked.video] if checked.video is not None else [])
+        if len(tracks) == len(video):  # même ordre que la résolution
+            video = [{**entry, "crop": dataclasses.asdict(track.crop)} for entry, track in zip(video, tracks)]
+    return {"pure_copy": resolved.pure_copy, "video": video, "audio": list(resolved.audio),
+            "warnings": list(resolved.warnings)}
+
+
+def _accept_crop(request: MediaJobRequest) -> bool:
+    encode = request.job.get("encode")
+    return bool(isinstance(encode, dict) and encode.get("accept_dovi_nvenc_crop"))
+
+
+_JOB_ERRORS = (ErrorCode.VALIDATION, ErrorCode.TOOL_MISSING, ErrorCode.WORKFLOW_FAILED, ErrorCode.CANCELLED)
+
+
+@operation(
+    "media.validate",
+    request=MediaJobRequest,
+    result=MediaValidateResult,
+    summary="Résoudre et valider un job de remux ou d'encodage sans l'exécuter.",
+    uses_gpu=True,  # encodage : sonde des filtres Vulkan, comme au lancement
+    errors=_JOB_ERRORS,
+)
+def media_validate(request: MediaJobRequest, ctx: ExecutionContext) -> MediaValidateResult:
+    remux_config, options, cache = _build_cached(request, ctx)
+    resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
+    checked = None
+    if resolved is not None and resolved.config is not None:
+        # Encodage : mêmes refus qu'au lancement (géométrie DV NVENC, encodeur, presets…).
+        checked, errors = checked_encode(resolved.config, encode_workflow(ctx.config, options), config=ctx.config,
+                                         options=options, accept_dovi_nvenc_crop=_accept_crop(request),
+                                         cancel_event=ctx.cancel.event)
+    else:
+        errors = remux_workflow(ctx.config, options).validate(remux_config)
+    return MediaValidateResult(valid=not errors, errors=tuple(errors), config=serialize_remux_config(remux_config),
+                               encode=encode_plan_payload(resolved, checked))
+
+
+@operation(
+    "media.preview",
+    request=MediaJobRequest,
+    result=MediaPreviewResult,
+    summary="Résoudre un job de remux ou d'encodage et afficher les commandes prévues.",
+    uses_gpu=True,
+    errors=_JOB_ERRORS,
+)
+def media_preview(request: MediaJobRequest, ctx: ExecutionContext) -> MediaPreviewResult:
+    remux_config, options, cache = _build_cached(request, ctx)
+    resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
+    plan = encode_plan_payload(resolved)
+    if resolved is not None and resolved.config is not None:
+        # Encodage : commandes de l'EncodeWorkflow (préparation « à blanc »), comme « Copier » du panneau.
+        encode_wf = encode_workflow(ctx.config, options)
+        encode_config, errors = checked_encode(resolved.config, encode_wf, config=ctx.config, options=options,
+                                               accept_dovi_nvenc_crop=_accept_crop(request),
+                                               cancel_event=ctx.cancel.event)
+        plan = encode_plan_payload(resolved, encode_config)
+        config = serialize_remux_config(remux_config)
+        if errors:
+            return MediaPreviewResult(valid=False, errors=tuple(errors), config=config, encode=plan)
+        return MediaPreviewResult(
+            valid=True, config=config, command_text=preview_encode(encode_config, encode_wf, ctx.cancel.event),
+            encode=plan,
+            execution={"kind": "encode", "selected_backend": "encode", "plan_version": 1,
+                       "preparation_commands": [], "native_diagnostics": []},
+        )
+    wf = remux_workflow(ctx.config, options)
+    errors = wf.validate(remux_config)
+    config = serialize_remux_config(remux_config)
+    if errors:
+        return MediaPreviewResult(valid=False, errors=tuple(errors), config=config, encode=plan)
+    return MediaPreviewResult(
+        valid=True,
+        config=config,
+        command=wf.build_command(remux_config),
+        command_text=wf.preview_command(remux_config),
+        execution=dict(wf.execution_preview(remux_config)),
+        encode=plan,
+    )
+
+
+@operation(
+    "media.run",
+    queue="job", request=MediaRunRequest,
+    result=MediaRunResult,
+    summary="Exécuter un job de remux ou d'encodage (ou enregistrer son job exact).",
+    long_running=True, progress=True,
+    mutating=True,
+    uses_gpu=True,
+    errors=(*_JOB_ERRORS, ErrorCode.OUTPUT_EXISTS, ErrorCode.BUSY),
+)
+def media_run(request: MediaRunRequest, ctx: ExecutionContext) -> MediaRunResult:
+    options = request.options.to_common(
+        ctx,
+        export_workflow=str(request.export_workflow) if request.export_workflow is not None else None,
+        export_directory=request.export_directory,
+    )
+    cache = PreparationCache()
+    remux_config = build_remux_config(copy.deepcopy(dict(request.job)), ctx.config, options,
+                                      EmitterLogger(ctx.events),
+                                      context=PreparationContext(cache=cache, cancel_event=ctx.cancel.event))
+    ctx.cancel.raise_if_cancelled()  # préparation annulée : rien n'est exporté ni lancé
+    from core.sidecar_output import check_nfo_against_documents
+
+    check_nfo_against_documents(remux_config.output, ctx.config, options)  # avant tout job
+    if options.export_workflow:
+        destination = export_exact_job(remux_config, options, encode=request.job.get("encode"))
+        ctx.events.artifact("exact-job", str(destination))
+        return MediaRunResult(status="exported", output=str(destination))
+    resolved = resolve_job_encode(request, remux_config, options, cache, ctx)
+    if resolved is not None and resolved.config is not None:
+        encode = request.job.get("encode") or {}
+        message = run_encode(
+            resolved.config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
+            cancel=ctx.cancel, force=request.force,
+            accept_dovi_nvenc_crop=bool(encode.get("accept_dovi_nvenc_crop")),
+            progress=ctx.events.progress, cache=cache,
+        )
+        ctx.events.artifact("output", str(resolved.config.output))
+        return MediaRunResult(status="completed", output=str(resolved.config.output), message=message)
+    message = run_remux(remux_config, config=ctx.config, options=options, logger=EmitterLogger(ctx.events),
+                        cancel=ctx.cancel, force=request.force, progress=ctx.events.progress)
+    ctx.events.artifact("output", str(remux_config.output))
+    return MediaRunResult(status="completed", output=str(remux_config.output), message=message)
