@@ -12,9 +12,9 @@ from core.jobs.profile import (  # fonctions de construction partagées (core.jo
     build_profile_remux_config,
     load_decision_profile,
     run_profile_batch,
-    snapshot_decision_profile as snapshot_decision_profile,
 )
 from core.jobs.profile import resolve_decision_profile_path  # noqa: F401 - réexport (tests)
+from core.jobs.profile import snapshot_decision_profile  # noqa: F401 - réexport (tests)
 from core.jobs.options import call_cancellable, call_supported
 from core.service.context import CancelToken
 from core.service.errors import ApiError
