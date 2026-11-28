@@ -389,7 +389,7 @@ def stage_fel_moments(report: InspectionReport, fel: FelReport, directory: Path,
                 break
             pair = getattr(capture, "pair", None)
             if callable(pair):  # session : les deux couches d'un seul décodage
-                both = pair(moment.time_s, 1)
+                both = pair(moment.time_s, 1)  # pylint: disable=not-callable  # vérifié par callable()
                 reconstructed, mapped = both[0][0], both[1][0]
             else:
                 reconstructed = capture("reconstructed", moment.time_s, 1)[0]

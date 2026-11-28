@@ -156,8 +156,7 @@ def _apply_edit(calibration: SyncCalibration, edit: CalibrationEdit, position: i
         raise ApiError(ErrorCode.INVALID_REQUEST, f"edits[{position}] : un seul champ par édition.")
     try:
         if edit.cut is not None or edit.silence is not None:
-            bounds = edit.cut if edit.cut is not None else edit.silence
-            assert bounds is not None
+            bounds = edit.cut if edit.cut is not None else edit.silence or ()
             if len(bounds) != 2 or not bounds[0] < bounds[1]:
                 raise ValueError("[début, fin] croissants attendus (ms)")
             return calibration.with_edit(float(bounds[0]), float(bounds[1]), silence=edit.silence is not None)

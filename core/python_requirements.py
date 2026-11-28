@@ -177,8 +177,7 @@ def rejection_reason(version: str | None, requirement: PythonRequirement) -> str
             constraint = f"!={'.'.join(map(str, excluded))}"
             reason = requirement.reason_for(constraint)
             return f"{version} excluded (known incompatibility{': ' + reason if reason else ''})"
-    if is_too_recent(version, requirement):
-        assert requirement.upper is not None
+    if is_too_recent(version, requirement) and requirement.upper is not None:
         constraint = f"<{'.'.join(map(str, requirement.upper))}"
         reason = requirement.reason_for(constraint)
         return f"{version} too recent (known incompatibility{': ' + reason if reason else ''})"

@@ -11,7 +11,14 @@ from cli.constants import EXIT_OK, EXIT_VALIDATION
 from cli.interrupts import interrupt_guard
 from cli.logging import Logger
 from cli.options import common_options
-from cli.service_adapter import argv_documents, envelope, overrides_from_options, print_json, run_operation
+from cli.service_adapter import (
+    argv_documents,
+    envelope,
+    overrides_from_options,
+    print_json,
+    run_operation,
+    typed_result,
+)
 from core.config import AppConfig
 from core.inspector import FileInspector as FileInspector  # remplaçable (tests)
 from core.service.context import CancelToken
@@ -119,7 +126,7 @@ def cmd_inspect_hdr(args: argparse.Namespace, config: AppConfig, logger: Logger)
         result, ctx = run_operation("hdr.inspect", payload, config=config, logger=logger,
                                     overrides=overrides_from_options(common_options(args)), ports=ports,
                                     cancel=cancel, documents=argv_documents(args))
-    assert isinstance(result, HdrInspectResult)
+    result = typed_result(result, HdrInspectResult)
     if args.log_format == "events":
         print_json(envelope("hdr.inspect", ctx.events.job, result=result))
     else:

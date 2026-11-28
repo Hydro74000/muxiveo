@@ -10,7 +10,8 @@ import shutil
 import sys
 import threading
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError  # distinct de TimeoutError en Python 3.10
 from dataclasses import dataclass, field
 from enum import Enum
 from fractions import Fraction
@@ -135,7 +136,7 @@ class Film1Pass:
             hooks.check()
             try:
                 return self._future.result(timeout=0.5)
-            except TimeoutError:
+            except FutureTimeoutError:
                 if report is not None and total > 0:
                     report(min(99, int(100 * self.decoded / total)))
 
@@ -148,7 +149,7 @@ class Film1Pass:
         self._stop.set()
         try:
             self._future.result(timeout=timeout)
-        except TimeoutError:
+        except FutureTimeoutError:
             return False
         except BaseException:  # noqa: BLE001 — issue sans intérêt une fois la passe abandonnée
             pass

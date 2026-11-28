@@ -225,7 +225,8 @@ class RemuxRuntimeRunner:
                     )
                     for item in materialized:
                         prepared = item.prepared
-                        assert prepared is not None  # sous-titres vidés : non pris en charge ici
+                        if prepared is None:  # sous-titre vidé : refusé à la réécriture (FFmpeg)
+                            raise RemuxError("Synchronisation : piste réécrite sans artefact.")
                         mapped_track = item.intent.mapped_track
                         consumed_track = replace(
                             mapped_track.track,

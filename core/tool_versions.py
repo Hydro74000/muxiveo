@@ -85,7 +85,9 @@ def _meaningful(version: object) -> str | None:
 def _generic_version(path: Path) -> str | None:
     """Première ligne utile de ``--version`` (deux lignes jointes si la première se poursuit)."""
     try:
-        result = subprocess.run(
+        # Outil configuré, argv fixe, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [str(path), "--version"], capture_output=True, timeout=10, check=False,
             **{**subprocess_text_kwargs(), "errors": "replace"},
         )

@@ -38,6 +38,7 @@ from cli.service_adapter import (
     print_json,
     render_api_error,
     run_operation,
+    typed_result,
 )
 
 
@@ -81,7 +82,7 @@ def cmd_version(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
         result, ctx = run_operation("system.version", payload, config=config, logger=logger, ports=ports)
     except ApiError as error:
         return render_api_error(logger, error)
-    assert isinstance(result, VersionResult)
+    result = typed_result(result, VersionResult)
     exit_code = EXIT_OK
     if args.check:
         if result.check_failed:
@@ -195,7 +196,7 @@ def cmd_inspect(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
         result, ctx = run_operation("media.inspect", payload, config=config, logger=logger, overrides=overrides)
     except ApiError as error:
         return render_api_error(logger, error)
-    assert isinstance(result, InspectResult)
+    result = typed_result(result, InspectResult)
     if args.log_format == "events":
         print_json(envelope("media.inspect", ctx.events.job, result=result))
         return EXIT_OK
@@ -208,7 +209,7 @@ def cmd_schema(args: argparse.Namespace, config: AppConfig, logger: Logger) -> i
     """Schémas JSON publiés (opération schema.get)."""
     version = str(getattr(args, "schema_version", "1") or "1")
     result, ctx = run_operation("schema.get", {"version": version}, config=config, logger=logger)
-    assert isinstance(result, SchemaResult)
+    result = typed_result(result, SchemaResult)
     if args.log_format == "events":
         print_json(envelope("schema.get", ctx.events.job, result=result))
     elif args.output:
@@ -246,7 +247,7 @@ def cmd_validate(args: argparse.Namespace, config: AppConfig, logger: Logger) ->
     job = apply_encode_options(load_job(JobOverrides.from_namespace(args)), args)
     result, ctx = run_operation("media.validate", _job_payload(job, options), config=config, logger=logger,
                                 overrides=_job_overrides(options))
-    assert isinstance(result, MediaValidateResult)
+    result = typed_result(result, MediaValidateResult)
     exit_code = EXIT_OK if result.valid else EXIT_VALIDATION
     if args.log_format == "events":
         print_json(envelope("media.validate", ctx.events.job, result=result))
@@ -290,7 +291,7 @@ def cmd_preview(args: argparse.Namespace, config: AppConfig, logger: Logger) -> 
 def _preview_job(job: dict, options, config: AppConfig, logger: Logger) -> tuple[MediaPreviewResult, str]:
     result, ctx = run_operation("media.preview", _job_payload(job, options), config=config, logger=logger,
                                 overrides=_job_overrides(options))
-    assert isinstance(result, MediaPreviewResult)
+    result = typed_result(result, MediaPreviewResult)
     return result, ctx.events.job
 
 

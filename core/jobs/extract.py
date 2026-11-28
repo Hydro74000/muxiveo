@@ -249,7 +249,8 @@ def stream_command(plan: ExtractionPlan, tools: ExtractTools, path: Path, output
     if plan.kind == "attachment":
         return [tools.ffmpeg, "-hide_banner", "-y", *ffmpeg_input_args(path), "-map", f"0:{plan.stream_index}",
                 "-c", "copy", "-frames:v", "1", "-f", "image2", str(output)]
-    assert plan.plan is not None
+    if plan.plan is None:
+        raise ValueError(f"Extraction de la piste {plan.stream_index} sans plan.")
     return TrackExtractor.build_command(tools.ffmpeg, path, plan.stream_index, plan.kind, plan.plan, output,
                                         progress_args=progress_args, input_args=ffmpeg_input_args(path))
 
@@ -384,7 +385,8 @@ def extract(
         # BL : dovi_tool demux écrit aussi l'EL (``-e`` obligatoire), dans un candidat jeté à la fin.
         scratch = reserve_candidate(output.with_name(output.name + ".el")) if plan.layer == "bl" else None
         if plan.kind == "attachment" and not plan.attached_pic:
-            assert plan.attachment is not None
+            if plan.attachment is None:
+                raise ValueError("Pièce jointe à extraire non désignée.")
             candidate.write_bytes(attachment_reader(Path(info.path), plan.attachment))
         elif plan.layer != "stream":
             commands = layer_commands(plan.layer, tools, Path(info.path), plan.stream_index, candidate,

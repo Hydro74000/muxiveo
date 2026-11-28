@@ -55,7 +55,9 @@ def ffmpeg_build_details(
     versions de libavformat / libavcodec quand elles sont affichées.
     """
     try:
-        result = subprocess.run(
+        # Binaire FFmpeg sondé (lanceur éventuel : wine), argv fixe, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [*launcher, str(binary), "-hide_banner", "-version"],
             capture_output=True, timeout=timeout, check=False,
             env=dict(env) if env is not None else None,
@@ -140,6 +142,7 @@ def python_inventory(command: Sequence[str] | None = None,
                 found[name.lower()] = f"{name}\0{distribution.version}"
         return [{"name": value.split("\0")[0], "version": value.split("\0")[1]} for value in found.values()]
     # Interpréteur du build et options fixes, sans shell ; ``env`` : environnement de cet interpréteur (préfixe Wine).
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
     result = subprocess.run([*command, "-m", "pip", "list", "--format=json", "--disable-pip-version-check"],  # nosec B603
                             capture_output=True, text=True, check=True, timeout=300,
                             env=dict(env) if env is not None else None)

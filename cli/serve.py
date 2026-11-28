@@ -118,7 +118,7 @@ class _Output:
             if on_written is not None:
                 try:
                     on_written()
-                except Exception:  # noqa: BLE001 — trame déjà écrite : jamais d'arrêt de l'écrivain
+                except Exception:  # nosec B110  # noqa: BLE001 — trame déjà écrite : jamais d'arrêt de l'écrivain
                     pass
             with self._cond:
                 self._busy = False

@@ -337,7 +337,8 @@ class StreamProducer:
                 register(self._process)
             self._stderr_thread = threading.Thread(target=self._drain_stderr, name=f"stderr-{label}", daemon=True)
             self._stderr_thread.start()
-            assert self._process.stdout is not None
+            if self._process.stdout is None:
+                raise RuntimeError(f"{label} : sortie du producteur FFmpeg non capturée.")
             self._stdout = _PrefetchedPipe(cast(BinaryIO, self._process.stdout), label=label)
             source = MatroskaStreamSource(cast(BinaryIO, self._stdout), header_path)
             try:

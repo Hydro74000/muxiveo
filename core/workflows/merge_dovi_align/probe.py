@@ -319,7 +319,8 @@ def _run(command: list[str], table: FrameTable, hooks: ProcessHooks,
                     hooks.on_start(proc)
 
                 def drain() -> None:
-                    assert proc.stderr is not None
+                    if proc.stderr is None:
+                        return  # sortie d'erreur non capturée : rien à lire
                     for raw in proc.stderr:
                         text = raw.decode("utf-8", "replace")
                         if "pts:" in text and "n:" in text:

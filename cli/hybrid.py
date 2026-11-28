@@ -7,14 +7,14 @@ import json
 from pathlib import Path
 
 from core.workflows.audio_sync_scan import AudioSyncScanner, coherent_sync_accepted, quick_check_enabled
-from core.jobs.dynamic_sync import perform_dynamic_sync as perform_dynamic_sync  # réexport (tests, scripts)
+from core.jobs.dynamic_sync import perform_dynamic_sync as perform_dynamic_sync  # noqa: F401 - réexport (tests, scripts)
 from core.service.ops.sync import detect_stream_kind as detect_stream_kind  # remplaçable (tests)
 from cli.constants import EXIT_OK
 from cli.options import common_options
 from cli.remux_config import build_remux_config
 from cli.runtime import run_remux_config
 from cli.interrupts import interrupt_guard
-from core.workflows.hybrid import HybridPair as HybridPair  # réexport (tests)
+from core.workflows.hybrid import HybridPair as HybridPair  # noqa: F401 - réexport (tests)
 from cli.service_adapter import (
     argv_documents,
     envelope,

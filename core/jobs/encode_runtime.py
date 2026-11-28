@@ -225,7 +225,8 @@ def _run_checked_encode(wf: EncodeWorkflow, encode_config: EncodeConfig, *, opti
     last: dict[str, Any] = {}
 
     def publish(snapshot: ProgressSnapshot | None) -> None:  # sous ``lock``
-        assert progress is not None
+        if progress is None:
+            return  # aucune progression demandée (appelants déjà filtrés)
         fields = progress_fields(snapshot) if snapshot is not None else {}
         # Comme la barre de la GUI : rien à publier sans pourcentage, vitesse ni ETA, ni sans changement
         # (FFmpeg écrit une clé par ligne : ``out_time``, ``out_time_ms``, ``bitrate``…).

@@ -128,7 +128,8 @@ class _WindowedInput:
                 length -= len(chunk)
             return chunks[0] if len(chunks) == 1 else b"".join(chunks)
         if self._ahead_fh is None:
-            assert self._path is not None
+            if self._path is None:
+                raise RuntimeError("Lecture anticipée sans chemin de fichier.")
             self._ahead_fh = self._path.open("rb")
         self._ahead_fh.seek(position)
         return self._ahead_fh.read(length)

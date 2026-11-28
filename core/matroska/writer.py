@@ -978,7 +978,7 @@ class MatroskaWriter:
             # et fenêtres mmap des sources fermés tout de suite, pas au ramasse-miettes.
             close = getattr(packets, "close", None)
             if callable(close):
-                close()
+                close()  # pylint: disable=not-callable  # vérifié par callable()
         return destination
 
 

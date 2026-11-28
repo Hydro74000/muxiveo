@@ -215,7 +215,8 @@ class Film2Frames:
             self.load_full("plus de {percent} % de Film 2 à lire par fenêtres", percent=int(self._budget * 100))
         if self.full is not None:
             return self.full.slice(start, stop)
-        assert self._window is not None
+        if self._window is None:
+            raise RuntimeError("Film 2 ni indexé ni lu en entier.")
         self.decoded += stop - start
         return self._window(start, stop - start)
 
@@ -416,9 +417,9 @@ class _ShotModel:
         return self._step(score, pairs, emission, k)
 
     def solve(self, first: int = 0, last: int | None = None, *, entry: int | None = None,
-              exit: int | None = None, forbid: tuple[int, int, int] | None = None) -> tuple[np.ndarray, float]:
+              final: int | None = None, forbid: tuple[int, int, int] | None = None) -> tuple[np.ndarray, float]:
         """Meilleur chemin sur les plans ``[first, last)`` et son score. Chemin : état placé ``s`` ou
-        ``self.none`` (sans correspondance). ``entry`` : état imposé au plan précédant ``first`` ; ``exit`` :
+        ``self.none`` (sans correspondance). ``entry`` : état imposé au plan précédant ``first`` ; ``final`` :
         état imposé au dernier plan ; ``forbid`` : (plans début, fin, état) interdit."""
         last = self.shots if last is None else last
         checkpoints: list[tuple[np.ndarray, tuple[np.ndarray, np.ndarray]]] = []
@@ -436,9 +437,9 @@ class _ShotModel:
                 checkpoints.append((score.copy(), (pairs[0].copy(), pairs[1].copy())))
         best_none = int(np.argmax(pairs[0])) if pairs[0].size else -1
         none_value = float(pairs[0][best_none]) if best_none >= 0 else -np.inf
-        if exit is not None and exit != self.none:
-            state, total = int(exit), float(score[exit])
-        elif exit == self.none or none_value > float(score.max()):
+        if final is not None and final != self.none:
+            state, total = int(final), float(score[final])
+        elif final == self.none or none_value > float(score.max()):
             state, total = self.states + best_none, none_value
         else:
             state = int(np.argmax(score))
@@ -632,7 +633,8 @@ class _Context:
                 self._framings[key] = None
                 return None
             window, lo_c = self._window(frames, anchor, 0)
-        assert window is not None
+        if window is None:
+            raise RuntimeError("Fenêtre de cadrage de Film 2 introuvable.")
         result = self._estimate_framing(frames, anchor, window, lo_c)
         self._framings[key] = result
         if result is not None:
@@ -657,7 +659,8 @@ class _Context:
         ``s·p + t`` de Film 2 ; extraction 2.39 décalée ou zoomée dans l'image IMAX) maximisant la corrélation
         médiane des paires comparables avec la géométrie globale, toutes gardées ; bandes bornées par les zones
         actives des deux films ; recherche grossière puis affinée. None sans gain ``REFRAME_GAIN``."""
-        assert self.area1 is not None and self.area2 is not None
+        if self.area1 is None or self.area2 is None:
+            raise RuntimeError("Zones actives des deux films requises pour le cadrage d'un plan.")
         a1, a2 = self.area1, self.area2
         sub = take(self.film1, frames)
         j = frames + anchor - lo_c

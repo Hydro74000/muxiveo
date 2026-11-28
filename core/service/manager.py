@@ -427,7 +427,8 @@ class JobManager:
         en échec n'empêche pas la publication des autres (première erreur relancée)."""
         failure: BaseException | None = None
         for job in jobs:
-            assert job.error is not None
+            if job.error is None:
+                raise RuntimeError(f"Job {job.id} terminé sans erreur à publier.")
             try:
                 try:
                     job.emitter.error(job.error.to_dict())

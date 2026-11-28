@@ -87,7 +87,8 @@ def _plans(request: ExtractRequest, info: Any) -> list[tuple[ExtractionPlan, Pat
                 raise ApiError(ErrorCode.INVALID_REQUEST, f"items[{position}] : `layer` réservé aux pistes.")
             plans.append((plan_attachment(info, item.attachment), item.output))
         else:
-            assert item.track is not None
+            if item.track is None:
+                raise ApiError(ErrorCode.INVALID_REQUEST, f"items[{position}] : `track` ou `attachment` attendu.")
             plans.append((plan_track(info, item.track, layer=item.layer, container=request.container), item.output))
     return plans
 

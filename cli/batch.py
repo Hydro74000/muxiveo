@@ -59,4 +59,6 @@ def cli_batch_steps(cancel: CancelToken | None = None) -> BatchSteps:
 def run_batch(**kwargs: Any) -> int:
     """Lot de jobs ; Ctrl+C annule le job en cours et arrête le lot. Renvoie le code de sortie."""
     with interrupt_guard(CancelToken()) as cancel:
-        return _run_batch(**kwargs, steps=cli_batch_steps(cancel), cancel=cancel).exit_code
+        # Arguments du lot transmis par mot-clé (``template_path`` compris) : vérifiés à l'appel.
+        return _run_batch(**kwargs, steps=cli_batch_steps(cancel),  # pylint: disable=missing-kwoa
+                          cancel=cancel).exit_code

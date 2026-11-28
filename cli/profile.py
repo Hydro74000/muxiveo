@@ -11,10 +11,10 @@ from core.jobs.profile import (  # fonctions de construction partagées (core.jo
     ProfileBatchSteps,
     build_profile_remux_config,
     load_decision_profile,
-    resolve_decision_profile_path as resolve_decision_profile_path,
     run_profile_batch,
     snapshot_decision_profile as snapshot_decision_profile,
 )
+from core.jobs.profile import resolve_decision_profile_path  # noqa: F401 - réexport (tests)
 from core.jobs.options import call_cancellable, call_supported
 from core.service.context import CancelToken
 from core.service.errors import ApiError
@@ -35,7 +35,7 @@ from cli.runtime import (
     run_encode_config,
     run_remux_config,
 )
-from cli.service_adapter import envelope, overrides_from_options, print_json, run_operation
+from cli.service_adapter import envelope, overrides_from_options, print_json, run_operation, typed_result
 
 
 def _job_payload(profile_path: str, inputs: list[str], output: str | None, options: CommonOptions,
@@ -55,7 +55,7 @@ def profile_validate(profile_path: str, *, json_output: bool = False, config: Ap
                      logger: Logger | None = None) -> int:
     log = logger or Logger()
     result, ctx = run_operation("profile.validate", {"profile": str(profile_path)}, config=config, logger=log)
-    assert isinstance(result, ProfileValidateResult)
+    result = typed_result(result, ProfileValidateResult)
     if log.fmt == "events":
         print_json(envelope("profile.validate", ctx.events.job, result=result))
     elif json_output:
@@ -92,7 +92,7 @@ def profile_preview(
             print(json.dumps(report, ensure_ascii=False, indent=2, default=json_default))
             return EXIT_VALIDATION
         raise
-    assert isinstance(result, ProfilePreviewResult)
+    result = typed_result(result, ProfilePreviewResult)
     exit_code = EXIT_OK if result.valid else EXIT_VALIDATION
     if logger.fmt == "events":
         print_json(envelope("profile.preview", ctx.events.job, result=result))
@@ -190,5 +190,6 @@ def cli_profile_batch_steps(cancel: CancelToken | None = None) -> ProfileBatchSt
 def profile_batch(profile_path: str, **kwargs: Any) -> int:
     """Applique un profil à un lot ; Ctrl+C annule le job en cours et arrête le lot."""
     with interrupt_guard(CancelToken()) as cancel:
-        return run_profile_batch(profile_path, **kwargs, steps=cli_profile_batch_steps(cancel),
+        # Arguments du lot transmis par mot-clé (``cli_inputs`` compris) : vérifiés à l'appel.
+        return run_profile_batch(profile_path, **kwargs, steps=cli_profile_batch_steps(cancel),  # pylint: disable=missing-kwoa
                                  cancel=cancel).exit_code

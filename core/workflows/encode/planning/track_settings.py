@@ -213,7 +213,9 @@ def hdr_meta_from_mediainfo_json(data: Mapping[str, Any]) -> tuple[str, str]:
 def hdr_meta_from_mediainfo(mediainfo_bin: str, source_path: Path) -> tuple[str, str]:
     """(master_display, max_cll) d'après MediaInfo ; ('', '') si absent ou sans HDR10 statique."""
     try:
-        result = subprocess.run(
+        # MediaInfo configuré, arguments séparés, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(  # nosec B603
             [mediainfo_bin, "--Output=JSON", str(source_path)],
             capture_output=True, check=False, timeout=60, **subprocess_text_kwargs(),
         )
@@ -250,12 +252,12 @@ def hdr_meta_from_ffprobe_raw(raw: Mapping[str, Any]) -> tuple[str, str]:
                     (rat(sd.get("white_point_x", 0)), rat(sd.get("white_point_y", 0))),
                     rat(sd.get("max_luminance", 0)), rat(sd.get("min_luminance", 0)),
                 )
-            except Exception:  # noqa: BLE001 - side data incomplète : ignorée
+            except (ArithmeticError, TypeError, ValueError):  # side data incomplète : ignorée
                 pass
         elif sd.get("side_data_type") == "Content light level metadata":
             try:
                 max_cll = f"{int(sd.get('max_content', 0))},{int(sd.get('max_average', 0))}"
-            except Exception:  # noqa: BLE001
+            except (TypeError, ValueError):  # valeurs absentes ou illisibles : ignorées
                 pass
     return master_display, max_cll
 
@@ -267,7 +269,9 @@ def hdr_meta_from_ffprobe_frames(ffprobe_bin: str, source_path: Path, stream_ind
            "-show_frames", "-read_intervals", "%+#1", "-print_format", "json"]
     cmd.extend(ffprobe_input_args(source_path))
     try:
-        result = subprocess.run(cmd, capture_output=True, check=False, timeout=20, **subprocess_text_kwargs())
+        # ffprobe configuré, arguments séparés et chemin média protégé, sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        result = subprocess.run(cmd, capture_output=True, check=False, timeout=20, **subprocess_text_kwargs())  # nosec B603
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return "", ""
     if result.returncode != 0:

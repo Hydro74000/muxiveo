@@ -12,7 +12,7 @@ import json
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from core.jobs.json_io import json_default
 from core.json_documents import parse_json_text, read_json_document
@@ -101,6 +101,17 @@ def run_operation(
                                   protected_paths=documents)
     result = call(CATALOG, name, dict(payload), ctx, allow_relative=True, strict_documents=False)
     return result, ctx
+
+
+ResultT = TypeVar("ResultT", bound=Model)
+
+
+def typed_result(result: Model, kind: type[ResultT]) -> ResultT:
+    """Résultat d'une opération sous son type déclaré ; tout autre type est une erreur interne (contrôle
+    gardé hors ``assert``, retiré par ``python -O``)."""
+    if not isinstance(result, kind):
+        raise TypeError(f"Résultat {type(result).__name__} reçu, {kind.__name__} attendu.")
+    return result
 
 
 def envelope(name: str, job: str, *, result: Model | None = None, error: ApiError | None = None) -> dict[str, Any]:

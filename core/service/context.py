@@ -134,7 +134,7 @@ class ExecutionContext:
         for callback in callbacks:
             try:
                 callback()
-            except Exception:  # noqa: BLE001 — un rappel en échec n'invalide jamais le résultat déjà écrit
+            except Exception:  # nosec B110  # noqa: BLE001 — un rappel en échec n'invalide jamais le résultat déjà écrit
                 pass
 
     @classmethod

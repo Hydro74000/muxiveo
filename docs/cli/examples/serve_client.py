@@ -22,13 +22,16 @@ class Worker:
     """Un worker = un client : requêtes JSON-RPC par ligne, réponses et notifications lues dans un fil."""
 
     def __init__(self, command: list[str]) -> None:
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        # Commande du worker choisie par l'appelant de l'exemple (argv), sans shell.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)  # nosec B603
         self.messages: Queue[dict[str, Any]] = Queue()
         self._ids = itertools.count(1)
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self) -> None:
-        assert self.process.stdout is not None
+        if self.process.stdout is None:
+            raise RuntimeError("sortie du worker non capturée")
         for line in self.process.stdout:
             self.messages.put(json.loads(line))
         self.messages.put({"method": "eof"})
@@ -36,7 +39,8 @@ class Worker:
     def send(self, method: str, params: dict[str, Any] | None = None) -> int:
         request_id = next(self._ids)
         message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
-        assert self.process.stdin is not None
+        if self.process.stdin is None:
+            raise RuntimeError("entrée du worker non capturée")
         self.process.stdin.write(json.dumps(message).encode() + b"\n")
         self.process.stdin.flush()
         return request_id
@@ -77,7 +81,8 @@ def main() -> int:
                     status = 0 if event["state"] == "succeeded" else 1
                     break
     finally:
-        assert worker.process.stdin is not None
+        if worker.process.stdin is None:
+            raise RuntimeError("entrée du worker non capturée")
         # Demande d'arrêt puis fin de stdin (arrêt même si la demande n'est pas lue) ; worker déjà arrêté : ignoré.
         for step in (lambda: worker.send("server.shutdown"), worker.process.stdin.close):
             try:

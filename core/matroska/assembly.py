@@ -311,7 +311,7 @@ class _SharedArtifactRead:
                     close_own()
         close_stream = getattr(self._stream, "close", None)
         if callable(close_stream):
-            close_stream()
+            close_stream()  # pylint: disable=not-callable  # vérifié par callable()
 
 
 def _indexed_route_stream(

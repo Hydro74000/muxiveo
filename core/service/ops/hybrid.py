@@ -411,7 +411,8 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
              else SidecarGuard())
     for item in ready:
         planned = item.remux_config
-        assert planned is not None
+        if planned is None:
+            raise RuntimeError(f"Épisode {item.episode.display_name} prêt sans configuration de remux.")
         if request.export_workflow is not None:
             guard.claim(_episode_export(request, prepared, planned), f"exact-job de {item.episode.display_name}")
         elif writes_nfo:
@@ -434,7 +435,8 @@ def hybrid_run(request: HybridRequest, ctx: ExecutionContext) -> HybridResult:
             if item.error is not None:
                 raise item.error
             remux_config = item.remux_config
-            assert remux_config is not None
+            if remux_config is None:
+                raise RuntimeError(f"Épisode {episode.display_name} sans configuration de remux.")
             entry["output"] = str(remux_config.output)
             entry["calibration"] = item.calibration.to_dict() if item.calibration is not None else None
             if request.export_workflow is not None:

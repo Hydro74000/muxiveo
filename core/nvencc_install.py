@@ -88,15 +88,19 @@ def supported_platform(sys_platform: str | None = None, machine: str | None = No
 
 def nvidia_present() -> bool:
     """GPU NVIDIA détecté : ``nvidia-smi -L`` répond, sinon ``/dev/nvidia0`` (Linux)."""
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "-L"], capture_output=True, check=False, timeout=5,
-            **subprocess_windows_no_window_kwargs(),
-        )
-        if result.returncode == 0 and (result.stdout or b"").strip():
-            return True
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        try:
+            # Outil du pilote résolu dans le PATH, argv fixe, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            result = subprocess.run(  # nosec B603
+                [smi, "-L"], capture_output=True, check=False, timeout=5,
+                **subprocess_windows_no_window_kwargs(),
+            )
+            if result.returncode == 0 and (result.stdout or b"").strip():
+                return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     return sys.platform.startswith("linux") and Path("/dev/nvidia0").exists()
 
 
@@ -104,9 +108,12 @@ def is_atomic_distro() -> bool:
     """Distribution immuable (Silverblue, Kinoite, Bazzite…) : pas d'installation de paquet sur le système."""
     if Path("/run/ostree-booted").exists():
         return True
-    if shutil.which("rpm-ostree"):
+    ostree = shutil.which("rpm-ostree")
+    if ostree:
         try:
-            result = subprocess.run(["rpm-ostree", "status"], capture_output=True, check=False, timeout=5)
+            # Outil système résolu dans le PATH, argv fixe, sans shell.
+            # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit
+            result = subprocess.run([ostree, "status"], capture_output=True, check=False, timeout=5)  # nosec B603
             return result.returncode == 0
         except (OSError, subprocess.TimeoutExpired):
             return False
@@ -253,8 +260,12 @@ def _native_install(
     command = [*privilege, manager, "install", "-y", str(archive)]
     log("INFO", "NVEncC : " + " ".join(command))
     try:
-        # Paquet système : jamais les bibliothèques d'une AppImage ou d'un bundle figé.
-        result = subprocess.run(command, check=False, env=host_environment(), capture_output=True, text=True)
+        # Paquet système : jamais les bibliothèques d'une AppImage ou d'un bundle figé. Argv construit ici
+        # (élévation, apt/dnf résolu par shutil.which, paquet téléchargé et vérifié), sans shell ; ``env`` :
+        # environnement de l'hôte, sans valeur fournie par l'utilisateur.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit.dangerous-subprocess-use-audit, python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+        result = subprocess.run(command, check=False, env=host_environment(), capture_output=True,  # nosec B603
+                                text=True)
     except OSError as exc:
         log("WARN", f"NVEncC : {Path(manager).name} indisponible ({exc}).")
         return None
