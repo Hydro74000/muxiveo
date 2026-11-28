@@ -2622,7 +2622,7 @@ def test_cadence_conversion_keeps_ass_karaoke_cumulative():
 def test_ass_animation_resumes_where_it_was_after_a_cut():
     """Générique défilant de 10 s coupé à 5 s (+1 s ensuite) : le second morceau reprend le \\move à
     mi-course (x=300) au lieu de repartir de x=100 ; le premier garde l'animation sur toute la durée de
-    l'événement, sans fondu de sortie (réservé au dernier morceau)."""
+    l'événement ; le fondu de sortie reste à la fin d'origine (atteint par le second morceau seulement)."""
     from core.workflows.subtitle_sync import shift_text
 
     ass = ("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -2630,8 +2630,10 @@ def test_ass_animation_resumes_where_it_was_after_a_cut():
     cut = SyncCalibration((SyncSegment(0, 0.0), SyncSegment(5000, 1000.0)))
     events = [line for line in shift_text(ass, cut, suffix=".ass").splitlines() if line.startswith("Dialogue:")]
     assert len(events) == 2
-    assert "0:00:00.00,0:00:05.00" in events[0] and "\\move(100,0,500,0,0,10000)\\fad(0,0)" in events[0]
-    assert "0:00:06.00,0:00:11.00" in events[1] and "\\move(300,0,500,0,0,5000)\\fad(0,400)" in events[1]
+    assert "0:00:00.00,0:00:05.00" in events[0]
+    assert "\\move(100,0,500,0,0,10000)\\fade(255,0,255,0,0,9600,10000)" in events[0]
+    assert "0:00:06.00,0:00:11.00" in events[1]
+    assert "\\move(300,0,500,0,0,5000)\\fade(255,0,255,-5000,-5000,4600,5000)" in events[1]
 
 
 # --- Relecture Gemini Neon (f850c7b). ---
@@ -2662,7 +2664,7 @@ def test_ass_event_with_its_end_cut_keeps_its_animation_pace():
     cut = SyncCalibration((SyncSegment(0, 0.0), SyncSegment(5000, -7000.0)))
     events = [line for line in shift_text(ass, cut, suffix=".ass").splitlines() if line.startswith("Dialogue:")]
     assert len(events) == 1 and "0:00:00.00,0:00:05.00" in events[0]
-    assert "\\move(100,0,500,0,0,10000)\\fad(0,0)" in events[0]
+    assert "\\move(100,0,500,0,0,10000)\\fade(255,0,255,0,0,9600,10000)" in events[0]  # sortie jamais atteinte
 
 
 def test_removed_measured_variant_decision_uses_its_stream_offset(qt_app, tmp_path, monkeypatch):
@@ -2746,3 +2748,20 @@ def test_track_realigned_on_a_removed_variant_stays_frozen_and_keeps_its_analysi
     assert calibration.cadence_audio_method == "asetrate"
     assert calibration.audio_pitch_factor == pytest.approx((24000 / 1001) / 25)
     assert round(calibration.segments[0].shift_ms) == 300
+
+
+# --- Audit (f850c7b..b9fd0e5). ---
+
+
+def test_ass_fade_cut_by_a_junction_resumes_at_its_opacity():
+    """\\fad(1000,0) de 0 à 10 s, 300 ms retirées à 0,5 s : le second morceau (temps source 0,8 s) repart à
+    l'opacité de l'original (80 %), jamais transparent ; libass l'évalue avec des temps négatifs."""
+    from core.workflows.subtitle_sync import shift_text
+
+    ass = ("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+           "Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{\\fad(1000,0)}Texte\n")
+    cut = SyncCalibration((SyncSegment(0, 0.0), SyncSegment(500, -300.0)))
+    events = [line for line in shift_text(ass, cut, suffix=".ass").splitlines() if line.startswith("Dialogue:")]
+    assert len(events) == 2
+    assert "0:00:00.00,0:00:00.50" in events[0] and "\\fade(255,0,255,0,1000,10000,10000)" in events[0]
+    assert "0:00:00.50,0:00:09.70" in events[1] and "\\fade(255,0,255,-800,200,9200,9200)" in events[1]

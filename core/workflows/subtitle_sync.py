@@ -62,12 +62,12 @@ def _float(value: str) -> float | None:
 
 
 def _retime_ass_override(text: str, ratio: float, *, elapsed_ms: float = 0.0, duration_ms: float = 0.0,
-                         split: bool = False, last: bool = True) -> str:
+                         split: bool = False) -> str:
     """Temps internes des balises (relatifs au début de l'événement, ms ; karaoké en centièmes) d'un
     morceau d'événement : étirés par la conversion de cadence (`ratio`) et, pour un morceau qui ne
     commence pas au début de l'événement (`elapsed_ms` déjà écoulées, coupe ou début rogné), repris
-    là où l'animation en était. `split` : événement découpé (animations sur toute sa durée rendues
-    explicites, fondu de sortie sur le dernier morceau seulement)."""
+    là où l'animation en était. `split` : événement découpé (animations et fondus sur toute sa durée
+    rendus explicites aux temps du morceau)."""
     if (abs(ratio - 1.0) < 1e-12 and not split) or "{" not in text:
         return text
 
@@ -118,9 +118,13 @@ def _retime_ass_override(text: str, ratio: float, *, elapsed_ms: float = 0.0, du
                 replacement = f"\\move({','.join(args[:4])},{out(t1)},{out(t2)})"
         elif name == "fad" and len(args) == 2 and None not in values:
             fade_in, fade_out = float(values[0] or 0.0), float(values[1] or 0.0)
-            fade_in = max(0.0, fade_in - elapsed_ms)
-            fade_out = fade_out if last else 0.0
-            replacement = f"\\fad({round(fade_in * ratio)},{round(fade_out * ratio)})"
+            if split:
+                # Opacité de l'événement d'origine à chaque instant du morceau (\fade, temps négatifs avant
+                # son début) : fondu coupé repris où il en était, fondu de sortie là où l'original le jouait.
+                replacement = (f"\\fade(255,0,255,{out(0.0)},{out(fade_in)},"
+                               f"{out(duration_ms - fade_out)},{out(duration_ms)})")
+            else:
+                replacement = f"\\fad({round(fade_in * ratio)},{round(fade_out * ratio)})"
         elif name == "fade" and len(args) == 7 and None not in values:
             times = ",".join(str(out(float(value or 0.0))) for value in values[3:])
             replacement = f"\\fade({','.join(args[:3])},{times})"
@@ -170,13 +174,12 @@ def shift_text(text: str, calibration: SyncCalibration, *, suffix=".srt") -> str
                 split = (len(pieces) > 1 or (bool(pieces) and pieces[0][2] > event_start + 0.5)
                          or tail_clipped)
                 text_index = fields.index("text") if "text" in fields else None
-                for piece, (start, end, source_start) in enumerate(pieces):
+                for start, end, source_start in pieces:
                     clone = list(values)
                     if text_index is not None:
                         clone[text_index] = _retime_ass_override(
                             values[text_index], ratio, elapsed_ms=max(0.0, source_start - event_start),
                             duration_ms=event_end - event_start, split=split,
-                            last=piece == len(pieces) - 1 and not tail_clipped,
                         )
                     clone[a], clone[b] = format_time(start, ass=True), format_time(end, ass=True)
                     result.append("Dialogue:" + ",".join(clone))
